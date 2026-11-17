@@ -41,7 +41,7 @@ source file starts with the `@copyright`/`@file` header, and includes are groupe
 Bazel 8 (`.bazelversion`; use bazelisk) with Bzlmod (`MODULE.bazel`). `.bazelrc` sets C++20 and
 provides the `asan`, `ubsan`, `tsan`, `release` and `ci` configs. Third-party libraries come from
 BCR (`nlohmann_json`, `googletest`, `emsdk`) or from pinned `http_archive`s with BUILD files in
-`//external` (`imgui`, `glfw`, `entt`, `bitsery`, `stb`).
+`//third_party` (`imgui`, `glfw`, `entt`, `bitsery`, `stb`).
 
 - `bazel test //...` runs every test.
 - The web build is a `wasm_cc_binary` (tagged `manual`) built by CI's `web` job.
