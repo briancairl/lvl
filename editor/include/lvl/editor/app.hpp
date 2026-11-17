@@ -162,6 +162,16 @@ struct Generators
   int region_h = 0;
 };
 
+/// Tabs of the Generate panel
+enum class GeneratorTab : std::uint8_t
+{
+  kNone,
+  kHeightmap,
+  kWatershed,
+  kWfc,
+  kWfcRules,
+};
+
 /// Which panels are open
 struct Panels
 {
@@ -170,7 +180,6 @@ struct Panels
   bool tile_meta = true;
   bool catalogs = true;
   bool generate = true;
-  bool wfc_editor = false;
   bool objects = true;
   bool minimap = true;
   bool log = true;
@@ -239,6 +248,8 @@ struct App
   level::Entity route_from = level::kNullEntity;
 
   Generators generators;
+  /// Generate panel tab to bring to front on the next frame
+  GeneratorTab generator_tab_request = GeneratorTab::kNone;
   /// WFC editor: the tile whose neighbors are being edited
   level::WfcTileId wfc_tile = 0;
 

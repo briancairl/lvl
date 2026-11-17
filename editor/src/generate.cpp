@@ -4,7 +4,7 @@
  * @file generate.cpp
  *
  * Generators (heightmap from layered noise / seed images, iterative water-shedding, WFC) and the
- * visual WFC rule editor.
+ * visual WFC rule editor, as tabs of the Generate panel.
  */
 
 // C++ Standard Library
@@ -230,8 +230,7 @@ void wfc_section(App& app)
   ImGui::SameLine();
   if (ImGui::SmallButton("Edit rules"))
   {
-    app.panels.wfc_editor = true;
-    ImGui::SetWindowFocus("WFC rule editor");
+    app.generator_tab_request = GeneratorTab::kWfcRules;
   }
   static std::size_t target = 0;
   if (app.layer < lv.layers.size() and lv.layers[app.layer].kind == LayerKind::kTiles)
@@ -397,51 +396,9 @@ void start_wfc(App& app, std::size_t target)
   }
 }
 
-void generate_panel(App& app)
+/// The visual WFC rule editor (the "WFC rules" tab)
+void wfc_rules_tab(App& app)
 {
-  if (!ImGui::Begin("Generate", &app.panels.generate))
-  {
-    ImGui::End();
-    return;
-  }
-  if (skip_while_busy(app))
-  {
-    return;
-  }
-  ImGui::BeginDisabled(!std::holds_alternative<std::monostate>(app.job));
-  if (ImGui::CollapsingHeader("Heightmap (layered noise / seed image)", ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    ImGui::PushID("hm");
-    heightmap_section(app);
-    ImGui::PopID();
-  }
-  if (ImGui::CollapsingHeader("Water-shedding (rivers, lakes, tunnels)"))
-  {
-    ImGui::PushID("ws");
-    watershed_section(app);
-    ImGui::PopID();
-  }
-  if (ImGui::CollapsingHeader("Wave function collapse", ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    ImGui::PushID("wfc");
-    wfc_section(app);
-    ImGui::PopID();
-  }
-  ImGui::EndDisabled();
-  ImGui::End();
-}
-
-void wfc_editor_panel(App& app)
-{
-  if (!ImGui::Begin("WFC rule editor", &app.panels.wfc_editor))
-  {
-    ImGui::End();
-    return;
-  }
-  if (skip_while_busy(app))
-  {
-    return;
-  }
   Level& lv = *app.level;
   WfcRules& rules = lv.wfc;
   bool changed = false;
@@ -488,7 +445,6 @@ void wfc_editor_panel(App& app)
     ImGui::TextDisabled(
       "No rule tiles. Select tiles in the palette and add them, or learn from a tile layer (Generate).");
     app.modified |= changed;
-    ImGui::End();
     return;
   }
   app.wfc_tile = std::min<WfcTileId>(app.wfc_tile, static_cast<WfcTileId>(rules.tiles.size() - 1));
@@ -539,7 +495,6 @@ void wfc_editor_panel(App& app)
     app.wfc_tile = 0;
     app.modified = true;
     ImGui::EndGroup();
-    ImGui::End();
     return;
   }
   ImGui::EndGroup();
@@ -619,6 +574,73 @@ void wfc_editor_panel(App& app)
   }
   ImGui::TextDisabled("Rules are symmetric: allowing B east of A also allows A west of B.");
   app.modified |= changed;
+}
+
+void generate_panel(App& app)
+{
+  if (!ImGui::Begin("Generate", &app.panels.generate))
+  {
+    ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
+    return;
+  }
+  // One tab per generator; the WFC rule editor has its own tab next to WFC generation
+  if (ImGui::BeginTabBar("generators", ImGuiTabBarFlags_FittingPolicyScroll))
+  {
+    static constexpr GeneratorTab kTabs[] = {
+      GeneratorTab::kHeightmap, GeneratorTab::kWatershed, GeneratorTab::kWfc, GeneratorTab::kWfcRules};
+    for (const GeneratorTab tab : kTabs)
+    {
+      const char* label = "";
+      switch (tab)
+      {
+      case GeneratorTab::kHeightmap:
+        label = "Heightmap";
+        break;
+      case GeneratorTab::kWatershed:
+        label = "Water-shedding";
+        break;
+      case GeneratorTab::kWfc:
+        label = "WFC";
+        break;
+      case GeneratorTab::kWfcRules:
+        label = "WFC rules";
+        break;
+      case GeneratorTab::kNone:
+        continue;
+      }
+      const bool select = (app.generator_tab_request == tab);
+      if (!ImGui::BeginTabItem(label, nullptr, select ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None))
+      {
+        continue;
+      }
+      ImGui::BeginChild("tab");
+      switch (tab)
+      {
+      case GeneratorTab::kHeightmap:
+        heightmap_section(app);
+        break;
+      case GeneratorTab::kWatershed:
+        watershed_section(app);
+        break;
+      case GeneratorTab::kWfc:
+        wfc_section(app);
+        break;
+      case GeneratorTab::kWfcRules:
+        wfc_rules_tab(app);
+        break;
+      case GeneratorTab::kNone:
+        break;
+      }
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    app.generator_tab_request = GeneratorTab::kNone;
+    ImGui::EndTabBar();
+  }
   ImGui::End();
 }
 

@@ -587,7 +587,6 @@ void main_menu(App& app)
       ImGui::MenuItem("Tile metadata", nullptr, &app.panels.tile_meta);
       ImGui::MenuItem("Catalogs & seasons", nullptr, &app.panels.catalogs);
       ImGui::MenuItem("Generate", nullptr, &app.panels.generate);
-      ImGui::MenuItem("WFC rule editor", nullptr, &app.panels.wfc_editor);
       ImGui::MenuItem("Objects & paths", nullptr, &app.panels.objects);
       ImGui::MenuItem("Mini-preview", nullptr, &app.panels.minimap);
       ImGui::MenuItem("Log", nullptr, &app.panels.log);
@@ -722,7 +721,6 @@ void dock_layout(ImGuiID dockspace)
   ImGui::DockBuilderDockWindow("Tile metadata", right_bottom);
   ImGui::DockBuilderDockWindow("Catalogs & seasons", right_bottom);
   ImGui::DockBuilderDockWindow("Generate", right_bottom);
-  ImGui::DockBuilderDockWindow("WFC rule editor", right_bottom);
   ImGui::DockBuilderDockWindow("Log", bottom);
   ImGui::DockBuilderFinish(dockspace);
 }
@@ -892,10 +890,6 @@ void frame(App& app)
   if (app.panels.generate)
   {
     generate_panel(app);
-  }
-  if (app.panels.wfc_editor)
-  {
-    wfc_editor_panel(app);
   }
   if (app.panels.objects)
   {
