@@ -1,0 +1,31 @@
+{
+  "format": "lvl-level",
+  "version": 100,
+  "settings": {"name": "small", "size": [4, 3], "cell_width": 8, "cell_height": 8, "seed": 3},
+  "semantics": [{"name": "road", "color": "#a08060ff"}],
+  "materials": [{"name": "stone", "color": "#808080ff", "friction": 1.0, "speed": 1.0, "sound": "step_stone"}],
+  "seasons": [
+    {"name": "summer", "duration_days": 120, "temperature": 24.0},
+    {"name": "winter", "duration_days": 60, "temperature": -4.0, "tint": "#d0e0ffff"}
+  ],
+  "tilesets": [
+    {
+      "name": "missing", "image": "does_not_exist.png", "image_width": 32, "image_height": 16,
+      "slice": {"tile_width": 8, "tile_height": 8}, "tile_count": 8,
+      "tiles": [{"index": 1, "name": "cobble", "semantic": "road", "material": "stone", "collision": ["nw", "ne"]}],
+      "properties": [{"tile": 1, "key": "noise", "value": "loud"}],
+      "seasonal": [{"tile": 1, "season": "winter", "alternate": 5}]
+    }
+  ],
+  "wfc": {"name": "r", "tiles": [{"tileset": "missing", "tile": 1, "weight": 2.0, "height": [0.0, 1.0], "water": "dry"}], "adjacency": [[0, "east", 0]]},
+  "paths": [{"name": "road", "kind": "road", "color": "#ffd23cff", "visible": true,
+             "nodes": [{"position": [0.5, 0.5], "wait": 0}, {"position": [3.5, 2.5], "wait": 2}],
+             "edges": [{"from": 0, "to": 1, "cost": 1.5, "bidirectional": false}]}],
+  "portals": [{"name": "door", "position": [1, 1], "extent": [1, 2], "target_level": "b.json", "target_portal": "in", "exit": "north", "interact": true}],
+  "markers": [{"name": "spawn", "type": "player", "position": [2.5, 0.5]}],
+  "layers": [
+    {"name": "height", "kind": "height", "range": [0, 1], "data": [0, 0.25, 0.5, 0.75, 1, 0.5, 0.25, 0, 0.1, 0.2, 0.3, 0.4]},
+    {"name": "ground", "kind": "tiles", "data": [-1, 1, 1, 0, 0, 1, -1, 2, 3, 4, 5, 6]},
+    {"name": "collision", "kind": "collision", "data": [15, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 16]}
+  ]
+}
