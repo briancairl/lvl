@@ -55,6 +55,15 @@ jobs:
           path: bazel-testlogs/**/test.log
           if-no-files-found: ignore
 
+      # The editor up/down test's final frame and exports (map PNG, mini-preview)
+      - name: Upload editor screenshots
+        if: always() && matrix.config == 'default'
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-screenshots
+          path: bazel-testlogs/editor/up_down_test/test.outputs/
+          if-no-files-found: ignore
+
   # Formatting check (same clang-format config as the pre-commit hook).
   format:
     name: clang-format

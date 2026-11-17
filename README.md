@@ -1,7 +1,47 @@
 # lvl
 
-A 2D tile-based level editor written in C++20 with Dear ImGui, building natively (GLFW/OpenGL3)
-and for the web (Emscripten/WebGL2).
+A 2D tile-based game level editor written in C++20 with Dear ImGui. It builds natively (GLFW +
+OpenGL 3.3) and for the browser (Emscripten + WebGL2) from the same sources.
+
+![CI](https://github.com/briancairl/lvl/actions/workflows/ci.yml/badge.svg)
+
+## Features
+
+- **Grid levels with typed layers**: tiles, semantic types, heightmap, collision masks, materials and
+  water, each a data plane over the grid. Layers can be added, reordered, hidden, locked and given an
+  opacity.
+- **Layer previews**: height and water layers render as grayscale, terrain or heat ramps, contour
+  lines or hillshade, overlaid on the tile map. Semantic and material layers use catalog colors;
+  collision masks are drawn per flag.
+- **Navigation**: pan with the middle mouse, Space+drag, the pan tool or the arrow/WASD keys; zoom
+  with the wheel around the cursor; `F` fits the map.
+- **Editing tools**: brush (radius, or multi-tile stamps), erase, flood fill, rectangle, eyedropper,
+  and scalar brushes (set/raise/lower/smooth/flatten) for heights. Layer edits have undo/redo.
+- **Tile slicer**: cut atlas images into tiles (tile size, margin, spacing, grid limits) and pick
+  tiles or stamps from a palette.
+- **Tile metadata**: semantic type, material, collision quadrants and flags, free-form properties.
+- **Seasons**: a level has one or more seasons with climate (duration, temperature, precipitation,
+  humidity, wind, snow line, tint). Tiles can name a **seasonal alternate tile and material** per
+  season. The view, collision/material derivation and exports all follow the selected season.
+- **Heightmaps** from up to eight layered noise generators (Perlin fBm, ridged, billow; add,
+  multiply, max, min), optionally blended with a loaded **seed image**, plus island falloff and
+  shaping.
+- **Iterative water-shedding**: droplet erosion, then drainage routing and flow accumulation into
+  rivers. Depressions either fill as lakes or are breached, and deep breaches become tunnels. Each
+  pass carves the rivers it found, deepening established channels.
+- **Wave function collapse**: generates tiles constrained by adjacency rules and by other layers
+  (per-tile height bands, wet/dry/shore water rules, semantic types). It can keep hand-placed tiles
+  and regenerate just a selected region.
+- **Visual WFC rule editor**: tile weights and constraints, and per-direction neighbor toggles over
+  tile thumbnails. Rules can also be learned from an existing tile layer.
+- **Portals** (target level, target portal, exit direction), **markers**, and **path/route graphs**
+  (roads, patrols, rivers, navigation) with one-way edges, costs, node wait times and a shortest-route
+  preview.
+- **Files**: levels, tilesets, WFC rules and path graphs save and load as **JSON** (the human-readable
+  source of truth) or **binary**. `lvl_convert` translates either way.
+- **Exports**: the full map as a PNG at any scale, and a mini-preview PNG (also shown live in a panel).
+- **Parallel load/save** (layers encoded and decoded concurrently) and background generation and
+  export, behind progress dialogs that can cancel.
 
 ## Building
 
@@ -12,8 +52,53 @@ development headers:
 sudo apt-get install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libgl-dev
 ```
 
+Run the editor (optionally with a level file, or `--demo` for a generated example level):
+
+```bash
+bazel run -c opt //editor:lvl -- --demo
+```
+
+Build the browser version into `bazel-bin/editor/web/` (serve it over HTTP and open `lvl.html`; see
+[platform/web/README.md](platform/web/README.md)):
+
+```bash
+bazel build -c opt //editor:web
+```
+
+Convert, inspect or render levels from the command line:
+
+```bash
+bazel run //tools:lvl_convert -- level.json level.lvlb
+```
+
+```bash
+bazel run //tools:lvl_convert -- level.lvlb --png map.png --ppc 16 --season winter
+```
+
+Run every test (the editor's up/down test needs a display, or `xvfb-run`):
+
 ```bash
 bazel test //...
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the project's design tenets and layout.
+## Editor shortcuts
+
+| Key | Action |
+|---|---|
+| `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` | New / open / save / save as |
+| `Ctrl+Z` / `Ctrl+Y` (`Ctrl+Shift+Z`) | Undo / redo |
+| `H` `B` `E` `G` `R` `I` `V` | Pan, paint, erase, fill, rectangle, eyedropper, select |
+| `P` `M` `N` `K` | Portal, marker, path node, path edge |
+| `[` / `]` | Brush radius |
+| `F` | Fit the map |
+| `Delete` | Delete the selected object |
+
+## File formats
+
+A level JSON file holds `settings`, the `semantics`/`materials`/`seasons` catalogs, `tilesets`,
+`wfc` rules, `paths`, `portals`, `markers` and, last, `layers` (one per line). Catalog entries,
+seasons and tilesets are referenced **by name**, so standalone tileset/WFC/path files move between
+levels. Tile cells are `-1` (empty) or `tileset * 65536 + tile`. Binary files (`.lvlb`/`.bin`) carry
+the same data, checksummed per layer.
+
+See [CLAUDE.md](CLAUDE.md) for the design tenets and code layout.
