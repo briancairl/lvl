@@ -1,5 +1,7 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel:copts.bzl", "LVL_COPTS")
 
 package(default_visibility = ["//visibility:public"])
@@ -35,6 +37,69 @@ cc_library(
     ],
 )
 
+# The editor UI (Dear ImGui on GLFW + OpenGL3 / WebGL2).
+cc_library(
+    name = "editor",
+    srcs = [
+        "src/app.cpp",
+        "src/generate.cpp",
+        "src/internal.hpp",
+        "src/panels.cpp",
+        "src/platform.cpp",
+        "src/viewport.cpp",
+        "src/web.cpp",
+    ],
+    hdrs = [
+        "include/lvl/editor/app.hpp",
+        "include/lvl/editor/platform.hpp",
+        "include/lvl/editor/web.hpp",
+    ],
+    copts = LVL_COPTS,
+    strip_include_prefix = "include",
+    deps = [
+        ":jobs",
+        ":undo",
+        "//core:json",
+        "//core:logging",
+        "//core:types",
+        "//level:io",
+        "//level:model",
+        "//procgen",
+        "//render",
+        "@imgui",
+        "@imgui//:backend_glfw_opengl3",
+    ],
+)
+
+cc_binary(
+    name = "lvl",
+    srcs = ["main.cpp"],
+    copts = LVL_COPTS,
+    linkopts = select({
+        "@platforms//os:emscripten": [
+            "--oformat=html",
+            "--shell-file=$(location //platform/web:shell.html)",
+            "-sALLOW_MEMORY_GROWTH=1",
+            "-sMAXIMUM_MEMORY=4GB",
+            "-sINITIAL_MEMORY=64MB",
+            "-sSTACK_SIZE=4MB",
+            "-sEXPORTED_RUNTIME_METHODS=FS",
+            "-sFORCE_FILESYSTEM=1",
+        ],
+        "//conditions:default": [],
+    }),
+    additional_linker_inputs = select({
+        "@platforms//os:emscripten": ["//platform/web:shell.html"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        ":editor",
+        "//core:build",
+        "//core:logging",
+    ],
+)
+
+
 cc_test(
     name = "undo_test",
     size = "small",
@@ -44,4 +109,15 @@ cc_test(
         ":undo",
         "@googletest//:gtest_main",
     ],
+)
+
+# Boots the editor (under a virtual X server if there is no display), builds the demo level
+# (heightmap + WFC + atlas reload job) and exits after a few hundred frames.
+sh_test(
+    name = "up_down_test",
+    size = "medium",
+    srcs = ["test/up_down_test.sh"],
+    args = ["$(rootpath :lvl)"],
+    data = [":lvl"],
+    tags = ["display"],
 )

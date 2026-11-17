@@ -20,6 +20,7 @@ cc_library(
         "imstb_textedit.h",
         "imstb_truetype.h",
     ],
+    copts = ["-w"],
     includes = ["."],
 )
 
@@ -27,6 +28,7 @@ cc_library(
 cc_library(
     name = "stdlib",
     srcs = ["misc/cpp/imgui_stdlib.cpp"],
+    copts = ["-w"],
     hdrs = ["misc/cpp/imgui_stdlib.h"],
     strip_include_prefix = "misc/cpp",
     deps = [":imgui"],
@@ -45,7 +47,8 @@ cc_library(
         "backends/imgui_impl_opengl3.h",
         "backends/imgui_impl_opengl3_loader.h",
     ],
-    strip_include_prefix = "backends",
+    copts = ["-w"],
+    includes = ["backends"],
     linkopts = select({
         "@platforms//os:emscripten": [
             "-sUSE_GLFW=3",

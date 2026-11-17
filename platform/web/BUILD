@@ -4,6 +4,9 @@ load("//bazel:copts.bzl", "LVL_COPTS")
 
 package(default_visibility = ["//visibility:public"])
 
+# Page template the web build's loader is injected into (emcc --shell-file).
+exports_files(["shell.html"])
+
 cc_binary(
     name = "hello",
     srcs = ["hello.cpp"],

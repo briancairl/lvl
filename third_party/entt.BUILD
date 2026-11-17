@@ -4,6 +4,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 cc_library(
     name = "entt",
     hdrs = ["single_include/entt/entt.hpp"],
-    strip_include_prefix = "single_include",
+    # -isystem: EnTT's own warnings are not ours to fix
+    includes = ["single_include"],
     visibility = ["//visibility:public"],
 )
