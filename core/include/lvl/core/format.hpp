@@ -32,9 +32,18 @@ template <std::size_t BufferLen = 256UL, typename... FormatArgTs>
 const char* format(const char* fmt_str, FormatArgTs&&... fmt_args)
 {
   thread_local static char STATIC__fmt_buffer[BufferLen];
-  if (const int formatted_len =
-        std::snprintf(STATIC__fmt_buffer, sizeof(STATIC__fmt_buffer), fmt_str, std::forward<FormatArgTs>(fmt_args)...);
-      formatted_len >= 0 and static_cast<std::size_t>(formatted_len) < BufferLen)
+  int formatted_len = 0;
+  if constexpr (sizeof...(FormatArgTs) == 0)
+  {
+    // No arguments: copy verbatim (a '%' in the text is not a format directive)
+    formatted_len = std::snprintf(STATIC__fmt_buffer, sizeof(STATIC__fmt_buffer), "%s", fmt_str);
+  }
+  else
+  {
+    formatted_len =
+      std::snprintf(STATIC__fmt_buffer, sizeof(STATIC__fmt_buffer), fmt_str, std::forward<FormatArgTs>(fmt_args)...);
+  }
+  if (formatted_len >= 0 and static_cast<std::size_t>(formatted_len) < BufferLen)
   {
     return STATIC__fmt_buffer;
   }

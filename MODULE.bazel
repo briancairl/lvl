@@ -8,6 +8,19 @@ bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "nlohmann_json", version = "3.12.0.bcr.2")
+
+# Make nlohmann's parser/serializer working buffers and its value-destruction stack use the JSON
+# type's own allocator (instead of always std::allocator), so a lvl::Json allocates only from the
+# JSON arena. The first patch is the one briancairl/gft uses.
+single_version_override(
+    module_name = "nlohmann_json",
+    patch_strip = 1,
+    patches = [
+        "//third_party/patches:nlohmann_arena_allocator.patch",
+        "//third_party/patches:nlohmann_destroy_stack_allocator.patch",
+    ],
+    version = "3.12.0.bcr.2",
+)
 bazel_dep(name = "googletest", version = "1.17.0.bcr.2", dev_dependency = True)
 
 # WebAssembly build (//editor:web): the Emscripten toolchain + wasm_cc_binary.

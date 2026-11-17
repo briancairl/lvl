@@ -1,0 +1,12 @@
+--- a/include/nlohmann/json.hpp
++++ b/include/nlohmann/json.hpp
+@@ -569,7 +569,8 @@
+             if (t == value_t::array || t == value_t::object)
+             {
+                 // flatten the current json_value to a heap-allocated stack
+-                std::vector<basic_json> stack;
++                // lvl patch: the destruction stack uses the JSON type's allocator (see json_rebound_allocator_t)
++                std::vector<basic_json, detail::json_rebound_allocator_t<basic_json, basic_json>> stack;
+ 
+                 // move the top-level items to stack
+                 if (t == value_t::array)

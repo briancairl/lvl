@@ -1,0 +1,95 @@
+diff --git a/include/nlohmann/detail/input/json_sax.hpp b/include/nlohmann/detail/input/json_sax.hpp
+index 0ff8778..cdbf81a 100644
+--- a/include/nlohmann/detail/input/json_sax.hpp
++++ b/include/nlohmann/detail/input/json_sax.hpp
+@@ -458,7 +458,7 @@ class json_sax_dom_parser
+     /// the parsed JSON value
+     BasicJsonType& root;
+     /// stack to model hierarchy of values
+-    std::vector<BasicJsonType*> ref_stack {};
++    std::vector<BasicJsonType*, json_rebound_allocator_t<BasicJsonType, BasicJsonType*>> ref_stack {};
+     /// helper to hold the reference for the next object element
+     BasicJsonType* object_element = nullptr;
+     /// whether a syntax error occurred
+@@ -887,11 +887,11 @@ class json_sax_dom_callback_parser
+     /// the parsed JSON value
+     BasicJsonType& root;
+     /// stack to model hierarchy of values
+-    std::vector<BasicJsonType*> ref_stack {};
++    std::vector<BasicJsonType*, json_rebound_allocator_t<BasicJsonType, BasicJsonType*>> ref_stack {};
+     /// stack to manage which values to keep
+-    std::vector<bool> keep_stack {}; // NOLINT(readability-redundant-member-init)
++    std::vector<bool, json_rebound_allocator_t<BasicJsonType, bool>> keep_stack {}; // NOLINT(readability-redundant-member-init)
+     /// stack to manage which object keys to keep
+-    std::vector<bool> key_keep_stack {}; // NOLINT(readability-redundant-member-init)
++    std::vector<bool, json_rebound_allocator_t<BasicJsonType, bool>> key_keep_stack {}; // NOLINT(readability-redundant-member-init)
+     /// helper to hold the reference for the next object element
+     BasicJsonType* object_element = nullptr;
+     /// whether a syntax error occurred
+diff --git a/include/nlohmann/detail/input/lexer.hpp b/include/nlohmann/detail/input/lexer.hpp
+index 2b4e80a..dc8eb93 100644
+--- a/include/nlohmann/detail/input/lexer.hpp
++++ b/include/nlohmann/detail/input/lexer.hpp
+@@ -1620,7 +1620,7 @@ scan_number_done:
+     position_t position {};
+ 
+     /// raw input token string (for error messages)
+-    std::vector<char_type> token_string {};
++    std::vector<char_type, json_rebound_allocator_t<BasicJsonType, char_type>> token_string {};
+ 
+     /// buffer for variable-length tokens (numbers, strings)
+     string_t token_buffer {};
+diff --git a/include/nlohmann/detail/input/parser.hpp b/include/nlohmann/detail/input/parser.hpp
+index b5a5a52..74a820c 100644
+--- a/include/nlohmann/detail/input/parser.hpp
++++ b/include/nlohmann/detail/input/parser.hpp
+@@ -181,7 +181,7 @@ class parser
+     {
+         // stack to remember the hierarchy of structured values we are parsing
+         // true = array; false = object
+-        std::vector<bool> states;
++        std::vector<bool, json_rebound_allocator_t<BasicJsonType, bool>> states;
+         // value to avoid a goto (see comment where set to true)
+         bool skip_to_state_evaluation = false;
+ 
+diff --git a/include/nlohmann/detail/meta/type_traits.hpp b/include/nlohmann/detail/meta/type_traits.hpp
+index d834a0d..1aca427 100644
+--- a/include/nlohmann/detail/meta/type_traits.hpp
++++ b/include/nlohmann/detail/meta/type_traits.hpp
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include <limits> // numeric_limits
++#include <memory> // allocator_traits (GFT patch)
+ #include <string> // char_traits
+ #include <tuple> // tuple
+ #include <type_traits> // false_type, is_constructible, is_integral, is_same, true_type
+@@ -47,6 +48,14 @@ namespace detail
+ // In this case, T has to be properly CV-qualified to constraint the function arguments
+ // (e.g. to_json(BasicJsonType&, const T&))
+ 
++// GFT patch: the parser/serializer's own working buffers use the JSON type's allocator (rebound to
++// their element type) instead of always std::allocator, so a basic_json with a custom AllocatorType
++// (e.g. an arena) does no other heap allocation while parsing or dumping. Identical for the default
++// std::allocator.
++template<typename BasicJsonType, typename T>
++using json_rebound_allocator_t =
++    typename std::allocator_traits<typename BasicJsonType::allocator_type>::template rebind_alloc<T>;
++
+ template<typename> struct is_basic_json : std::false_type {};
+ 
+ NLOHMANN_BASIC_JSON_TPL_DECLARATION
+diff --git a/include/nlohmann/detail/output/output_adapters.hpp b/include/nlohmann/detail/output/output_adapters.hpp
+index 6080697..4091faa 100644
+--- a/include/nlohmann/detail/output/output_adapters.hpp
++++ b/include/nlohmann/detail/output/output_adapters.hpp
+@@ -132,7 +132,8 @@ class output_adapter
+ #endif  // JSON_NO_IO
+ 
+     output_adapter(StringType& s)
+-        : oa(std::make_shared<output_string_adapter<CharType, StringType>>(s)) {}
++        // GFT patch: allocate the adapter with the string's own allocator (see json_rebound_allocator_t).
++        : oa(std::allocate_shared<output_string_adapter<CharType, StringType>>(s.get_allocator(), s)) {}
+ 
+     operator output_adapter_t<CharType>()
+     {
