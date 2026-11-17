@@ -1,26 +1,7 @@
-load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
-load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
-load("//bazel:copts.bzl", "LVL_COPTS")
+# WebAssembly (Emscripten) support for the editor (//editor:web).
 
 package(default_visibility = ["//visibility:public"])
 
-# Page template the web build's loader is injected into (emcc --shell-file).
+# Page template the web build's loader is injected into (emcc --shell-file). URL parameters
+# `?arg=...` are passed to main() (e.g. lvl.html?arg=--demo).
 exports_files(["shell.html"])
-
-cc_binary(
-    name = "hello",
-    srcs = ["hello.cpp"],
-    copts = LVL_COPTS,
-    deps = ["//core:build"],
-)
-
-# `bazel build //platform/web:hello_web` -- toolchain smoke test (run with node).
-wasm_cc_binary(
-    name = "hello_web",
-    cc_target = ":hello",
-    outputs = [
-        "hello_web/hello.js",
-        "hello_web/hello.wasm",
-    ],
-    tags = ["manual"],
-)

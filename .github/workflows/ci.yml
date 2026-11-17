@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   # Native build of everything plus every test, under each sanitizer config. Tests tagged "display"
-  # (the editor's headless up/down test) need the X server + mesa installed below.
+  # (the editor's headless up/down test, //editor:up_down_test) run under the Xvfb installed below.
   native:
     name: Native build & test (${{ matrix.config }})
     runs-on: ubuntu-24.04
@@ -66,9 +66,10 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format
           git ls-files '*.hpp' '*.cpp' '*.h' | xargs clang-format --style=file --dry-run --Werror
 
-  # WebAssembly build (Emscripten toolchain from Bazel's emsdk module).
+  # WebAssembly build of the editor (Emscripten toolchain from Bazel's emsdk module), smoke-tested in
+  # headless Chromium; the build is uploaded as an artifact, ready to serve.
   web:
-    name: Web build
+    name: Web build & browser test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -80,10 +81,34 @@ jobs:
           repository-cache: true
 
       - name: Build
-        run: bazel build --config=ci //platform/web:hello_web
+        run: bazel build --config=ci //editor:web
 
-      - name: Run toolchain smoke test
-        run: node bazel-bin/platform/web/hello_web/hello.js
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright + Chromium
+        working-directory: platform/web
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: |
+          mkdir -p web-build
+          cp bazel-bin/editor/web/lvl.* web-build/
+          node platform/web/smoke_test.mjs web-build web-screenshot.png
+
+      - name: Upload web build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: |
+            web-build/
+            web-screenshot.png
+          if-no-files-found: ignore
+          retention-days: 14
 
   # Single stable check name to mark as required in branch protection, so adding/removing matrix
   # entries above doesn't require touching the repository settings.

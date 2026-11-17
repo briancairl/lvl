@@ -1,3 +1,4 @@
+load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
@@ -99,6 +100,17 @@ cc_binary(
     ],
 )
 
+# `bazel build //editor:web` -> bazel-bin/editor/web/lvl.{html,js,wasm}
+wasm_cc_binary(
+    name = "web",
+    cc_target = ":lvl",
+    outputs = [
+        "web/lvl.html",
+        "web/lvl.js",
+        "web/lvl.wasm",
+    ],
+    tags = ["manual"],
+)
 
 cc_test(
     name = "undo_test",
