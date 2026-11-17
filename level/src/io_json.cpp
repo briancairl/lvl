@@ -718,7 +718,7 @@ void encode_layer(const Layer& layer, IoWorker& worker, CharVector& out)
       [&](const ScalarGrid& g) {
         for (std::size_t i = 0; i < g.values.size(); ++i)
         {
-          emit(i, std::snprintf(number, sizeof(number), "%.9g", static_cast<double>(g.values[i])));
+          emit(i, json::shortest(g.values[i], number, sizeof(number)));
         }
       },
       [&](const MaskGrid& g) {

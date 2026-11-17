@@ -7,6 +7,7 @@
 // C++ Standard Library
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 // LVL
@@ -105,6 +106,27 @@ Status parse(std::string_view text, Json& out)
 }
 
 JsonString dump(const Json& j, int indent) { return j.dump(indent); }
+
+int shortest(float v, char* buffer, std::size_t size)
+{
+  int n = 0;
+  for (int precision = 6; precision <= 9; ++precision)
+  {
+    n = std::snprintf(buffer, size, "%.*g", precision, static_cast<double>(v));
+    if (std::strtof(buffer, nullptr) == v)
+    {
+      break;
+    }
+  }
+  return n;
+}
+
+double to_double(float v)
+{
+  char buffer[32];
+  shortest(v, buffer, sizeof(buffer));
+  return std::strtod(buffer, nullptr);
+}
 
 namespace detail
 {

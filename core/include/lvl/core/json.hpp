@@ -250,6 +250,17 @@ private:
 /// Writes <code>value</code> into <code>j</code> (supports the same types as Reader)
 template <typename T> void write(Json& j, const T& value);
 
+/**
+ * @brief Shortest decimal text (at most 9 significant digits) that reads back as exactly <code>v</code>
+ *
+ * Writes into <code>buffer</code> and returns the length. Used so floats serialize as "0.1", not as
+ * the double nearest the float ("0.10000000149011612").
+ */
+int shortest(float v, char* buffer, std::size_t size);
+
+/// <code>v</code> as the double with the same shortest decimal representation
+double to_double(float v);
+
 /// Writes <code>value</code> as member <code>key</code> of object <code>j</code>
 template <typename T> void write(Json& j, std::string_view key, const T& value)
 {
@@ -389,7 +400,11 @@ template <typename T> bool Reader::convert_impl(const Json& j, T& value, [[maybe
 
 template <typename T> void write(Json& j, const T& value)
 {
-  if constexpr (std::is_same_v<T, bool> or std::is_arithmetic_v<T>)
+  if constexpr (std::is_same_v<T, float>)
+  {
+    j = to_double(value);
+  }
+  else if constexpr (std::is_same_v<T, bool> or std::is_arithmetic_v<T>)
   {
     j = value;
   }
