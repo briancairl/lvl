@@ -47,3 +47,20 @@ cc_test(
     copts = LVL_COPTS,
     deps = [":logging", ":types", "@googletest//:gtest_main"],
 )
+
+cc_library(
+    name = "memory",
+    srcs = ["src/memory.cpp"],
+    hdrs = ["include/lvl/core/memory.hpp"],
+    copts = LVL_COPTS,
+    strip_include_prefix = "include",
+    deps = [":logging"],
+)
+
+cc_test(
+    name = "memory_test",
+    size = "small",
+    srcs = ["test/memory_test.cpp"],
+    copts = LVL_COPTS,
+    deps = [":memory", "@googletest//:gtest_main"],
+)
