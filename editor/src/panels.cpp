@@ -984,18 +984,19 @@ void log_panel(App& app)
   ImGui::Checkbox("Follow", &follow);
   ImGui::BeginChild("lines", ImVec2{0, 0}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
   visitLogHistory([](const LogHistoryLine& line) {
-    ImVec4 color{0.85F, 0.85F, 0.85F, 1.0F};
+    // Info/debug follow the style's text colors, so the log reads in light and dark styles alike
+    ImVec4 color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
     switch (line.severity)
     {
     case LogSeverity::kDebug:
-      color = ImVec4{0.55F, 0.55F, 0.6F, 1.0F};
+      color = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
       break;
     case LogSeverity::kWarn:
-      color = ImVec4{1.0F, 0.8F, 0.3F, 1.0F};
+      color = ImVec4{0.9F, 0.6F, 0.1F, 1.0F};
       break;
     case LogSeverity::kError:
     case LogSeverity::kFatal:
-      color = ImVec4{1.0F, 0.45F, 0.4F, 1.0F};
+      color = ImVec4{0.9F, 0.3F, 0.25F, 1.0F};
       break;
     default:
       break;
@@ -1014,6 +1015,62 @@ void log_panel(App& app)
     ImGui::SetScrollHereY(1.0F);
     seen = getLogHistorySequence();
   }
+  ImGui::EndChild();
+  ImGui::End();
+}
+
+// -------------------------------------------------------------------------------------------------
+// UI style
+// -------------------------------------------------------------------------------------------------
+
+void style_panel(App& app)
+{
+  if (!ImGui::Begin("Style", &app.panels.style))
+  {
+    ImGui::End();
+    return;
+  }
+  static style::Preset preset = style::Preset::kLvl;
+  ImGui::SetNextItemWidth(120.0F);
+  enum_combo("##preset", preset);
+  ImGui::SameLine();
+  if (ImGui::Button("Apply preset"))
+  {
+    style::apply(preset, app.style_reference);
+    style::activate(app.style_reference);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Revert"))
+  {
+    style::activate(app.style_reference);
+  }
+  ImGui::SetNextItemWidth(120.0F);
+  ImGui::SliderFloat("Font scale", &ImGui::GetIO().FontGlobalScale, 0.5F, 2.5F, "%.2f");
+
+  if (ImGui::Button("Save as default"))
+  {
+    file_action(app, FileAction::kSaveStyle, style::default_path());
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Load default"))
+  {
+    file_action(app, FileAction::kLoadStyle, style::default_path());
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Save..."))
+  {
+    open_file_dialog(app, FileAction::kSaveStyle);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Load..."))
+  {
+    open_file_dialog(app, FileAction::kLoadStyle);
+  }
+  ImGui::TextDisabled("Default profile: %s (loaded at startup)", style::default_path());
+  ImGui::Separator();
+  // Dear ImGui's own style editor; its "Revert Ref" restores the reference above
+  ImGui::BeginChild("editor");
+  ImGui::ShowStyleEditor(&app.style_reference.style);
   ImGui::EndChild();
   ImGui::End();
 }

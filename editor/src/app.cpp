@@ -590,6 +590,7 @@ void main_menu(App& app)
       ImGui::MenuItem("Objects & paths", nullptr, &app.panels.objects);
       ImGui::MenuItem("Mini-preview", nullptr, &app.panels.minimap);
       ImGui::MenuItem("Log", nullptr, &app.panels.log);
+      ImGui::MenuItem("Style editor", nullptr, &app.panels.style);
       ImGui::MenuItem("ImGui demo", nullptr, &app.panels.demo);
       ImGui::EndMenu();
     }
@@ -693,6 +694,25 @@ void smoke(App& app)
   case 12:
     file_action(app, FileAction::kSavePaths, "smoke.paths.lvlb");
     break;
+  case 13:
+    // Style profile round trip: save a modified light style, reset, load it back
+    app.panels.style = true;
+    {
+      style::Profile light;
+      style::apply(style::Preset::kLight, light);
+      light.style.FrameRounding = 5.0F;
+      style::activate(light);
+    }
+    file_action(app, FileAction::kSaveStyle, "smoke.style.json");
+    style::activate(app.style_reference);
+    style::apply(style::Preset::kDark, app.style_reference);
+    style::activate(app.style_reference);
+    file_action(app, FileAction::kLoadStyle, "smoke.style.json");
+    if (ImGui::GetStyle().FrameRounding != 5.0F)
+    {
+      report(app, Status::error("style profile did not round-trip"));
+    }
+    break;
   default:
     LVL_LOG_INFO() << "Smoke test complete";
     app.smoke = false;
@@ -721,6 +741,7 @@ void dock_layout(ImGuiID dockspace)
   ImGui::DockBuilderDockWindow("Tile metadata", right_bottom);
   ImGui::DockBuilderDockWindow("Catalogs & seasons", right_bottom);
   ImGui::DockBuilderDockWindow("Generate", right_bottom);
+  ImGui::DockBuilderDockWindow("Style", right_bottom);
   ImGui::DockBuilderDockWindow("Log", bottom);
   ImGui::DockBuilderFinish(dockspace);
 }
@@ -812,6 +833,20 @@ Status initialize(App& app, const MemoryConfig& config, const char* path)
     .amplitude = 0.35F,
     .octaves = 4};
   app.export_options.objects = false;
+  // UI style: lvl's preset, overridden by the user's default profile if there is one
+  style::apply(style::Preset::kLvl, app.style_reference);
+  if (file::exists(style::default_path()))
+  {
+    if (const Status s = style::load_file(style::default_path(), app.style_reference); !s.ok)
+    {
+      LVL_LOG_WARN() << "Ignoring default style: " << s.message;
+    }
+    else
+    {
+      LVL_LOG_INFO() << "Loaded style '" << style::default_path() << "'";
+    }
+  }
+  style::activate(app.style_reference);
   new_level(app, level::Settings{});
   if constexpr (web::kAvailable)
   {
@@ -903,6 +938,10 @@ void frame(App& app)
   {
     log_panel(app);
   }
+  if (app.panels.style)
+  {
+    style_panel(app);
+  }
   if (app.panels.demo)
   {
     ImGui::ShowDemoWindow(&app.panels.demo);
@@ -971,6 +1010,10 @@ void open_file_dialog(App& app, FileAction action)
   case FileAction::kExportMinimap:
     app.dialog.extension = ".png";
     app.dialog.name.assign(format<128>("%s.preview.png", app.level->settings.name.c_str()));
+    break;
+  case FileAction::kSaveStyle:
+    app.dialog.extension = ".json";
+    app.dialog.name.assign("style.json");
     break;
   default:
     app.dialog.extension.clear();
@@ -1096,6 +1139,33 @@ void file_action(App& app, FileAction action, const char* path)
       job->max_size = app.minimap_size;
       job->path.assign(path);
       start_job(app);
+    }
+    break;
+  case FileAction::kSaveStyle:
+    if (const Status s = style::save_file(path, style::current()); s.ok)
+    {
+      app.style_reference = style::current();
+      LVL_LOG_INFO() << "Saved style '" << path << "'";
+      web::offer_download(path);
+    }
+    else
+    {
+      report(app, s);
+    }
+    break;
+  case FileAction::kLoadStyle:
+    if (style::Profile profile = style::current(); true)
+    {
+      if (const Status s = style::load_file(path, profile); s.ok)
+      {
+        style::activate(profile);
+        app.style_reference = profile;
+        LVL_LOG_INFO() << "Loaded style '" << path << "'";
+      }
+      else
+      {
+        report(app, s);
+      }
     }
     break;
   }

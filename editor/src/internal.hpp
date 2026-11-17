@@ -72,6 +72,7 @@ void generate_panel(App& app);
 void minimap_panel(App& app);
 void log_panel(App& app);
 void file_dialog(App& app);
+void style_panel(App& app);
 
 /// Generators (as the Generate panel's buttons): start their background jobs with the current settings
 void start_heightmap(App& app);

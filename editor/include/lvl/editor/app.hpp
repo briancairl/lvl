@@ -24,6 +24,7 @@
 #include "lvl/core/memory.hpp"
 #include "lvl/editor/jobs.hpp"
 #include "lvl/editor/platform.hpp"
+#include "lvl/editor/style.hpp"
 #include "lvl/editor/undo.hpp"
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/noise.hpp"
@@ -183,6 +184,7 @@ struct Panels
   bool objects = true;
   bool minimap = true;
   bool log = true;
+  bool style = false;
   bool demo = false;
 };
 
@@ -202,6 +204,8 @@ enum class FileAction : std::uint8_t
   kSavePaths,
   kExportPng,
   kExportMinimap,
+  kSaveStyle,
+  kLoadStyle,
 };
 
 struct FileDialog
@@ -260,6 +264,8 @@ struct App
   bool minimap_dirty = true;
 
   Panels panels;
+  /// The style as last loaded/saved/applied from a preset ("Revert" in the style editor)
+  style::Profile style_reference;
   FileDialog dialog;
   JobSlot job;
   JobMemory job_memory;

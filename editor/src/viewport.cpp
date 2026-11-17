@@ -1061,14 +1061,13 @@ void viewport_window(App& app)
   if (app.layer < app.level->layers.size())
   {
     const Layer& layer = app.level->layers[app.layer];
-    ImGui::Text(
-      "(%d, %d)  %s  |  layer '%s' (%s)%s",
-      cell.x,
-      cell.y,
-      hovered ? describe(app, cell) : "",
-      layer.name.c_str(),
-      enum_name(layer.kind).data(),
-      layer.locked ? " [locked]" : "");
+    // Cursor cell only while the mouse is over the canvas (elsewhere its position may be undefined)
+    if (hovered)
+    {
+      ImGui::Text("(%d, %d)  %s  |", cell.x, cell.y, describe(app, cell));
+      ImGui::SameLine();
+    }
+    ImGui::Text("layer '%s' (%s)%s", layer.name.c_str(), enum_name(layer.kind).data(), layer.locked ? " [locked]" : "");
   }
   ImGui::End();
 }
