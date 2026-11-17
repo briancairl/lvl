@@ -10,10 +10,40 @@ cc_library(
     strip_include_prefix = "include",
 )
 
+cc_library(
+    name = "types",
+    hdrs = [
+        "include/lvl/core/fixed_string.hpp",
+        "include/lvl/core/visitor.hpp",
+    ],
+    strip_include_prefix = "include",
+)
+
+cc_library(
+    name = "logging",
+    srcs = ["src/logging.cpp"],
+    hdrs = [
+        "include/lvl/core/format.hpp",
+        "include/lvl/core/logging.hpp",
+        "include/lvl/core/status.hpp",
+    ],
+    copts = LVL_COPTS,
+    strip_include_prefix = "include",
+    deps = [":types"],
+)
+
 cc_test(
     name = "build_test",
     size = "small",
     srcs = ["test/build_test.cpp"],
     copts = LVL_COPTS,
     deps = [":build", "@googletest//:gtest_main"],
+)
+
+cc_test(
+    name = "logging_test",
+    size = "small",
+    srcs = ["test/logging_test.cpp"],
+    copts = LVL_COPTS,
+    deps = [":logging", ":types", "@googletest//:gtest_main"],
 )
