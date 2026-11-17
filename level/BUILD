@@ -36,6 +36,29 @@ cc_library(
     ],
 )
 
+# Level/tileset/WFC/path files, JSON and binary, with parallel layer encode/decode.
+cc_library(
+    name = "io",
+    srcs = [
+        "src/io.cpp",
+        "src/io_binary.cpp",
+        "src/io_common.hpp",
+        "src/io_json.cpp",
+    ],
+    hdrs = ["include/lvl/level/io.hpp"],
+    copts = LVL_COPTS,
+    strip_include_prefix = "include",
+    deps = [
+        ":model",
+        "//core:binary",
+        "//core:build",
+        "//core:file",
+        "//core:jobs",
+        "//core:json",
+        "//core:types",
+    ],
+)
+
 cc_test(
     name = "model_test",
     size = "small",
@@ -43,6 +66,19 @@ cc_test(
     copts = LVL_COPTS,
     deps = [
         ":model",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "io_test",
+    size = "small",
+    srcs = ["test/io_test.cpp"],
+    copts = LVL_COPTS,
+    deps = [
+        ":io",
+        ":model",
+        "//core:file",
         "@googletest//:gtest_main",
     ],
 )

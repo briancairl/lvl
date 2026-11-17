@@ -37,6 +37,9 @@ struct Settings
   std::uint64_t seed = 1;
 };
 
+bool load(json::Reader& r, const Json& j, Settings& s);
+void save(Json& j, const Settings& s);
+
 struct Level
 {
   explicit Level(memory::Arena& arena);

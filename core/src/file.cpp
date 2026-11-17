@@ -67,27 +67,60 @@ Status read(const char* path, memory::Arena& arena, char*& data, std::size_t& si
 
 Status write(const char* path, const void* data, std::size_t size)
 {
-  Path tmp;
-  if (!tmp.assign(format<Path::capacity()>("%s.tmp", path)))
+  Writer writer;
+  LVL_RETURN_IF_ERROR(writer.open(path));
+  writer.write(data, size);
+  return writer.commit();
+}
+
+Writer::~Writer()
+{
+  if (file_ != nullptr)
+  {
+    std::fclose(file_);
+    std::remove(tmp_.c_str());
+  }
+}
+
+Status Writer::open(const char* path)
+{
+  LVL_ASSERT_NULL(file_) << "file::Writer opened twice";
+  if (!path_.assign(path) or !tmp_.assign(format<Path::capacity()>("%s.tmp", path)))
   {
     return Status::error("path too long: '%s'", path);
   }
-  std::FILE* const f = std::fopen(tmp.c_str(), "wb");
-  if (f == nullptr)
+  file_ = std::fopen(tmp_.c_str(), "wb");
+  if (file_ == nullptr)
   {
-    return Status::error("cannot open '%s' for writing: %s", tmp.c_str(), std::strerror(errno));
+    return Status::error("cannot open '%s' for writing: %s", tmp_.c_str(), std::strerror(errno));
   }
-  const std::size_t written = (size == 0) ? 0 : std::fwrite(data, 1, size, f);
-  const bool closed = (std::fclose(f) == 0);
-  if (written != size or !closed)
+  failed_ = false;
+  return Status::okay();
+}
+
+void Writer::write(const void* data, std::size_t size)
+{
+  LVL_ASSERT_NON_NULL(file_) << "file::Writer not open";
+  if (size > 0 and !failed_)
   {
-    std::remove(tmp.c_str());
-    return Status::error("failed to write '%s'", path);
+    failed_ = (std::fwrite(data, 1, size, file_) != size);
   }
-  if (std::rename(tmp.c_str(), path) != 0)
+}
+
+Status Writer::commit()
+{
+  LVL_ASSERT_NON_NULL(file_) << "file::Writer not open";
+  const bool closed = (std::fclose(file_) == 0);
+  file_ = nullptr;
+  if (failed_ or !closed)
   {
-    std::remove(tmp.c_str());
-    return Status::error("cannot replace '%s': %s", path, std::strerror(errno));
+    std::remove(tmp_.c_str());
+    return Status::error("failed to write '%s'", path_.c_str());
+  }
+  if (std::rename(tmp_.c_str(), path_.c_str()) != 0)
+  {
+    std::remove(tmp_.c_str());
+    return Status::error("cannot replace '%s': %s", path_.c_str(), std::strerror(errno));
   }
   return Status::okay();
 }
