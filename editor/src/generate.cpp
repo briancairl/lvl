@@ -404,6 +404,10 @@ void generate_panel(App& app)
     ImGui::End();
     return;
   }
+  if (skip_while_busy(app))
+  {
+    return;
+  }
   ImGui::BeginDisabled(!std::holds_alternative<std::monostate>(app.job));
   if (ImGui::CollapsingHeader("Heightmap (layered noise / seed image)", ImGuiTreeNodeFlags_DefaultOpen))
   {
@@ -432,6 +436,10 @@ void wfc_editor_panel(App& app)
   if (!ImGui::Begin("WFC rule editor", &app.panels.wfc_editor))
   {
     ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
     return;
   }
   Level& lv = *app.level;

@@ -19,6 +19,22 @@
 namespace lvl::editor
 {
 
+/// True while a background job runs. Jobs read the document without locks, so panels that could
+/// write to it (even unchanged values) must not run their bodies then.
+inline bool busy(const App& app) { return !std::holds_alternative<std::monostate>(app.job); }
+
+/// Ends a panel early while busy (keeps its window, so the dock layout doesn't change); returns true if so
+inline bool skip_while_busy(const App& app)
+{
+  if (!busy(app))
+  {
+    return false;
+  }
+  ImGui::TextDisabled("Working...");
+  ImGui::End();
+  return true;
+}
+
 /// The job memory of the running job (valid while a job runs)
 JobMemory& job_memory(App& app);
 

@@ -125,6 +125,10 @@ void layers_panel(App& app)
     ImGui::End();
     return;
   }
+  if (skip_while_busy(app))
+  {
+    return;
+  }
   Level& lv = *app.level;
   if (ImGui::Button("Add"))
   {
@@ -273,6 +277,10 @@ void tilesets_panel(App& app)
   if (!ImGui::Begin("Tilesets", &app.panels.tilesets))
   {
     ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
     return;
   }
   Level& lv = *app.level;
@@ -477,6 +485,10 @@ void tile_meta_panel(App& app)
     ImGui::End();
     return;
   }
+  if (skip_while_busy(app))
+  {
+    return;
+  }
   Level& lv = *app.level;
   if (app.tileset >= lv.tilesets.size() or lv.tilesets[app.tileset].tiles.empty())
   {
@@ -589,6 +601,10 @@ void catalogs_panel(App& app)
   if (!ImGui::Begin("Catalogs & seasons", &app.panels.catalogs))
   {
     ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
     return;
   }
   Level& lv = *app.level;
@@ -712,6 +728,10 @@ void objects_panel(App& app)
   if (!ImGui::Begin("Objects & paths", &app.panels.objects))
   {
     ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
     return;
   }
   Level& lv = *app.level;

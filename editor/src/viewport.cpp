@@ -1016,7 +1016,7 @@ void viewport_window(App& app)
     {
       v.fit = true;
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete) and app.level->registry.valid(app.entity))
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete) and !busy(app) and app.level->registry.valid(app.entity))
     {
       if (app.level->registry.all_of<PathNode>(app.entity))
       {
