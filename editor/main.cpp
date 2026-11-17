@@ -5,9 +5,11 @@
  *
  * lvl editor entry point.
  *
- *   lvl [level.json|level.lvlb] [--memory=MiB] [--frames=N] [--hidden] [--demo] [--screenshot=out.png]
+ *   lvl [level.json|level.lvlb] [--memory=MiB] [--frames=N] [--hidden] [--demo] [--smoke]
+ *       [--screenshot=out.png]
  *
- * --frames=N exits after N frames (headless up/down tests); --hidden keeps the window invisible.
+ * --frames=N exits after N frames (headless up/down tests); --hidden keeps the window invisible;
+ * --smoke runs a scripted session (demo level, generators, undo, save/load, exports) and exits.
  */
 
 // C++ Standard Library
@@ -38,6 +40,7 @@ struct Options
   std::size_t frames = 0;
   bool hidden = false;
   bool demo = false;
+  bool smoke = false;
   /// Saves the final frame as PNG before exiting (with --frames)
   const char* screenshot = nullptr;
 };
@@ -63,6 +66,10 @@ Options parse(int argc, char** argv)
     else if (std::strcmp(arg, "--hidden") == 0)
     {
       o.hidden = true;
+    }
+    else if (std::strcmp(arg, "--smoke") == 0)
+    {
+      o.smoke = true;
     }
     else if (std::strcmp(arg, "--demo") == 0)
     {
@@ -98,6 +105,7 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
   app.max_frames = options.frames;
+  app.smoke = options.smoke;
   const lvl::editor::MemoryConfig memory{.total = std::max<std::size_t>(options.memory_mib, 64) << 20};
   if (const auto status = lvl::editor::initialize(app, memory, options.path); !status.ok)
   {

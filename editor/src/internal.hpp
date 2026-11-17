@@ -58,6 +58,11 @@ void minimap_panel(App& app);
 void log_panel(App& app);
 void file_dialog(App& app);
 
+/// Generators (as the Generate panel's buttons): start their background jobs with the current settings
+void start_heightmap(App& app);
+void start_watershed(App& app);
+void start_wfc(App& app, std::size_t target_layer);
+
 /// Draws tile <code>tile</code> of tileset <code>ts</code> as an ImGui image of the given size
 void tile_image(const App& app, level::TileRef tile, float size);
 

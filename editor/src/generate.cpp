@@ -168,14 +168,7 @@ void heightmap_section(App& app)
   seed_input(app);
   if (ImGui::Button("Generate heightmap", ImVec2{-1, 0}))
   {
-    if (auto* job = prepare_job<HeightmapJob>(app); job != nullptr)
-    {
-      job->params = p;
-      job->seed = lv.settings.seed;
-      job->extents = lv.settings.extents;
-      job->seed_image = (p.seed_weight > 0.0F) ? g.seed_image : Path{};
-      start_job(app);
-    }
+    start_heightmap(app);
   }
 }
 
@@ -225,43 +218,7 @@ void watershed_section(App& app)
   seed_input(app);
   if (ImGui::Button("Run water-shedding", ImVec2{-1, 0}))
   {
-    // Make sure the output layers exist before the job copies them
-    if (find_layer(lv, LayerKind::kWater) == lv.layers.size())
-    {
-      add_layer(lv, LayerKind::kWater, "water");
-      app.undo.clear();
-      invalidate_view(app);
-    }
-    if (g.watershed_semantics and find_layer(lv, LayerKind::kSemantic) == lv.layers.size())
-    {
-      add_layer(lv, LayerKind::kSemantic, "semantics");
-      app.undo.clear();
-      invalidate_view(app);
-    }
-    if (auto* job = prepare_job<WatershedJob>(app); job != nullptr)
-    {
-      memory::Arena& arena = job->memory->general;
-      job->params = p;
-      job->seed = lv.settings.seed;
-      const auto& height = plane<ScalarGrid>(lv.layers[g.height_layer]);
-      job->height = ScalarGrid{arena};
-      job->height.extents = height.extents;
-      job->height.values.assign(height.values.begin(), height.values.end());
-      job->water = ScalarGrid{arena};
-      job->water.assign(height.extents, 0.0F);
-      job->semantics = g.watershed_semantics;
-      job->semantic = IdGrid{arena};
-      if (job->semantics)
-      {
-        const auto& sem = plane<IdGrid>(lv.layers[find_layer(lv, LayerKind::kSemantic)]);
-        job->semantic.extents = sem.extents;
-        job->semantic.values.assign(sem.values.begin(), sem.values.end());
-        job->river_id = intern_semantic(lv, "river");
-        job->lake_id = intern_semantic(lv, "lake");
-        job->tunnel_id = intern_semantic(lv, "tunnel");
-      }
-      start_job(app);
-    }
+    start_watershed(app);
   }
 }
 
@@ -319,45 +276,126 @@ void wfc_section(App& app)
   seed_input(app);
   if (ImGui::Button("Generate tiles (WFC)", ImVec2{-1, 0}))
   {
-    if (auto* job = prepare_job<WfcJob>(app); job != nullptr)
-    {
-      job->level = app.level;
-      job->layer = target;
-      const auto& tiles = plane<TileGrid>(lv.layers[target]);
-      job->tiles = TileGrid{job->memory->general};
-      job->tiles.extents = tiles.extents;
-      job->tiles.values.assign(tiles.values.begin(), tiles.values.end());
-      job->params = procgen::WfcParams{
-        .seed = lv.settings.seed,
-        .max_attempts = g.wfc_attempts,
-        .keep_existing = g.wfc_keep_existing,
-        .region = procgen::Region{g.region_x, g.region_y, g.region_w, g.region_h}};
-      procgen::WfcConstraints& c = job->constraints;
-      if (const std::size_t h = find_layer(lv, LayerKind::kHeight); g.wfc_use_height and h < lv.layers.size())
-      {
-        const std::size_t height =
-          (g.height_layer < lv.layers.size() and lv.layers[g.height_layer].kind == LayerKind::kHeight) ? g.height_layer
-                                                                                                       : h;
-        c.height = &plane<ScalarGrid>(lv.layers[height]);
-        // Bands are relative to the layer's preview range (normalized heights)
-        c.height_lo = lv.layers[height].range_min;
-        c.height_hi = lv.layers[height].range_max;
-      }
-      if (const std::size_t w = find_layer(lv, LayerKind::kWater); g.wfc_use_water and w < lv.layers.size())
-      {
-        c.water = &plane<ScalarGrid>(lv.layers[w]);
-        c.water_threshold = g.wfc_water_threshold;
-      }
-      if (const std::size_t s = find_layer(lv, LayerKind::kSemantic); g.wfc_use_semantic and s < lv.layers.size())
-      {
-        c.semantic = &plane<IdGrid>(lv.layers[s]);
-      }
-      start_job(app);
-    }
+    start_wfc(app, target);
   }
 }
 
 }  // namespace
+
+void start_heightmap(App& app)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  const procgen::HeightmapParams& p = g.heightmap;
+  if (g.height_layer >= lv.layers.size() or lv.layers[g.height_layer].kind != LayerKind::kHeight)
+  {
+    report(app, Status::error("no height layer selected"));
+    return;
+  }
+  if (auto* job = prepare_job<HeightmapJob>(app); job != nullptr)
+  {
+    job->params = p;
+    job->seed = lv.settings.seed;
+    job->extents = lv.settings.extents;
+    job->seed_image = (p.seed_weight > 0.0F) ? g.seed_image : Path{};
+    start_job(app);
+  }
+}
+
+void start_watershed(App& app)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  const procgen::WatershedParams& p = g.watershed;
+  if (g.height_layer >= lv.layers.size() or lv.layers[g.height_layer].kind != LayerKind::kHeight)
+  {
+    report(app, Status::error("no height layer selected"));
+    return;
+  }
+  // Make sure the output layers exist before the job copies them
+  if (find_layer(lv, LayerKind::kWater) == lv.layers.size())
+  {
+    add_layer(lv, LayerKind::kWater, "water");
+    app.undo.clear();
+    invalidate_view(app);
+  }
+  if (g.watershed_semantics and find_layer(lv, LayerKind::kSemantic) == lv.layers.size())
+  {
+    add_layer(lv, LayerKind::kSemantic, "semantics");
+    app.undo.clear();
+    invalidate_view(app);
+  }
+  if (auto* job = prepare_job<WatershedJob>(app); job != nullptr)
+  {
+    memory::Arena& arena = job->memory->general;
+    job->params = p;
+    job->seed = lv.settings.seed;
+    const auto& height = plane<ScalarGrid>(lv.layers[g.height_layer]);
+    job->height = ScalarGrid{arena};
+    job->height.extents = height.extents;
+    job->height.values.assign(height.values.begin(), height.values.end());
+    job->water = ScalarGrid{arena};
+    job->water.assign(height.extents, 0.0F);
+    job->semantics = g.watershed_semantics;
+    job->semantic = IdGrid{arena};
+    if (job->semantics)
+    {
+      const auto& sem = plane<IdGrid>(lv.layers[find_layer(lv, LayerKind::kSemantic)]);
+      job->semantic.extents = sem.extents;
+      job->semantic.values.assign(sem.values.begin(), sem.values.end());
+      job->river_id = intern_semantic(lv, "river");
+      job->lake_id = intern_semantic(lv, "lake");
+      job->tunnel_id = intern_semantic(lv, "tunnel");
+    }
+    start_job(app);
+  }
+}
+
+void start_wfc(App& app, std::size_t target)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  if (target >= lv.layers.size() or lv.layers[target].kind != LayerKind::kTiles)
+  {
+    report(app, Status::error("the WFC target must be a tile layer"));
+    return;
+  }
+  if (auto* job = prepare_job<WfcJob>(app); job != nullptr)
+  {
+    job->level = app.level;
+    job->layer = target;
+    const auto& tiles = plane<TileGrid>(lv.layers[target]);
+    job->tiles = TileGrid{job->memory->general};
+    job->tiles.extents = tiles.extents;
+    job->tiles.values.assign(tiles.values.begin(), tiles.values.end());
+    job->params = procgen::WfcParams{
+      .seed = lv.settings.seed,
+      .max_attempts = g.wfc_attempts,
+      .keep_existing = g.wfc_keep_existing,
+      .region = procgen::Region{g.region_x, g.region_y, g.region_w, g.region_h}};
+    procgen::WfcConstraints& c = job->constraints;
+    if (const std::size_t h = find_layer(lv, LayerKind::kHeight); g.wfc_use_height and h < lv.layers.size())
+    {
+      const std::size_t height =
+        (g.height_layer < lv.layers.size() and lv.layers[g.height_layer].kind == LayerKind::kHeight) ? g.height_layer
+                                                                                                     : h;
+      c.height = &plane<ScalarGrid>(lv.layers[height]);
+      // Bands are relative to the layer's preview range (normalized heights)
+      c.height_lo = lv.layers[height].range_min;
+      c.height_hi = lv.layers[height].range_max;
+    }
+    if (const std::size_t w = find_layer(lv, LayerKind::kWater); g.wfc_use_water and w < lv.layers.size())
+    {
+      c.water = &plane<ScalarGrid>(lv.layers[w]);
+      c.water_threshold = g.wfc_water_threshold;
+    }
+    if (const std::size_t s = find_layer(lv, LayerKind::kSemantic); g.wfc_use_semantic and s < lv.layers.size())
+    {
+      c.semantic = &plane<IdGrid>(lv.layers[s]);
+    }
+    start_job(app);
+  }
+}
 
 void generate_panel(App& app)
 {

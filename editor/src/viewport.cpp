@@ -454,15 +454,17 @@ void draw_layers(App& app, const Canvas& cv)
   if (v.grid and cv.scale >= 8.0F)
   {
     const ImU32 grid = IM_COL32(255, 255, 255, 28);
+    // Lines snapped to pixel centers, so they all look alike (no anti-aliasing smear)
+    const auto snap = [](float p) { return std::floor(p) + 0.5F; };
     for (int x = x0; x <= x1; ++x)
     {
       const ImVec2 a = cv.to_screen(v, static_cast<float>(x), static_cast<float>(y0));
-      cv.draw->AddLine(a, ImVec2{a.x, cv.to_screen(v, 0, static_cast<float>(y1)).y}, grid);
+      cv.draw->AddLine(ImVec2{snap(a.x), a.y}, ImVec2{snap(a.x), cv.to_screen(v, 0, static_cast<float>(y1)).y}, grid);
     }
     for (int y = y0; y <= y1; ++y)
     {
       const ImVec2 a = cv.to_screen(v, static_cast<float>(x0), static_cast<float>(y));
-      cv.draw->AddLine(a, ImVec2{cv.to_screen(v, static_cast<float>(x1), 0).x, a.y}, grid);
+      cv.draw->AddLine(ImVec2{a.x, snap(a.y)}, ImVec2{cv.to_screen(v, static_cast<float>(x1), 0).x, snap(a.y)}, grid);
     }
   }
   cv.draw->AddRect(map_min, map_max, IM_COL32(255, 255, 255, 90));

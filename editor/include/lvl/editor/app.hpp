@@ -258,6 +258,9 @@ struct App
 
   /// Exit after this many frames (headless tests); 0 = run until closed
   std::size_t max_frames = 0;
+  /// Scripted smoke test: drives generators, undo, save/load and exports through the UI code paths
+  bool smoke = false;
+  int smoke_step = 0;
   std::size_t frame_count = 0;
 };
 

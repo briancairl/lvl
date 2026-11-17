@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Up/down test: the editor starts, creates the demo level, renders frames and exits cleanly.
+# Up/down test: the editor starts, runs a scripted session (demo level, heightmap, water-shedding and
+# WFC jobs, undo/redo, JSON + binary save, binary load, PNG + mini-preview + tileset/WFC/path
+# exports) through the same code paths as the UI, and exits cleanly with no errors logged.
 set -euo pipefail
 BINARY="$(realpath "$1")"
 cd "${TEST_TMPDIR:-$(mktemp -d)}"
-RUN=("${BINARY}" --demo --frames=300 --hidden --memory=256)
+RUN=("${BINARY}" --smoke --frames=2000 --hidden --memory=256 --screenshot=final.png)
 if [[ -z "${DISPLAY:-}" ]]; then
   RUN=(xvfb-run -a -s "-screen 0 1600x900x24" "${RUN[@]}")
 fi
@@ -13,8 +15,17 @@ if ! "${RUN[@]}" >"${LOG}" 2>&1; then
   echo "FAIL: editor exited with an error"
   exit 1
 fi
-cat "${LOG}"
-grep -q "Created demo level" "${LOG}" || { echo "FAIL: demo level not created"; exit 1; }
-grep -q "Exited cleanly after 300 frames" "${LOG}" || { echo "FAIL: no clean exit"; exit 1; }
-[[ -f lvl_demo_atlas.png ]] || { echo "FAIL: demo atlas not written"; exit 1; }
+grep -v "(Debug:" "${LOG}" || true
+fail() { echo "FAIL: $1"; exit 1; }
+grep -q "Smoke test complete" "${LOG}" || fail "smoke session did not complete"
+grep -q "Exited cleanly" "${LOG}" || fail "no clean exit"
+if grep -q "(Error:" "${LOG}"; then fail "errors were logged"; fi
+for f in lvl_demo_atlas.png smoke.json smoke.lvlb smoke.png smoke_preview.png smoke.tileset.json smoke.wfc.json \
+         smoke.paths.lvlb final.png; do
+  [[ -s "${f}" ]] || fail "${f} was not written"
+done
+grep -q '"lvl-level"' smoke.json || fail "smoke.json is not a level"
+if [[ -n "${TEST_UNDECLARED_OUTPUTS_DIR:-}" ]]; then
+  cp final.png smoke.png smoke_preview.png "${TEST_UNDECLARED_OUTPUTS_DIR}/"
+fi
 echo "PASS"

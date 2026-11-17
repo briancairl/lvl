@@ -628,6 +628,80 @@ void main_menu(App& app)
   resize_popup(app, open_resize);
 }
 
+/// One scripted action per idle frame (see App::smoke); closes the editor when done
+void smoke(App& app)
+{
+  if (!std::holds_alternative<std::monostate>(app.job) or app.frame_count < 5)
+  {
+    return;
+  }
+  if (app.show_error or ImGui::IsPopupOpen("Error"))
+  {
+    LVL_LOG_ERROR() << "Smoke test failed at step " << app.smoke_step;
+    app.smoke = false;
+    request_close();
+    return;
+  }
+  const int step = app.smoke_step++;
+  LVL_LOG_INFO() << "Smoke step " << step;
+  switch (step)
+  {
+  case 0:
+    demo_level(app);
+    break;
+  case 1:
+    start_heightmap(app);
+    break;
+  case 2:
+    app.generators.watershed.erosion.droplets = 2000;
+    app.generators.watershed.iterations = 2;
+    start_watershed(app);
+    break;
+  case 3:
+    start_wfc(app, 1);
+    break;
+  case 4:
+    // Undo the WFC run, then redo it
+    if (!app.undo.can_undo())
+    {
+      report(app, Status::error("nothing to undo after generating"));
+      break;
+    }
+    undo(app);
+    redo(app);
+    break;
+  case 5:
+    file_action(app, FileAction::kSaveLevel, "smoke.json");
+    break;
+  case 6:
+    file_action(app, FileAction::kSaveLevel, "smoke.lvlb");
+    break;
+  case 7:
+    file_action(app, FileAction::kOpenLevel, "smoke.lvlb");
+    break;
+  case 8:
+    file_action(app, FileAction::kExportPng, "smoke.png");
+    break;
+  case 9:
+    file_action(app, FileAction::kExportMinimap, "smoke_preview.png");
+    break;
+  case 10:
+    file_action(app, FileAction::kSaveTileSet, "smoke.tileset.json");
+    break;
+  case 11:
+    file_action(app, FileAction::kSaveWfc, "smoke.wfc.json");
+    break;
+  case 12:
+    file_action(app, FileAction::kSavePaths, "smoke.paths.lvlb");
+    break;
+  default:
+    LVL_LOG_INFO() << "Smoke test complete";
+    app.smoke = false;
+    request_close();
+    break;
+  }
+}
+
 /// The initial dock layout: viewport in the middle, panels around it
 void dock_layout(ImGuiID dockspace)
 {
@@ -843,6 +917,10 @@ void frame(App& app)
   job_progress(app);
   error_popup(app);
   web::poll(app);
+  if (app.smoke)
+  {
+    smoke(app);
+  }
   ++app.frame_count;
   if (app.max_frames > 0 and app.frame_count >= app.max_frames)
   {
