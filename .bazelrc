@@ -1,0 +1,40 @@
+# Common
+common --enable_bzlmod
+build --cxxopt=-std=c++20
+build --host_cxxopt=-std=c++20
+build --cxxopt=-Wall
+build --cxxopt=-Wextra
+
+# Optimized build (default for running the editor on real-sized maps).
+build:release -c opt
+
+# Address sanitizer
+build:asan --strip=never
+build:asan --copt=-fsanitize=address
+build:asan --copt=-O1
+build:asan --copt=-g
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --linkopt=-fsanitize=address
+
+# Undefined-behavior sanitizer
+build:ubsan --strip=never
+build:ubsan --copt=-fsanitize=undefined
+build:ubsan --copt=-fno-sanitize-recover=all
+build:ubsan --copt=-g
+build:ubsan --linkopt=-fsanitize=undefined
+
+# Thread sanitizer (the job system runs load/save in parallel)
+build:tsan --strip=never
+build:tsan --copt=-fsanitize=thread
+build:tsan --copt=-O1
+build:tsan --copt=-g
+build:tsan --linkopt=-fsanitize=thread
+
+# Continuous integration (.github/workflows/ci.yml): plain log output, show failing test logs.
+common:ci --color=yes
+common:ci --curses=no
+common:ci --show_progress_rate_limit=10
+test:ci --test_output=errors
+
+# Local overrides (not checked in).
+try-import %workspace%/user.bazelrc

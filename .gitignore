@@ -1,0 +1,15 @@
+# Bazel build artifacts
+bazel-*
+MODULE.bazel.lock
+
+# Editor / backup files
+*~
+*.swp
+*.pyc
+
+# Dear ImGui window layout persistence
+imgui.ini
+
+# Playwright, installed only to run platform/web/smoke_test.mjs
+node_modules/
+user.bazelrc

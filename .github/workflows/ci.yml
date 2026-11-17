@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Native build of everything plus every test, under each sanitizer config. Tests tagged "display"
+  # (the editor's headless up/down test) need the X server + mesa installed below.
+  native:
+    name: Native build & test (${{ matrix.config }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [default, asan, ubsan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The host provides the compiler, the X11/GL development headers GLFW builds against, and a
+      # virtual X server + software OpenGL driver for display tests.
+      - name: Install host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libgl-dev \
+            xvfb xauth libgl1 libglx-mesa0 libgl1-mesa-dri
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: native-${{ matrix.config }}
+          repository-cache: true
+
+      - name: Build
+        run: bazel build --config=ci ${{ matrix.config != 'default' && format('--config={0}', matrix.config) || '' }} //...
+
+      - name: Test
+        run: bazel test --config=ci ${{ matrix.config != 'default' && format('--config={0}', matrix.config) || '' }} //...
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testlogs-${{ matrix.config }}
+          path: bazel-testlogs/**/test.log
+          if-no-files-found: ignore
+
+  # Formatting check (same clang-format config as the pre-commit hook).
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format
+          git ls-files '*.hpp' '*.cpp' '*.h' | xargs clang-format --style=file --dry-run --Werror
+
+  # WebAssembly build (Emscripten toolchain from Bazel's emsdk module).
+  web:
+    name: Web build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: web
+          repository-cache: true
+
+      - name: Build
+        run: bazel build --config=ci //platform/web:hello_web
+
+      - name: Run toolchain smoke test
+        run: node bazel-bin/platform/web/hello_web/hello.js
+
+  # Single stable check name to mark as required in branch protection, so adding/removing matrix
+  # entries above doesn't require touching the repository settings.
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [native, format, web]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check all jobs succeeded
+        run: |
+          if [[ "${{ needs.native.result }}" != "success" || "${{ needs.format.result }}" != "success" || "${{ needs.web.result }}" != "success" ]]; then
+            echo "native: ${{ needs.native.result }}"
+            echo "format: ${{ needs.format.result }}"
+            echo "web: ${{ needs.web.result }}"
+            exit 1
+          fi

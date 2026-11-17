@@ -1,0 +1,67 @@
+"""lvl -- a 2D tile-based level editor (C++20, Dear ImGui, EnTT)."""
+
+module(name = "lvl", version = "0.1.0")
+
+# -- bazel_dep definitions -- #
+
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "nlohmann_json", version = "3.12.0.bcr.2")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2", dev_dependency = True)
+
+# WebAssembly build (//editor:web): the Emscripten toolchain + wasm_cc_binary.
+bazel_dep(name = "emsdk", version = "6.0.9")
+
+# -- repo definitions -- #
+#
+# Libraries without a (suitable) Bazel Central Registry module, with BUILD files from //external.
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# Dear ImGui (docking branch: the editor is a dockspace of tool panels).
+http_archive(
+    name = "imgui",
+    build_file = "//external:imgui.BUILD",
+    sha256 = "466fdef9b18de15f0bb6e288e3d00ffa3d82200ec458ce5e4f724a161d9528a5",
+    strip_prefix = "imgui-1.91.9b-docking",
+    url = "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b-docking.tar.gz",
+)
+
+# GLFW (native windowing/input). The web build uses Emscripten's built-in GLFW port instead.
+http_archive(
+    name = "glfw",
+    build_file = "//external:glfw.BUILD",
+    sha256 = "c038d34200234d071fae9345bc455e4a8f2f544ab60150765d7704e08f3dac01",
+    strip_prefix = "glfw-3.4",
+    url = "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz",
+)
+
+# EnTT (entity-component-system for level objects: portals, path nodes, markers, ...).
+http_archive(
+    name = "entt",
+    build_file = "//external:entt.BUILD",
+    sha256 = "e31f6e95a30e2977a50449ef9a607a9ff40febe6f9da2a8144a183f8606f7719",
+    strip_prefix = "entt-3.14.0",
+    url = "https://github.com/skypjack/entt/archive/refs/tags/v3.14.0.tar.gz",
+)
+
+# Bitsery (binary serialization): header-only, allocates nothing itself and writes into
+# caller-owned buffers -- so binary save/load stays inside the editor's arenas.
+http_archive(
+    name = "bitsery",
+    build_file = "//external:bitsery.BUILD",
+    sha256 = "ff741a3fee5420b31af31c7a8cefbcc3aaaf6f7f8c3ac49aa020f99b21d96020",
+    strip_prefix = "bitsery-5.2.4",
+    url = "https://github.com/fraillt/bitsery/archive/refs/tags/v5.2.4.tar.gz",
+)
+
+# stb_image (atlas loading), stb_image_write (PNG export), stb_image_resize2 (mini-preview). Not
+# BCR's `stb` module: one implementation TU (//core:image) for all three is simpler with raw headers.
+http_archive(
+    name = "stb",
+    build_file = "//external:stb.BUILD",
+    sha256 = "a39b0f2d96d9b64171ac1fd73295b7c5866f904e653b379da886d050a6900db9",
+    strip_prefix = "stb-f1c79c02822848a9bed4315b12c8c8f3761e1296",
+    url = "https://github.com/nothings/stb/archive/f1c79c02822848a9bed4315b12c8c8f3761e1296.tar.gz",
+)
