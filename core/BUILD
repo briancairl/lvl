@@ -124,9 +124,43 @@ cc_test(
     size = "small",
     srcs = ["test/json_memory_test.cpp"],
     copts = LVL_COPTS,
+    # The replaced operator new/delete pair malloc/free, which ASan would report as a mismatch
+    env = {"ASAN_OPTIONS": "alloc_dealloc_mismatch=0"},
     deps = [
         ":json",
         ":memory",
         "@googletest//:gtest_main",
     ],
 )
+
+cc_library(
+    name = "jobs",
+    srcs = ["src/jobs.cpp"],
+    hdrs = [
+        "include/lvl/core/jobs.hpp",
+        "include/lvl/core/random.hpp",
+    ],
+    copts = LVL_COPTS,
+    linkopts = select({
+        "@platforms//os:emscripten": [],
+        "//conditions:default": ["-lpthread"],
+    }),
+    strip_include_prefix = "include",
+    deps = [
+        ":logging",
+        ":types",
+    ],
+)
+
+
+cc_test(
+    name = "jobs_test",
+    size = "small",
+    srcs = ["test/jobs_test.cpp"],
+    copts = LVL_COPTS,
+    deps = [
+        ":jobs",
+        "@googletest//:gtest_main",
+    ],
+)
+
