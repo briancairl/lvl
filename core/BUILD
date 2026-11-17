@@ -152,6 +152,27 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "image",
+    srcs = ["src/image.cpp"],
+    hdrs = ["include/lvl/core/image.hpp"],
+    copts = LVL_COPTS + [
+        # stb implementation code
+        "-Wno-unused-function",
+        "-Wno-sign-compare",
+        "-Wno-unused-parameter",
+        "-Wno-implicit-fallthrough",
+    ],
+    strip_include_prefix = "include",
+    deps = [
+        ":file",
+        ":logging",
+        ":memory",
+        "@stb//:image",
+        "@stb//:image_resize",
+        "@stb//:image_write",
+    ],
+)
 
 cc_test(
     name = "jobs_test",
@@ -164,3 +185,13 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "image_test",
+    size = "small",
+    srcs = ["test/image_test.cpp"],
+    copts = LVL_COPTS,
+    deps = [
+        ":image",
+        "@googletest//:gtest_main",
+    ],
+)
