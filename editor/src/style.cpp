@@ -16,6 +16,7 @@
 #include "lvl/core/file.hpp"
 #include "lvl/core/fixed_string.hpp"
 #include "lvl/core/format.hpp"
+#include "lvl/editor/config.hpp"
 #include "lvl/editor/style.hpp"
 
 // ImGuiStyle fields serialized by name, by type
@@ -285,25 +286,7 @@ Status load_file(const char* path, Profile& profile)
 
 const char* default_path()
 {
-  static Path path;
-  if (!path.empty())
-  {
-    return path.c_str();
-  }
-  const char* xdg = kIsWeb ? nullptr : std::getenv("XDG_CONFIG_HOME");
-  const char* home = kIsWeb ? nullptr : std::getenv("HOME");
-  if (xdg != nullptr and xdg[0] != '\0')
-  {
-    path.assign(format<Path::capacity()>("%s/lvl/style.json", xdg));
-  }
-  else if (home != nullptr and home[0] != '\0')
-  {
-    path.assign(format<Path::capacity()>("%s/.config/lvl/style.json", home));
-  }
-  else
-  {
-    path.assign("lvl_style.json");
-  }
+  static const Path path = config_path("style.json");
   return path.c_str();
 }
 

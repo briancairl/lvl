@@ -21,11 +21,17 @@ cc_library(
     ],
 )
 
-# UI style profiles (ImGuiStyle <-> JSON).
+# UI style profiles (ImGuiStyle <-> JSON), and where per-user settings files live.
 cc_library(
     name = "style",
-    srcs = ["src/style.cpp"],
-    hdrs = ["include/lvl/editor/style.hpp"],
+    srcs = [
+        "src/config.cpp",
+        "src/style.cpp",
+    ],
+    hdrs = [
+        "include/lvl/editor/config.hpp",
+        "include/lvl/editor/style.hpp",
+    ],
     copts = LVL_COPTS,
     strip_include_prefix = "include",
     deps = [
@@ -60,6 +66,7 @@ cc_library(
     srcs = [
         "src/app.cpp",
         "src/deletion.cpp",
+        "src/file_dialog.cpp",
         "src/generate.cpp",
         "src/internal.hpp",
         "src/panels.cpp",
@@ -87,6 +94,7 @@ cc_library(
         "//render",
         "@imgui",
         "@imgui//:backend_glfw_opengl3",
+        "@imgui_file_dialog",
     ],
 )
 
@@ -94,6 +102,8 @@ cc_binary(
     name = "lvl",
     srcs = ["main.cpp"],
     copts = LVL_COPTS,
+    # Web: link with WebAssembly exceptions for ImGuiFileDialog (see //third_party:imgui_file_dialog.BUILD)
+    features = ["wasm_exceptions"],
     linkopts = select({
         "@platforms//os:emscripten": [
             "--oformat=html",

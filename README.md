@@ -42,6 +42,10 @@ portal and a spawn marker, the tileset palette and tile metadata with seasonal v
 - **Portals** (target level, target portal, exit direction), **markers**, and **path/route graphs**
   (roads, patrols, rivers, navigation) with one-way edges, costs, node wait times and a shortest-route
   preview.
+- **File dialogs** ([ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog)): a places pane
+  (Home, working directory, the level's folder, plus your own bookmarks, which are remembered),
+  a clickable path bar that can also be typed into, search, sortable columns, keyboard navigation,
+  file-type filters and overwrite confirmation.
 - **Files**: levels, tilesets, WFC rules and path graphs save and load as **JSON** (the human-readable
   source of truth) or **binary**. `lvl_convert` translates either way.
 - **Exports**: the full map as a PNG at any scale, and a mini-preview PNG (also shown live in a panel).

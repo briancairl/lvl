@@ -62,8 +62,7 @@ Status save_file(const char* path, const Profile& profile);
 /// Reads a style profile file into <code>profile</code> (left unchanged on failure)
 Status load_file(const char* path, Profile& profile);
 
-/// Where the default profile lives: $XDG_CONFIG_HOME/lvl/style.json, else ~/.config/lvl/style.json
-/// (the working directory's lvl_style.json in the browser or without a home directory)
+/// Where the default profile lives: config_path("style.json") (see lvl/editor/config.hpp)
 const char* default_path();
 
 }  // namespace lvl::editor::style

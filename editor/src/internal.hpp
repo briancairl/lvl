@@ -58,6 +58,15 @@ void start_job(App& app);
 /// Opens the file dialog for <code>action</code>
 void open_file_dialog(App& app, FileAction action);
 
+/// True while the file dialog is open
+bool file_dialog_open();
+
+/// Closes the file dialog without running its action
+void close_file_dialog(App& app);
+
+/// Writes the file dialog's bookmarks to the user's config
+void save_file_dialog_places(App& app);
+
 /// Runs <code>action</code> on <code>path</code> (after the dialog closes, or from the command line)
 void file_action(App& app, FileAction action, const char* path);
 
