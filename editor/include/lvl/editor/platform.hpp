@@ -50,6 +50,9 @@ void shutdown();
 /// Requests the window to close
 void request_close();
 
+/// Withdraws a close request (e.g. the user cancelled at the unsaved-changes prompt)
+void cancel_close();
+
 /// Polls input and starts an ImGui frame
 void begin_frame();
 

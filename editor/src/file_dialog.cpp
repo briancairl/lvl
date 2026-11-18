@@ -207,6 +207,8 @@ void file_dialog(App& app)
     return;
   }
   dialog().Close();
+  // Cancelling the save dialog opened by "Save as... and quit" cancels quitting
+  app.exit_after_save = false;
 }
 
 bool file_dialog_open() { return dialog().IsOpened(kKey); }

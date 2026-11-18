@@ -121,7 +121,7 @@ int main(int argc, char** argv)
   // The browser drives frames; main() returns while the page keeps running
   emscripten_set_main_loop(run_frame, 0, false);
 #else
-  while (!lvl::editor::should_close())
+  while (!app.exit)
   {
     run_frame();
   }

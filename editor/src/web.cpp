@@ -45,6 +45,10 @@ EM_JS(void, lvl_web_offer_download, (const char* path), {
 });
 
 EM_JS(int, lvl_web_uploaded, (), { return Module.lvlUploaded || 0; });
+
+EM_JS(void, lvl_web_set_unsaved, (int unsaved), {
+  window.onbeforeunload = unsaved ? (e) => { e.preventDefault(); e.returnValue = ''; return ''; } : null;
+});
 // clang-format on
 
 #endif  // defined(__EMSCRIPTEN__)
@@ -57,6 +61,17 @@ namespace lvl::editor::web
 void request_upload(const char* directory) { lvl_web_request_upload(directory); }
 
 void offer_download(const char* path) { lvl_web_offer_download(path); }
+
+void set_unsaved_changes(bool unsaved)
+{
+  // Only touch the page when the state changes
+  static int armed = -1;
+  if (armed != static_cast<int>(unsaved))
+  {
+    armed = static_cast<int>(unsaved);
+    lvl_web_set_unsaved(armed);
+  }
+}
 
 void poll([[maybe_unused]] App& app)
 {
@@ -73,6 +88,8 @@ void poll([[maybe_unused]] App& app)
 void request_upload([[maybe_unused]] const char* directory) {}
 
 void offer_download([[maybe_unused]] const char* path) {}
+
+void set_unsaved_changes([[maybe_unused]] bool unsaved) {}
 
 void poll([[maybe_unused]] App& app) {}
 

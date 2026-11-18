@@ -143,6 +143,16 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 
 The dialog remembers the last folder it was used in.
 
+### Quitting
+
+The main loop runs until `App::exit`. Every way of quitting goes through `request_exit()`: the
+window's close button (the GLFW close flag is taken back with `cancel_close()` each frame), File >
+Quit, and `--frames`/`--smoke`, which force it. With unsaved changes (`App::modified`) it shows the
+"Unsaved changes" prompt instead: Save (`save_and_exit()`: exit once the save job succeeds; with no
+path yet, via the save dialog, and cancelling that dialog cancels quitting), Quit without saving,
+or Cancel. In the browser, `web::set_unsaved_changes()` arms the page's `beforeunload` "leave site?"
+prompt while there are unsaved changes.
+
 ### WFC neighbor editor
 
 `wfc_neighbors_window` (View > WFC neighbors, or "Neighbor editor..." in the WFC rules tab) is a
@@ -210,8 +220,9 @@ one check to mark required:
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
-  paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load in both formats, all exports, and a style profile
-  save/load. It requires no
+  paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
+  in both formats, all exports, a style profile save/load, deletes, the file dialog, and the unsaved-changes
+  prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
 

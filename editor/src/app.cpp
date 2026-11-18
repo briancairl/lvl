@@ -100,7 +100,10 @@ void finish_job(App& app)
           app.path = job.path;
           app.modified = false;
           web::offer_download(job.path.c_str());
+          // Quitting was waiting on this save
+          app.exit = app.exit or app.exit_after_save;
         }
+        app.exit_after_save = false;
         report(app, job.result);
       },
       [&app](jobs::Background<LoadLevelJob>& bg) {
@@ -266,6 +269,41 @@ void job_progress(App& app)
     }
     ImGui::EndPopup();
   }
+}
+
+/// "Save changes before quitting?"
+void exit_prompt(App& app)
+{
+  if (app.confirm_exit and !ImGui::IsPopupOpen("Unsaved changes"))
+  {
+    ImGui::OpenPopup("Unsaved changes");
+  }
+  if (!ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    return;
+  }
+  ImGui::Text("'%s' has unsaved changes.", app.path.empty() ? app.level->settings.name.c_str() : app.path.c_str());
+  ImGui::TextUnformatted("Save them before quitting?");
+  ImGui::Spacing();
+  if (ImGui::Button(app.path.empty() ? "Save as... and quit" : "Save and quit") or ImGui::IsKeyPressed(ImGuiKey_Enter))
+  {
+    ImGui::CloseCurrentPopup();
+    save_and_exit(app);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Quit without saving"))
+  {
+    ImGui::CloseCurrentPopup();
+    app.confirm_exit = false;
+    app.exit = true;
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel") or ImGui::IsKeyPressed(ImGuiKey_Escape) or !app.confirm_exit)
+  {
+    ImGui::CloseCurrentPopup();
+    app.confirm_exit = false;
+  }
+  ImGui::EndPopup();
 }
 
 void error_popup(App& app)
@@ -528,7 +566,7 @@ void main_menu(App& app)
         ImGui::Separator();
         if (ImGui::MenuItem("Quit"))
         {
-          request_close();
+          request_exit(app);
         }
       }
       ImGui::EndMenu();
@@ -639,7 +677,7 @@ void smoke(App& app)
   {
     LVL_LOG_ERROR() << "Smoke test failed at step " << app.smoke_step;
     app.smoke = false;
-    request_close();
+    request_exit(app, true);
     return;
   }
   const int step = app.smoke_step++;
@@ -775,10 +813,29 @@ void smoke(App& app)
     }
     break;
   }
+  case 19:
+    // Quitting with unsaved changes asks first; Cancel keeps the editor open
+    app.modified = true;
+    request_exit(app);
+    if (app.exit or !app.confirm_exit)
+    {
+      report(app, Status::error("quitting with unsaved changes did not ask first"));
+    }
+    break;
+  case 20:
+    // The prompt was drawn; choose Cancel
+    if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
+    {
+      report(app, Status::error("the unsaved-changes prompt is not showing"));
+    }
+    app.confirm_exit = false;
+    break;
   default:
+    // Finish through "Save and quit": the editor exits once the save succeeds
     LVL_LOG_INFO() << "Smoke test complete";
     app.smoke = false;
-    request_close();
+    app.modified = true;
+    save_and_exit(app);
     break;
   }
 }
@@ -955,6 +1012,13 @@ void shutdown(App& app)
 void frame(App& app)
 {
   memory::clear(app.memory.frame);
+  // The window's close button (and Alt+F4 etc.) go through the unsaved-changes check
+  if (should_close())
+  {
+    cancel_close();
+    request_exit(app);
+  }
+  web::set_unsaved_changes(app.modified);
   const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
   static bool layout_done = false;
   if (!layout_done)
@@ -1014,6 +1078,7 @@ void frame(App& app)
     ImGui::ShowDemoWindow(&app.panels.demo);
   }
   file_dialog(app);
+  exit_prompt(app);
   process_deletes(app);
   job_progress(app);
   error_popup(app);
@@ -1025,7 +1090,32 @@ void frame(App& app)
   ++app.frame_count;
   if (app.max_frames > 0 and app.frame_count >= app.max_frames)
   {
-    request_close();
+    request_exit(app, true);
+  }
+}
+
+void request_exit(App& app, bool force)
+{
+  if (force or !app.modified)
+  {
+    app.exit = true;
+    return;
+  }
+  app.confirm_exit = true;
+}
+
+void save_and_exit(App& app)
+{
+  app.confirm_exit = false;
+  app.exit_after_save = true;
+  if (app.path.empty())
+  {
+    // Exits when the dialog's save succeeds; cancelling the dialog cancels quitting
+    open_file_dialog(app, FileAction::kSaveLevel);
+  }
+  else
+  {
+    file_action(app, FileAction::kSaveLevel, app.path.c_str());
   }
 }
 
