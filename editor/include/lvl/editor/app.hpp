@@ -173,6 +173,35 @@ enum class GeneratorTab : std::uint8_t
   kWfcRules,
 };
 
+/// What a delete button removes
+enum class DeleteKind : std::uint8_t
+{
+  kNone,
+  kLayer,
+  kSemantic,
+  kMaterial,
+  kSeason,
+  kGraph,
+  /// A portal, marker or path node (by entity)
+  kObject,
+  /// A tile property (index within tileset <code>owner</code>)
+  kProperty,
+};
+
+/// A delete waiting for confirmation (or, when confirmed, for the end of the frame)
+struct PendingDelete
+{
+  DeleteKind kind = DeleteKind::kNone;
+  std::size_t index = 0;
+  std::size_t owner = 0;
+  level::Entity entity = level::kNullEntity;
+  /// e.g. "material 'snow'"
+  FixedString<128> what;
+  /// What else changes, e.g. "312 cells and 4 tiles use it; they become 'none'."
+  FixedString<256> detail;
+  bool confirmed = false;
+};
+
 /// Which panels are open
 struct Panels
 {
@@ -269,6 +298,7 @@ struct App
   FileDialog dialog;
   JobSlot job;
   JobMemory job_memory;
+  PendingDelete pending_delete;
   /// Last error shown in a popup
   FixedString<512> error;
   bool show_error = false;

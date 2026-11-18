@@ -185,6 +185,16 @@ void layers_panel(App& app)
   {
     Layer& layer = lv.layers[n];
     ImGui::PushID(static_cast<int>(n));
+    if (delete_button("Delete layer"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kLayer,
+          .index = n,
+          .what = format<128>("layer '%s'", layer.name.c_str()),
+          .detail = "Its cells are lost, and the undo history is cleared."});
+    }
     if (ImGui::Checkbox("##visible", &layer.visible))
     {
       app.minimap_dirty = true;
@@ -524,19 +534,21 @@ void tile_meta_panel(App& app)
       continue;
     }
     ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Delete property"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kProperty,
+          .index = i,
+          .owner = app.tileset,
+          .what = format<128>("property '%s' of tile %u", p.key.c_str(), static_cast<unsigned>(p.tile))});
+    }
     ImGui::SetNextItemWidth(110.0F);
     changed |= input_text("##key", p.key);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(130.0F);
     changed |= input_text("##value", p.value);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("x"))
-    {
-      ts.properties.erase(ts.properties.begin() + static_cast<std::ptrdiff_t>(i));
-      changed = true;
-      ImGui::PopID();
-      break;
-    }
     ImGui::PopID();
   }
   if (ImGui::SmallButton("Add property"))
@@ -632,6 +644,18 @@ void catalogs_panel(App& app)
       Season& s = lv.seasons[i];
       year += s.duration_days;
       ImGui::PushID(static_cast<int>(i));
+      ImGui::BeginDisabled(lv.seasons.size() <= 1);
+      if (delete_button(lv.seasons.size() <= 1 ? "A level needs at least one season" : "Delete season"))
+      {
+        request_delete(
+          app,
+          PendingDelete{
+            .kind = DeleteKind::kSeason,
+            .index = i,
+            .what = format<128>("season '%s'", s.name.c_str()),
+            .detail = "Tile variants for it stay in their tilesets (seasons are matched by name)."});
+      }
+      ImGui::EndDisabled();
       if (ImGui::TreeNode("season", "%s (%u days)", s.name.c_str(), s.duration_days))
       {
         changed |= input_text("Name", s.name);
@@ -651,19 +675,6 @@ void catalogs_panel(App& app)
           changed = true;
           invalidate_view(app);
         }
-        ImGui::BeginDisabled(lv.seasons.size() <= 1);
-        if (ImGui::SmallButton("Remove season"))
-        {
-          lv.seasons.erase(lv.seasons.begin() + static_cast<std::ptrdiff_t>(i));
-          app.view.season = 0;
-          changed = true;
-          invalidate_view(app);
-          ImGui::EndDisabled();
-          ImGui::TreePop();
-          ImGui::PopID();
-          break;
-        }
-        ImGui::EndDisabled();
         ImGui::TreePop();
       }
       ImGui::PopID();
@@ -675,7 +686,7 @@ void catalogs_panel(App& app)
       changed = true;
     }
   }
-  const auto catalog_editor = [&](const char* title, auto& catalog, auto&& extra) {
+  const auto catalog_editor = [&](const char* title, auto& catalog, DeleteKind kind, auto&& extra) {
     if (!ImGui::CollapsingHeader(title))
     {
       return;
@@ -684,6 +695,23 @@ void catalogs_panel(App& app)
     for (std::size_t i = 1; i < catalog.size(); ++i)
     {
       ImGui::PushID(static_cast<int>(i));
+      if (delete_button(kind == DeleteKind::kSemantic ? "Delete semantic type" : "Delete material"))
+      {
+        const bool semantic = (kind == DeleteKind::kSemantic);
+        const std::size_t uses =
+          semantic ? semantic_uses(lv, static_cast<SemanticId>(i)) : material_uses(lv, static_cast<MaterialId>(i));
+        request_delete(
+          app,
+          PendingDelete{
+            .kind = kind,
+            .index = i,
+            .what = format<128>("%s '%s'", semantic ? "semantic type" : "material", catalog[i].name.c_str()),
+            .detail = (uses == 0) ? FixedString<256>{"Nothing uses it."}
+                                  : FixedString<256>{format<256>(
+                                      "%zu cells, tiles%s use it; they become 'none'. The undo history is cleared.",
+                                      uses,
+                                      semantic ? " and WFC rule tiles" : ", and seasonal variants")}});
+      }
       if (color_edit("##color", catalog[i].color))
       {
         changed = true;
@@ -703,8 +731,8 @@ void catalogs_panel(App& app)
     }
     ImGui::PopID();
   };
-  catalog_editor("Semantic types", lv.semantics, [](SemanticType&) {});
-  catalog_editor("Materials", lv.materials, [&changed](Material& m) {
+  catalog_editor("Semantic types", lv.semantics, DeleteKind::kSemantic, [](SemanticType&) {});
+  catalog_editor("Materials", lv.materials, DeleteKind::kMaterial, [&changed](Material& m) {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0F);
     changed |= ImGui::DragFloat("friction", &m.friction, 0.01F, 0.0F, 4.0F);
@@ -764,6 +792,16 @@ void objects_panel(App& app)
       {
         nodes += (node.graph == g) ? 1 : 0;
       }
+      if (delete_button("Delete graph"))
+      {
+        request_delete(
+          app,
+          PendingDelete{
+            .kind = DeleteKind::kGraph,
+            .index = g,
+            .what = format<128>("path graph '%s'", graph.name.c_str()),
+            .detail = format<256>("Its %zu nodes and their edges are deleted too.", nodes)});
+      }
       ImGui::Checkbox("##vis", &graph.visible);
       ImGui::SameLine();
       changed |= color_edit("##color", graph.color);
@@ -795,6 +833,15 @@ void objects_panel(App& app)
   {
     for (auto [e, label, portal] : reg.view<Label, Portal>().each())
     {
+      ImGui::PushID(static_cast<int>(entt::to_integral(e)));
+      if (delete_button("Delete portal"))
+      {
+        request_delete(
+          app,
+          PendingDelete{
+            .kind = DeleteKind::kObject, .entity = e, .what = format<128>("portal '%s'", label.name.c_str())});
+      }
+      ImGui::PopID();
       if (ImGui::Selectable(
             format<128>(
               "portal: %s -> %s:%s##%u",
@@ -809,6 +856,15 @@ void objects_panel(App& app)
     }
     for (auto [e, label, marker] : reg.view<Label, Marker>().each())
     {
+      ImGui::PushID(static_cast<int>(entt::to_integral(e)));
+      if (delete_button("Delete marker"))
+      {
+        request_delete(
+          app,
+          PendingDelete{
+            .kind = DeleteKind::kObject, .entity = e, .what = format<128>("marker '%s'", label.name.c_str())});
+      }
+      ImGui::PopID();
       if (ImGui::Selectable(
             format<128>("marker: %s (%s)##%u", label.name.c_str(), marker.type.c_str(), static_cast<unsigned>(e)),
             app.entity == e))

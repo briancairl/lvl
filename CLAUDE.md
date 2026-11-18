@@ -129,11 +129,21 @@ editing, so jobs may read the document without locks. `finish_job()` applies res
 (with undo snapshots). Generators copy inputs into the job's arena and the UI thread copies results
 back. On the web there are no pthreads, so jobs run synchronously.
 
+### Deleting
+
+Rows of layers, semantic types, materials, seasons, path graphs, portals/markers and tile properties
+start with a delete button (`delete_button`). `request_delete` records a `PendingDelete`, and
+`process_deletes` (once per frame, after every panel has drawn and never while a job runs) shows a
+confirmation dialog listing what else changes, then applies it; Shift+click skips the dialog.
+Deleting a catalog entry (`level::remove_semantic`/`remove_material`) turns everything that used it
+into "none" and renumbers later ids.
+
 ### Undo
 
 `UndoStack` snapshots whole layer planes into the undo ring before an edit. Undo swaps the snapshot
 with the layer, so the entry becomes its own redo. Object (entity) edits, layer add/remove/reorder and
-resizes are not undoable; structural changes clear the history.
+resizes are not undoable; structural changes (including deleting a layer or a catalog entry) clear the
+history.
 
 ## Build
 

@@ -100,6 +100,22 @@ void remove_tileset(Level& level, TileSetId id);
 SemanticId intern_semantic(Level& level, std::string_view name);
 MaterialId intern_material(Level& level, std::string_view name);
 
+/**
+ * @brief Removes a catalog entry; everything that used it becomes "none" (id 0)
+ *
+ * Remapped: semantic/material layer cells, tile metadata, seasonal variants (materials) and WFC
+ * tiles (semantics); ids after the removed one shift down. Id 0 ("none") can't be removed.
+ */
+void remove_semantic(Level& level, SemanticId id);
+void remove_material(Level& level, MaterialId id);
+
+/// How many cells, tiles, seasonal variants and WFC tiles use a catalog entry
+std::size_t semantic_uses(const Level& level, SemanticId id);
+std::size_t material_uses(const Level& level, MaterialId id);
+
+/// Removes a season (a level keeps at least one); tile variants for it stay in their tilesets
+void remove_season(Level& level, SeasonId id);
+
 /// Index of the season named <code>name</code>, or <code>level.seasons.size()</code>
 SeasonId find_season(const Level& level, std::string_view name);
 
