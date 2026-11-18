@@ -19,7 +19,9 @@ keep them.
    JSON → binary → JSON round trip is byte-for-byte stable and tested).
 3. **No virtual dispatch.** No `virtual`/`override`/`std::function` in first-party code. Closed sets
    of shapes use `std::variant` + `lvl::overloaded{...}`, a closed `enum` + `switch`, or templates.
-   The only function pointers are ones third-party APIs demand (`glfwSetErrorCallback`).
+   The only function pointers are ones third-party APIs demand (`glfwSetErrorCallback`). Third-party
+   libraries may have their own virtual internals (ImGuiFileDialog does); first-party code only calls
+   into them.
 4. **No exceptions.** First-party targets build with `-fno-exceptions` (`LVL_COPTS`,
    `//bazel:copts.bzl`). Invariant violations use `LVL_ASSERT*`/`LVL_FAIL`, which log the condition,
    the operand values and an explanation, then `std::abort()` (they are not compiled out). Failures
@@ -80,8 +82,8 @@ arena, each in its own sub-arena. Larger ones decode one at a time with the whol
 **Bitsery** (binary) writes into arena-backed vectors and reads in place from the arena the file was
 read into.
 
-Known heap users, which are deliberately out of scope: Dear ImGui's internal allocations, GL/GLFW,
-`std::thread` bookkeeping, and `std::filesystem` in the file dialog.
+Known heap users, which are deliberately out of scope: Dear ImGui's and ImGuiFileDialog's internal
+allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the file dialog.
 
 ### Formats
 
@@ -99,7 +101,7 @@ Known heap users, which are deliberately out of scope: Dear ImGui's internal all
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules`, EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `platform.cpp` window/GL/ImGui, `web.cpp` browser file upload/download), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -129,6 +131,18 @@ editing, so jobs may read the document without locks. `finish_job()` applies res
 (with undo snapshots). Generators copy inputs into the job's arena and the UI thread copies results
 back. On the web there are no pthreads, so jobs run synchronously.
 
+### File dialogs
+
+`editor/src/file_dialog.cpp` wraps aiekick/ImGuiFileDialog (features chosen with defines in
+`//third_party:imgui_file_dialog.BUILD`). Each `FileAction` gets a title, file-type filters and, for
+saves, a suggested name and overwrite confirmation. The places pane has three groups:
+- **Places** (fixed, rebuilt on each open): Home (or `/work` in the browser), the working directory,
+  the open level's folder and the settings folder.
+- **Bookmarks**: user-editable, serialized to `config_path("file_dialog_places.txt")`.
+- **Devices**.
+
+The dialog remembers the last folder it was used in.
+
 ### Deleting
 
 Rows of layers, semantic types, materials, seasons, path graphs, portals/markers and tile properties
@@ -152,8 +166,8 @@ Bazel 8 (`.bazelversion`; use bazelisk) with Bzlmod (`MODULE.bazel`). `.bazelrc`
 git). Third-party libraries:
 
 - From BCR: `nlohmann_json` (patched via `single_version_override`), `googletest`, `emsdk`.
-- Pinned `http_archive`s with BUILD files in `//third_party`: Dear ImGui (docking), GLFW, EnTT,
-  Bitsery, stb.
+- Pinned `http_archive`s with BUILD files in `//third_party`: Dear ImGui (docking), ImGuiFileDialog,
+  GLFW, EnTT, Bitsery, stb.
 
 Third-party headers are system includes, so their warnings stay out of our builds.
 
@@ -206,6 +220,9 @@ third-party, then `// LVL`. Enums that are (de)serialized specialize `lvl::EnumN
 - `image::load`/`decode`/`resize` need distinct destination and scratch arenas.
 - Mutating the document from a job is not allowed: copy inputs into the job's arena, and apply
   results in `finish_job()`.
+- ImGuiFileDialog uses `try`/`catch`. Natively, third-party code keeps the toolchain's exceptions. On
+  Emscripten (whose toolchain disables exceptions), that library and `//editor:lvl` request the emsdk
+  toolchain's `wasm_exceptions` feature; native toolchains ignore it.
 - `docs/editor.png` (README) is `lvl --demo --frames=40 --screenshot=docs/editor.png` under
   `xvfb-run -s "-screen 0 1600x900x24"`, with `HOME` pointed at an empty directory (so no personal
   style profile applies) and no `imgui.ini` in the working directory. Regenerate it when the UI

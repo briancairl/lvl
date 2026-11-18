@@ -41,6 +41,15 @@ http_archive(
     url = "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b-docking.tar.gz",
 )
 
+# ImGuiFileDialog (file browser: places/bookmarks, path bar, search, sorting, keyboard navigation).
+http_archive(
+    name = "imgui_file_dialog",
+    build_file = "//third_party:imgui_file_dialog.BUILD",
+    sha256 = "7aa3fbb0fc7206c5b434246d906f036057a59eb51e28ae36488aa654a667a266",
+    strip_prefix = "ImGuiFileDialog-0.6.8",
+    url = "https://github.com/aiekick/ImGuiFileDialog/archive/refs/tags/v0.6.8.tar.gz",
+)
+
 # GLFW (native windowing/input). The web build uses Emscripten's built-in GLFW port instead.
 http_archive(
     name = "glfw",

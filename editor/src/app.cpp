@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <filesystem>
 #include <new>
 
 // Dear ImGui
@@ -713,6 +712,17 @@ void smoke(App& app)
       report(app, Status::error("style profile did not round-trip"));
     }
     break;
+  case 15:
+    // The file dialog (ImGuiFileDialog) opens and draws for a frame, then is closed
+    open_file_dialog(app, FileAction::kOpenLevel);
+    break;
+  case 16:
+    if (!file_dialog_open())
+    {
+      report(app, Status::error("the file dialog did not open"));
+    }
+    close_file_dialog(app);
+    break;
   case 14: {
     // Deletes (confirmed, as with Shift+click): a material and a semantic type in use, a portal, a graph
     level::Level& lv = *app.level;
@@ -918,6 +928,7 @@ void shutdown(App& app)
     release(t);
   }
   release(app.minimap_texture);
+  save_file_dialog_places(app);
   app.level->~Level();
   app.spare->~Level();
   json::uninstall();
@@ -1017,47 +1028,6 @@ bool color_edit(const char* label, image::Rgba& color)
 // -------------------------------------------------------------------------------------------------
 // Files
 // -------------------------------------------------------------------------------------------------
-
-void open_file_dialog(App& app, FileAction action)
-{
-  app.dialog.action = action;
-  app.dialog.open = true;
-  switch (action)
-  {
-  case FileAction::kSaveLevel:
-    app.dialog.extension = ".json";
-    app.dialog.name.assign(
-      app.path.empty() ? format<128>("%s.json", app.level->settings.name.c_str()) : app.path.c_str());
-    break;
-  case FileAction::kSaveTileSet:
-    app.dialog.extension = ".json";
-    app.dialog.name.assign(format<128>("%s.tileset.json", app.level->tilesets[app.tileset].name.c_str()));
-    break;
-  case FileAction::kSaveWfc:
-    app.dialog.extension = ".json";
-    app.dialog.name.assign("rules.wfc.json");
-    break;
-  case FileAction::kSavePaths:
-    app.dialog.extension = ".json";
-    app.dialog.name.assign("paths.json");
-    break;
-  case FileAction::kExportPng:
-    app.dialog.extension = ".png";
-    app.dialog.name.assign(format<128>("%s.png", app.level->settings.name.c_str()));
-    break;
-  case FileAction::kExportMinimap:
-    app.dialog.extension = ".png";
-    app.dialog.name.assign(format<128>("%s.preview.png", app.level->settings.name.c_str()));
-    break;
-  case FileAction::kSaveStyle:
-    app.dialog.extension = ".json";
-    app.dialog.name.assign("style.json");
-    break;
-  default:
-    app.dialog.extension.clear();
-    break;
-  }
-}
 
 void file_action(App& app, FileAction action, const char* path)
 {
@@ -1210,108 +1180,6 @@ void file_action(App& app, FileAction action, const char* path)
   update_title(app);
 }
 
-void file_dialog(App& app)
-{
-  FileDialog& d = app.dialog;
-  if (d.open)
-  {
-    ImGui::OpenPopup("File");
-    d.open = false;
-  }
-  ImGui::SetNextWindowSize(ImVec2{640, 460}, ImGuiCond_Appearing);
-  if (!ImGui::BeginPopupModal("File", nullptr))
-  {
-    return;
-  }
-  namespace fs = std::filesystem;
-  std::error_code ec;
-  input_text("Directory", d.directory);
-  ImGui::SameLine();
-  if (ImGui::Button("Up"))
-  {
-    const fs::path parent = fs::absolute(fs::path{d.directory.c_str()}, ec).parent_path();
-    d.directory.assign(parent.string());
-  }
-  ImGui::BeginChild("entries", ImVec2{0, -ImGui::GetFrameHeightWithSpacing() * 2.2F}, ImGuiChildFlags_Borders);
-  // Directories first, then files; at most a few thousand entries
-  constexpr std::size_t kMaxEntries = 4096;
-  struct Entry
-  {
-    FixedString<256> name;
-    bool directory;
-  };
-  Entry* entries = memory::allocate<Entry>(app.memory.frame, kMaxEntries);
-  std::size_t count = 0;
-  for (fs::directory_iterator it{fs::path{d.directory.c_str()}, ec}, end; !ec and it != end and count < kMaxEntries;
-       it.increment(ec))
-  {
-    new (&entries[count]) Entry{FixedString<256>{it->path().filename().string()}, it->is_directory(ec)};
-    ++count;
-  }
-  std::sort(entries, entries + count, [](const Entry& a, const Entry& b) {
-    return (a.directory != b.directory) ? a.directory : a.name < b.name;
-  });
-  if (ec)
-  {
-    ImGui::TextColored(ImVec4{1, 0.4F, 0.4F, 1}, "%s", ec.message().c_str());
-  }
-  for (std::size_t i = 0; i < count; ++i)
-  {
-    const Entry& e = entries[i];
-    const char* label = e.directory ? format<300>("[%s]", e.name.c_str()) : e.name.c_str();
-    if (ImGui::Selectable(
-          label, !e.directory and d.name.view() == e.name.view(), ImGuiSelectableFlags_AllowDoubleClick))
-    {
-      if (e.directory)
-      {
-        d.directory.assign((fs::path{d.directory.c_str()} / e.name.c_str()).lexically_normal().string());
-      }
-      else
-      {
-        d.name.assign(e.name.view());
-        if (ImGui::IsMouseDoubleClicked(0))
-        {
-          ImGui::CloseCurrentPopup();
-          const fs::path full = fs::path{d.directory.c_str()} / d.name.c_str();
-          file_action(app, d.action, full.string().c_str());
-          d.action = FileAction::kNone;
-        }
-      }
-    }
-  }
-  ImGui::EndChild();
-  input_text("File", d.name);
-  if (ImGui::Button("OK") and !d.name.empty())
-  {
-    fs::path full{d.name.c_str()};
-    if (full.is_relative())
-    {
-      full = fs::path{d.directory.c_str()} / full;
-    }
-    if (!d.extension.empty() and !full.has_extension())
-    {
-      full += d.extension.c_str();
-    }
-    ImGui::CloseCurrentPopup();
-    file_action(app, d.action, full.string().c_str());
-    d.action = FileAction::kNone;
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel"))
-  {
-    d.action = FileAction::kNone;
-    ImGui::CloseCurrentPopup();
-  }
-  if constexpr (web::kAvailable)
-  {
-    ImGui::SameLine();
-    if (ImGui::Button("Upload..."))
-    {
-      web::request_upload(d.directory.c_str());
-    }
-  }
-  ImGui::EndPopup();
-}
 
 // -------------------------------------------------------------------------------------------------
 // Demo level

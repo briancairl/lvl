@@ -237,14 +237,14 @@ enum class FileAction : std::uint8_t
   kLoadStyle,
 };
 
+/// State of the file dialog (ImGuiFileDialog; see editor/src/file_dialog.cpp)
 struct FileDialog
 {
   FileAction action = FileAction::kNone;
-  bool open = false;
+  /// Folder the dialog opens in (the last one used)
   Path directory = ".";
-  Path name;
-  /// Default extension for "save" actions
-  FixedString<16> extension;
+  /// Bookmarks have been loaded from the user's config
+  bool places_loaded = false;
 };
 
 struct App
