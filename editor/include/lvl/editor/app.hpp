@@ -305,6 +305,12 @@ struct App
 
   /// Exit after this many frames (headless tests); 0 = run until closed
   std::size_t max_frames = 0;
+  /// The main loop ends after the current frame
+  bool exit = false;
+  /// The unsaved-changes prompt is up
+  bool confirm_exit = false;
+  /// Exit once the level save in progress (or about to be chosen in the save dialog) succeeds
+  bool exit_after_save = false;
   /// Scripted smoke test: drives generators, undo, save/load and exports through the UI code paths
   bool smoke = false;
   int smoke_step = 0;
@@ -322,6 +328,15 @@ void frame(App& app);
 
 /// Shows an error popup (and logs it)
 void report(App& app, const Status& status);
+
+/**
+ * @brief Asks to quit: exits right away if there are no unsaved changes (or <code>force</code>);
+ *        otherwise shows the unsaved-changes prompt (Save / Don't save / Cancel)
+ */
+void request_exit(App& app, bool force = false);
+
+/// Saves the level (asking where if it has no path yet), then exits if that succeeds
+void save_and_exit(App& app);
 
 /// Marks every overlay (and the minimap) as needing an update
 void invalidate_view(App& app);

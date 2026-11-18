@@ -128,6 +128,8 @@ bool should_close() { return glfwWindowShouldClose(window) != 0; }
 
 void request_close() { glfwSetWindowShouldClose(window, GLFW_TRUE); }
 
+void cancel_close() { glfwSetWindowShouldClose(window, GLFW_FALSE); }
+
 void begin_frame()
 {
   glfwPollEvents();

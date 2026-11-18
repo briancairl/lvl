@@ -54,6 +54,8 @@ portal and a spawn marker, the tileset palette and tile metadata with seasonal v
 - **UI style profiles**: Dear ImGui's style editor with presets (lvl, dark, light, classic) and a
   font scale. Profiles save/load as JSON, and a default profile (`~/.config/lvl/style.json`) is
   applied at startup.
+- **Unsaved changes are never lost by accident**: quitting with unsaved changes asks whether to save
+  first (in the browser, closing the tab shows the "leave site?" prompt).
 - **Parallel load/save** (layers encoded and decoded concurrently) and background generation and
   export, behind progress dialogs that can cancel.
 

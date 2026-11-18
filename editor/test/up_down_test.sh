@@ -19,6 +19,8 @@ grep -v "(Debug:" "${LOG}" || true
 fail() { echo "FAIL: $1"; exit 1; }
 grep -q "Smoke test complete" "${LOG}" || fail "smoke session did not complete"
 grep -q "Exited cleanly" "${LOG}" || fail "no clean exit"
+# The session ends through "Save and quit": the last thing before exiting is a save
+tail -n 20 "${LOG}" | grep -q "Saved level 'smoke.lvlb'" || fail "did not save before quitting"
 if grep -q "(Error:" "${LOG}"; then fail "errors were logged"; fi
 for f in lvl_demo_atlas.png smoke.json smoke.lvlb smoke.png smoke_preview.png smoke.tileset.json smoke.wfc.json \
          smoke.paths.lvlb smoke.style.json final.png; do

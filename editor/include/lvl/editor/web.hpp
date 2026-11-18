@@ -32,6 +32,9 @@ void request_upload(const char* directory);
 /// Hands the file at <code>path</code> to the browser as a download
 void offer_download(const char* path);
 
+/// Arms (or disarms) the browser's "leave site?" prompt for when the tab is closed or reloaded
+void set_unsaved_changes(bool unsaved);
+
 /// Per-frame housekeeping (logs finished uploads)
 void poll(App& app);
 
