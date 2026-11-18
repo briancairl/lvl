@@ -91,6 +91,7 @@ template <typename S> void serialize(S& s, WfcAdjacency& v)
 template <typename S> void serialize(S& s, WfcRules& v)
 {
   s.object(v.name);
+  s.value1b(v.diagonals);
   s.container(v.tiles, 0xFFFF);
   s.container(v.adjacency, 1 << 24);
 }
@@ -520,6 +521,7 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
     }
   }
   level.wfc.name = rules.name;
+  level.wfc.diagonals = rules.diagonals;
   level.wfc.tiles.clear();
   for (WfcTile t : rules.tiles)
   {

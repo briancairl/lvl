@@ -228,6 +228,14 @@ bool consistent(const WfcRules& rules, const Grid<TileRef>& g)
       {
         return false;
       }
+      for (const Direction d : {Direction::kSouthEast, Direction::kSouthWest})
+      {
+        const Cell n = step(Cell{x, y}, d);
+        if (rules.diagonals and g.extents.contains(n) and !allowed(rules, a, find_tile(rules, g.at(n)), d))
+        {
+          return false;
+        }
+      }
     }
   }
   return true;
@@ -273,6 +281,58 @@ TEST_F(Procgen, WfcSolvesWithAdjacency)
   again.assign(out.extents, kEmptyTile);
   ASSERT_TRUE(solve(rules, WfcConstraints{}, WfcParams{.seed = 3}, again, scratch).status.ok);
   EXPECT_EQ(out.values, again.values);
+}
+
+TEST_F(Procgen, WfcHonorsDiagonalRules)
+{
+  // Two tiles that may sit side by side freely, but corners must match: only checkerboards or
+  // uniform rows/columns patterns survive. Without the diagonal flag the corner rules are ignored.
+  WfcRules rules{doc};
+  const WfcTileId a = add_tile(rules, TileRef{0, 0});
+  const WfcTileId b = add_tile(rules, TileRef{0, 1});
+  for (const Direction d : kDirections)
+  {
+    for (const WfcTileId x : {a, b})
+    {
+      for (const WfcTileId y : {a, b})
+      {
+        set_allowed(rules, x, y, d, true);
+      }
+    }
+  }
+  for (const Direction d : kDiagonals)
+  {
+    set_allowed(rules, a, a, d, true);
+    set_allowed(rules, b, b, d, true);
+  }
+  const auto corners_match = [&](const Grid<TileRef>& g) {
+    for (int y = 0; y + 1 < g.height(); ++y)
+    {
+      for (int x = 0; x + 1 < g.width(); ++x)
+      {
+        if (g.at(x, y) != g.at(x + 1, y + 1) or g.at(x + 1, y) != g.at(x, y + 1))
+        {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  rules.diagonals = true;
+  for (std::uint64_t seed = 1; seed <= 4; ++seed)
+  {
+    Grid<TileRef> out{doc};
+    out.assign({16, 12}, kEmptyTile);
+    const auto result = solve(rules, WfcConstraints{}, WfcParams{.seed = seed}, out, scratch);
+    ASSERT_TRUE(result.status.ok) << result.status;
+    EXPECT_TRUE(consistent(rules, out));
+    EXPECT_TRUE(corners_match(out));
+  }
+  rules.diagonals = false;
+  Grid<TileRef> free{doc};
+  free.assign({16, 12}, kEmptyTile);
+  ASSERT_TRUE(solve(rules, WfcConstraints{}, WfcParams{.seed = 1}, free, scratch).status.ok);
+  EXPECT_FALSE(corners_match(free));
 }
 
 TEST_F(Procgen, WfcFollowsHeightAndWaterLayers)

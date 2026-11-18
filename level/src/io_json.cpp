@@ -411,6 +411,7 @@ void save_wfc(Json& j, const Level& level)
   const WfcRules& rules = level.wfc;
   j = Json::object();
   json::write(j, "name", rules.name);
+  json::write(j, "diagonals", rules.diagonals);
   Json tiles = Json::array();
   for (const auto& t : rules.tiles)
   {
@@ -446,6 +447,8 @@ bool load_wfc(json::Reader& r, const Json& j, Level& level)
   rules.adjacency.clear();
   r.object(j, "wfc");
   r.get_optional(j, "name", rules.name);
+  rules.diagonals = false;
+  r.get_optional(j, "diagonals", rules.diagonals);
   const auto tiles = j.find("tiles");
   const auto adjacency = j.find("adjacency");
   if (tiles == j.end() or adjacency == j.end())

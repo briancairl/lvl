@@ -586,6 +586,7 @@ void main_menu(App& app)
       ImGui::MenuItem("Tile metadata", nullptr, &app.panels.tile_meta);
       ImGui::MenuItem("Catalogs & seasons", nullptr, &app.panels.catalogs);
       ImGui::MenuItem("Generate", nullptr, &app.panels.generate);
+      ImGui::MenuItem("WFC neighbors", nullptr, &app.panels.wfc_neighbors);
       ImGui::MenuItem("Objects & paths", nullptr, &app.panels.objects);
       ImGui::MenuItem("Mini-preview", nullptr, &app.panels.minimap);
       ImGui::MenuItem("Log", nullptr, &app.panels.log);
@@ -722,6 +723,20 @@ void smoke(App& app)
       report(app, Status::error("the file dialog did not open"));
     }
     close_file_dialog(app);
+    break;
+  case 17:
+    // The WFC neighbor editor draws for a frame; corner rules are derived from the sides
+    app.panels.wfc_neighbors = true;
+    app.level->wfc.diagonals = true;
+    level::derive_diagonals(app.level->wfc, app.memory.frame);
+    if (level::diagonal_count(app.level->wfc) == 0)
+    {
+      report(app, Status::error("no corner rules were derived"));
+    }
+    break;
+  case 18:
+    // WFC with 8-way adjacency
+    start_wfc(app, 1);
     break;
   case 14: {
     // Deletes (confirmed, as with Shift+click): a material and a semantic type in use, a portal, a graph
@@ -973,6 +988,10 @@ void frame(App& app)
   if (app.panels.generate)
   {
     generate_panel(app);
+  }
+  if (app.panels.wfc_neighbors)
+  {
+    wfc_neighbors_window(app);
   }
   if (app.panels.objects)
   {

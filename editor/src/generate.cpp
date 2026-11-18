@@ -434,6 +434,16 @@ void wfc_rules_tab(App& app)
   }
   ImGui::EndDisabled();
   ImGui::SameLine();
+  if (ImGui::SmallButton("Neighbor editor..."))
+  {
+    app.panels.wfc_neighbors = true;
+    ImGui::SetWindowFocus("WFC neighbors");
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Pop-out editor: drag tiles into the eight sides around a tile");
+  }
+  ImGui::SameLine();
   if (ImGui::SmallButton("Clear rules"))
   {
     rules.tiles.clear();
@@ -502,10 +512,19 @@ void wfc_rules_tab(App& app)
   // Adjacency: per direction, which tiles may sit on that side of the selected tile
   ImGui::SeparatorText("Allowed neighbors (click to toggle)");
   const WfcTileId a = app.wfc_tile;
-  for (const Direction d : kDirections)
+  changed |= ImGui::Checkbox("Constrain corners (8-way)", &rules.diagonals);
+  if (rules.diagonals and changed and diagonal_count(rules) == 0)
   {
+    derive_diagonals(rules, app.memory.frame);
+  }
+  for (const Direction d : kNeighbors)
+  {
+    if (diagonal(d) and !rules.diagonals)
+    {
+      continue;
+    }
     ImGui::PushID(static_cast<int>(d));
-    ImGui::Text("%-5s", enum_name(d).data());
+    ImGui::Text("%-10s", enum_name(d).data());
     ImGui::SameLine();
     if (ImGui::SmallButton("all"))
     {
@@ -525,10 +544,10 @@ void wfc_rules_tab(App& app)
       changed = true;
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("all sides"))
+    if (ImGui::SmallButton(diagonal(d) ? "all corners" : "all sides"))
     {
-      // Copy this direction's set to the other three
-      for (const Direction other : kDirections)
+      // Copy this direction's set to the other sides (or corners)
+      for (const Direction other : diagonal(d) ? kDiagonals : kDirections)
       {
         if (other == d)
         {
