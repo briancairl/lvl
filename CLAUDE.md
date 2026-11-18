@@ -91,7 +91,7 @@ Known heap users, which are deliberately out of scope: Dear ImGui's internal all
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules`, EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` generators and the WFC rule editor, `platform.cpp` window/GL/ImGui, `web.cpp` browser file upload/download), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `platform.cpp` window/GL/ImGui, `web.cpp` browser file upload/download), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -162,9 +162,10 @@ one check to mark required:
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints.
 - `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export.
-- `//editor:undo_test`.
+- `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
-  paths: demo level, generators, undo/redo, save/load in both formats, all exports. It requires no
+  paths: demo level, generators, undo/redo, save/load in both formats, all exports, and a style profile
+  save/load. It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
 
@@ -186,3 +187,7 @@ third-party, then `// LVL`. Enums that are (de)serialized specialize `lvl::EnumN
 - `image::load`/`decode`/`resize` need distinct destination and scratch arenas.
 - Mutating the document from a job is not allowed: copy inputs into the job's arena, and apply
   results in `finish_job()`.
+- `docs/editor.png` (README) is `lvl --demo --frames=40 --screenshot=docs/editor.png` under
+  `xvfb-run -s "-screen 0 1600x900x24"`, with `HOME` pointed at an empty directory (so no personal
+  style profile applies) and no `imgui.ini` in the working directory. Regenerate it when the UI
+  changes noticeably.

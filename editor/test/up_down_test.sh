@@ -21,7 +21,7 @@ grep -q "Smoke test complete" "${LOG}" || fail "smoke session did not complete"
 grep -q "Exited cleanly" "${LOG}" || fail "no clean exit"
 if grep -q "(Error:" "${LOG}"; then fail "errors were logged"; fi
 for f in lvl_demo_atlas.png smoke.json smoke.lvlb smoke.png smoke_preview.png smoke.tileset.json smoke.wfc.json \
-         smoke.paths.lvlb final.png; do
+         smoke.paths.lvlb smoke.style.json final.png; do
   [[ -s "${f}" ]] || fail "${f} was not written"
 done
 grep -q '"lvl-level"' smoke.json || fail "smoke.json is not a level"

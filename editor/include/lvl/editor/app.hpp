@@ -24,6 +24,7 @@
 #include "lvl/core/memory.hpp"
 #include "lvl/editor/jobs.hpp"
 #include "lvl/editor/platform.hpp"
+#include "lvl/editor/style.hpp"
 #include "lvl/editor/undo.hpp"
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/noise.hpp"
@@ -162,6 +163,16 @@ struct Generators
   int region_h = 0;
 };
 
+/// Tabs of the Generate panel
+enum class GeneratorTab : std::uint8_t
+{
+  kNone,
+  kHeightmap,
+  kWatershed,
+  kWfc,
+  kWfcRules,
+};
+
 /// Which panels are open
 struct Panels
 {
@@ -170,10 +181,10 @@ struct Panels
   bool tile_meta = true;
   bool catalogs = true;
   bool generate = true;
-  bool wfc_editor = false;
   bool objects = true;
   bool minimap = true;
   bool log = true;
+  bool style = false;
   bool demo = false;
 };
 
@@ -193,6 +204,8 @@ enum class FileAction : std::uint8_t
   kSavePaths,
   kExportPng,
   kExportMinimap,
+  kSaveStyle,
+  kLoadStyle,
 };
 
 struct FileDialog
@@ -239,6 +252,8 @@ struct App
   level::Entity route_from = level::kNullEntity;
 
   Generators generators;
+  /// Generate panel tab to bring to front on the next frame
+  GeneratorTab generator_tab_request = GeneratorTab::kNone;
   /// WFC editor: the tile whose neighbors are being edited
   level::WfcTileId wfc_tile = 0;
 
@@ -249,6 +264,8 @@ struct App
   bool minimap_dirty = true;
 
   Panels panels;
+  /// The style as last loaded/saved/applied from a preset ("Revert" in the style editor)
+  style::Profile style_reference;
   FileDialog dialog;
   JobSlot job;
   JobMemory job_memory;

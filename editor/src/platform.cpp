@@ -100,11 +100,8 @@ Status initialize(const PlatformConfig& config)
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  // The style profile is applied by the editor (see lvl/editor/style.hpp)
   ImGui::StyleColorsDark();
-  ImGuiStyle& style = ImGui::GetStyle();
-  style.WindowRounding = 3.0F;
-  style.FrameRounding = 2.0F;
-  style.GrabRounding = 2.0F;
 
   ImGui_ImplGlfw_InitForOpenGL(window, true);
 #if defined(__EMSCRIPTEN__)

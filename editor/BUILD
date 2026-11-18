@@ -21,6 +21,22 @@ cc_library(
     ],
 )
 
+# UI style profiles (ImGuiStyle <-> JSON).
+cc_library(
+    name = "style",
+    srcs = ["src/style.cpp"],
+    hdrs = ["include/lvl/editor/style.hpp"],
+    copts = LVL_COPTS,
+    strip_include_prefix = "include",
+    deps = [
+        "//core:build",
+        "//core:file",
+        "//core:json",
+        "//core:types",
+        "@imgui",
+    ],
+)
+
 # Background jobs (UI-independent).
 cc_library(
     name = "jobs",
@@ -59,6 +75,7 @@ cc_library(
     strip_include_prefix = "include",
     deps = [
         ":jobs",
+        ":style",
         ":undo",
         "//core:json",
         "//core:logging",
@@ -110,6 +127,19 @@ wasm_cc_binary(
         "web/lvl.wasm",
     ],
     tags = ["manual"],
+)
+
+cc_test(
+    name = "style_test",
+    size = "small",
+    srcs = ["test/style_test.cpp"],
+    copts = LVL_COPTS,
+    deps = [
+        ":style",
+        "//core:file",
+        "//core:memory",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
