@@ -31,6 +31,16 @@ Status size(const char* path, std::size_t& size);
  */
 Status read(const char* path, memory::Arena& arena, char*& data, std::size_t& size);
 
+/// Reads at most <code>max_bytes</code> from the start of a file into <code>arena</code>; <code>total</code> is the
+/// file's full size
+Status read_prefix(
+  const char* path,
+  memory::Arena& arena,
+  std::size_t max_bytes,
+  char*& data,
+  std::size_t& size,
+  std::size_t& total);
+
 /// Writes <code>size</code> bytes to <code>path</code>, via a temporary file renamed into place
 Status write(const char* path, const void* data, std::size_t size);
 

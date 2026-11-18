@@ -233,9 +233,7 @@ int main(int argc, char** argv)
       for (std::size_t i = 0; i < count; ++i)
       {
         new (&colors[i]) memory::Vector<image::Rgba>{memory::ArenaAllocator<image::Rgba>{atlas_arena}};
-        if (const Status s =
-              image::load(level.tilesets[i].image.c_str(), atlas_arena, io_workers[0].scratch, atlases[i]);
-            !s.ok)
+        if (const Status s = image::load(level.tilesets[i].image.c_str(), atlas_arena, atlases[i]); !s.ok)
         {
           std::fprintf(
             stderr,
