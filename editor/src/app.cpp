@@ -713,6 +713,43 @@ void smoke(App& app)
       report(app, Status::error("style profile did not round-trip"));
     }
     break;
+  case 14: {
+    // Deletes (confirmed, as with Shift+click): a material and a semantic type in use, a portal, a graph
+    level::Level& lv = *app.level;
+    const auto material = std::min<std::size_t>(level::intern_material(lv, "snow"), lv.materials.size() - 1);
+    app.pending_delete =
+      PendingDelete{.kind = DeleteKind::kMaterial, .index = material, .what = "material 'snow'", .confirmed = true};
+    process_deletes(app);
+    const auto semantic = level::intern_semantic(lv, "tunnel");
+    app.pending_delete = PendingDelete{
+      .kind = DeleteKind::kSemantic, .index = semantic, .what = "semantic type 'tunnel'", .confirmed = true};
+    process_deletes(app);
+    app.pending_delete = PendingDelete{
+      .kind = DeleteKind::kObject,
+      .entity = level::find_portal(lv.registry, "east_exit"),
+      .what = "portal",
+      .confirmed = true};
+    process_deletes(app);
+    if (!lv.graphs.empty())
+    {
+      app.pending_delete = PendingDelete{.kind = DeleteKind::kGraph, .index = 0, .what = "graph", .confirmed = true};
+      process_deletes(app);
+    }
+    if (
+      level::find_portal(lv.registry, "east_exit") != level::kNullEntity or !lv.graphs.empty() or
+      !lv.registry.view<level::PathNode>().empty())
+    {
+      report(app, Status::error("deletes did not apply"));
+    }
+    for (const auto& m : lv.materials)
+    {
+      if (m.name == std::string_view{"snow"})
+      {
+        report(app, Status::error("material was not deleted"));
+      }
+    }
+    break;
+  }
   default:
     LVL_LOG_INFO() << "Smoke test complete";
     app.smoke = false;
@@ -947,6 +984,7 @@ void frame(App& app)
     ImGui::ShowDemoWindow(&app.panels.demo);
   }
   file_dialog(app);
+  process_deletes(app);
   job_progress(app);
   error_popup(app);
   web::poll(app);

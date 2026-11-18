@@ -79,6 +79,16 @@ void start_heightmap(App& app);
 void start_watershed(App& app);
 void start_wfc(App& app, std::size_t target_layer);
 
+/// A small delete button for the start of a row; returns true when clicked
+bool delete_button(const char* tooltip);
+
+/// Asks to delete something: a confirmation dialog follows, or with Shift held it is deleted at the
+/// end of the frame (never while a panel is iterating over what's being deleted)
+void request_delete(App& app, const PendingDelete& request);
+
+/// Shows the confirmation dialog and applies confirmed deletes (once per frame, after the panels)
+void process_deletes(App& app);
+
 /// Draws tile <code>tile</code> of tileset <code>ts</code> as an ImGui image of the given size
 void tile_image(const App& app, level::TileRef tile, float size);
 

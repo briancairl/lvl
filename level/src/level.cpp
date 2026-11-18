@@ -174,6 +174,117 @@ MaterialId intern_material(Level& level, std::string_view name)
   return static_cast<MaterialId>(level.materials.size() - 1);
 }
 
+namespace
+{
+
+/// Remaps one catalog id after entry <code>removed</code> is erased
+constexpr std::uint16_t remap(std::uint16_t v, std::uint16_t removed)
+{
+  return (v == removed) ? 0 : (v > removed ? static_cast<std::uint16_t>(v - 1) : v);
+}
+
+/// Applies <code>fn(std::uint16_t&)</code> to every cell of the layers of <code>kind</code>
+template <typename Fn> void for_each_id_cell(Level& level, LayerKind kind, Fn&& fn)
+{
+  for (auto& layer : level.layers)
+  {
+    if (layer.kind == kind)
+    {
+      for (auto& v : plane<IdGrid>(layer).values)
+      {
+        fn(v);
+      }
+    }
+  }
+}
+
+template <typename Fn> std::size_t count_id_cells(const Level& level, LayerKind kind, Fn&& match)
+{
+  std::size_t n = 0;
+  for (const auto& layer : level.layers)
+  {
+    if (layer.kind == kind)
+    {
+      n += static_cast<std::size_t>(
+        std::count_if(plane<IdGrid>(layer).values.begin(), plane<IdGrid>(layer).values.end(), match));
+    }
+  }
+  return n;
+}
+
+}  // namespace
+
+void remove_semantic(Level& level, SemanticId id)
+{
+  LVL_ASSERT_GT(id, kNoSemantic) << "the 'none' semantic type can't be removed";
+  LVL_ASSERT_LT(id, level.semantics.size());
+  level.semantics.erase(level.semantics.begin() + id);
+  for_each_id_cell(level, LayerKind::kSemantic, [id](std::uint16_t& v) { v = remap(v, id); });
+  for (auto& ts : level.tilesets)
+  {
+    for (auto& t : ts.tiles)
+    {
+      t.semantic = remap(t.semantic, id);
+    }
+  }
+  for (auto& t : level.wfc.tiles)
+  {
+    t.semantic = remap(t.semantic, id);
+  }
+}
+
+void remove_material(Level& level, MaterialId id)
+{
+  LVL_ASSERT_GT(id, kNoMaterial) << "the 'none' material can't be removed";
+  LVL_ASSERT_LT(id, level.materials.size());
+  level.materials.erase(level.materials.begin() + id);
+  for_each_id_cell(level, LayerKind::kMaterial, [id](std::uint16_t& v) { v = remap(v, id); });
+  for (auto& ts : level.tilesets)
+  {
+    for (auto& t : ts.tiles)
+    {
+      t.material = remap(t.material, id);
+    }
+    for (auto& v : ts.seasonal)
+    {
+      v.material = remap(v.material, id);
+    }
+  }
+}
+
+std::size_t semantic_uses(const Level& level, SemanticId id)
+{
+  std::size_t n = count_id_cells(level, LayerKind::kSemantic, [id](std::uint16_t v) { return v == id; });
+  for (const auto& ts : level.tilesets)
+  {
+    n += static_cast<std::size_t>(
+      std::count_if(ts.tiles.begin(), ts.tiles.end(), [id](const TileInfo& t) { return t.semantic == id; }));
+  }
+  n += static_cast<std::size_t>(
+    std::count_if(level.wfc.tiles.begin(), level.wfc.tiles.end(), [id](const WfcTile& t) { return t.semantic == id; }));
+  return n;
+}
+
+std::size_t material_uses(const Level& level, MaterialId id)
+{
+  std::size_t n = count_id_cells(level, LayerKind::kMaterial, [id](std::uint16_t v) { return v == id; });
+  for (const auto& ts : level.tilesets)
+  {
+    n += static_cast<std::size_t>(
+      std::count_if(ts.tiles.begin(), ts.tiles.end(), [id](const TileInfo& t) { return t.material == id; }));
+    n += static_cast<std::size_t>(std::count_if(
+      ts.seasonal.begin(), ts.seasonal.end(), [id](const SeasonalVariant& v) { return v.material == id; }));
+  }
+  return n;
+}
+
+void remove_season(Level& level, SeasonId id)
+{
+  LVL_ASSERT_GT(level.seasons.size(), 1UL) << "a level needs at least one season";
+  LVL_ASSERT_LT(id, level.seasons.size());
+  level.seasons.erase(level.seasons.begin() + id);
+}
+
 SeasonId find_season(const Level& level, std::string_view name)
 {
   for (std::size_t i = 0; i < level.seasons.size(); ++i)

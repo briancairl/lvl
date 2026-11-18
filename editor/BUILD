@@ -59,6 +59,7 @@ cc_library(
     name = "editor",
     srcs = [
         "src/app.cpp",
+        "src/deletion.cpp",
         "src/generate.cpp",
         "src/internal.hpp",
         "src/panels.cpp",

@@ -192,3 +192,61 @@ TEST_F(LevelModel, WfcRulesLearnFromExample)
   remove_tile(level.wfc, a);
   EXPECT_EQ(level.wfc.tiles.size(), 2UL);
 }
+
+TEST_F(LevelModel, RemovingCatalogEntriesRemapsEverythingThatUsesThem)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {2, 1}});
+  const SemanticId road = intern_semantic(level, "road");
+  const SemanticId river = intern_semantic(level, "river");
+  const MaterialId dirt = intern_material(level, "dirt");
+  const MaterialId snow = intern_material(level, "snow");
+  const auto sem = add_layer(level, LayerKind::kSemantic, "semantics");
+  const auto mat = add_layer(level, LayerKind::kMaterial, "materials");
+  plane<IdGrid>(level.layers[sem]).at(0, 0) = road;
+  plane<IdGrid>(level.layers[sem]).at(1, 0) = river;
+  plane<IdGrid>(level.layers[mat]).at(0, 0) = dirt;
+  plane<IdGrid>(level.layers[mat]).at(1, 0) = snow;
+  const TileSetId id = add_tileset(level, "t");
+  auto& ts = level.tilesets[id];
+  ts.image_width = 32;
+  ts.image_height = 16;
+  reslice(ts);
+  ts.tiles[0] = TileInfo{.semantic = river, .material = snow};
+  ts.tiles[1] = TileInfo{.semantic = road, .material = dirt};
+  set_seasonal_variant(ts, SeasonalVariant{.tile = 0, .season = "winter", .alternate = 1, .material = snow});
+  const WfcTileId w = add_tile(level.wfc, TileRef{id, 0});
+  level.wfc.tiles[w].semantic = river;
+
+  EXPECT_EQ(semantic_uses(level, road), 2UL);
+  EXPECT_EQ(semantic_uses(level, river), 3UL);
+  EXPECT_EQ(material_uses(level, snow), 3UL);
+
+  remove_semantic(level, road);
+  ASSERT_EQ(level.semantics.size(), 2UL);
+  EXPECT_EQ(level.semantics[1].name, std::string_view{"river"});
+  EXPECT_EQ(plane<IdGrid>(level.layers[sem]).at(0, 0), kNoSemantic);
+  EXPECT_EQ(plane<IdGrid>(level.layers[sem]).at(1, 0), 1);
+  EXPECT_EQ(ts.tiles[0].semantic, 1);
+  EXPECT_EQ(ts.tiles[1].semantic, kNoSemantic);
+  EXPECT_EQ(level.wfc.tiles[w].semantic, 1);
+
+  remove_material(level, dirt);
+  ASSERT_EQ(level.materials.size(), 2UL);
+  EXPECT_EQ(plane<IdGrid>(level.layers[mat]).at(0, 0), kNoMaterial);
+  EXPECT_EQ(plane<IdGrid>(level.layers[mat]).at(1, 0), 1);
+  EXPECT_EQ(ts.tiles[0].material, 1);
+  EXPECT_EQ(ts.seasonal[0].material, 1);
+  EXPECT_EQ(material_uses(level, 1), 3UL);
+}
+
+TEST_F(LevelModel, RemovingSeasonsKeepsAtLeastOne)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {2, 2}});
+  level.seasons.push_back(Season{.name = "winter"});
+  remove_season(level, 0);
+  ASSERT_EQ(level.seasons.size(), 1UL);
+  EXPECT_EQ(level.seasons[0].name, std::string_view{"winter"});
+  EXPECT_DEATH(remove_season(level, 0), "at least one season");
+}
