@@ -37,47 +37,114 @@ void load_atlases(
   AtlasImages& out,
   jobs::Progress* progress)
 {
+  constexpr std::size_t kMiB = 1UL << 20;
+  constexpr std::size_t kSlack = 64;
   out.count = std::min(level.tilesets.size(), kMaxJobTileSets);
   if (progress != nullptr)
   {
     progress->stage("Decoding atlas images");
     progress->add_total(out.count);
   }
-  // Decode in parallel into each worker's scratch...
-  jobs::parallel_for(out.count, memory.worker_count, [&](std::size_t i, std::size_t w) {
+  memory::clear(dest);
+  memory::Arena& general = memory.general;
+  memory::clear(general);
+
+  // 1. Headers: how much destination and scratch memory each atlas needs
+  std::array<image::Info, kMaxJobTileSets> info = {};
+  std::array<bool, kMaxJobTileSets> pending = {};
+  for (std::size_t i = 0; i < out.count; ++i)
+  {
     const level::TileSet& ts = level.tilesets[i];
     out.images[i] = image::Image{};
+    out.status[i] = Status::okay();
     if (ts.image.empty())
     {
       out.status[i] = Status::error("no atlas image set");
+      continue;
     }
-    else
+    out.status[i] = image::probe(ts.image.c_str(), memory.workers[0].scratch, info[i]);
+    pending[i] = out.status[i].ok;
+  }
+
+  // 2. Destination pixels, reserved up front in the asset arena (decoding can't allocate from it
+  //    concurrently)
+  std::array<void*, kMaxJobTileSets> slots = {};
+  for (std::size_t i = 0; i < out.count; ++i)
+  {
+    if (!pending[i])
     {
-      memory::Arena& scratch = memory.workers[w].scratch;
-      memory::Arena& keep = memory.workers[w].json;
-      out.status[i] = image::load(ts.image.c_str(), keep, scratch, out.images[i]);
+      continue;
     }
+    const std::size_t bytes = info[i].pixel_bytes() + kSlack;
+    if (bytes > memory::available(dest))
+    {
+      out.status[i] = Status::error(
+        "atlas '%s' (%dx%d, %zu MiB) does not fit the remaining %zu MiB of asset memory (raise --memory)",
+        level.tilesets[i].image.c_str(),
+        info[i].width,
+        info[i].height,
+        (bytes + kMiB - 1) / kMiB,
+        memory::available(dest) / kMiB);
+      pending[i] = false;
+      continue;
+    }
+    slots[i] = memory::allocate_bytes(dest, bytes, alignof(image::Rgba));
+  }
+
+  // Atlases that already failed count as done
+  for (std::size_t i = 0; i < out.count; ++i)
+  {
+    if (!pending[i] and progress != nullptr)
+    {
+      progress->advance();
+    }
+  }
+
+  // 3. Scratch: a sub-arena sized for each atlas, carved from the job's general arena, for as many as
+  //    fit side by side; those decode in parallel. The rest decode one at a time with all of it.
+  std::array<memory::Arena, kMaxJobTileSets> scratch = {};
+  std::array<std::size_t, kMaxJobTileSets> batch = {};
+  std::size_t batch_size = 0;
+  for (std::size_t i = 0; i < out.count; ++i)
+  {
+    // Keep room for a sub-arena's alignment padding
+    if (pending[i] and info[i].scratch_bytes + 128 <= memory::available(general))
+    {
+      memory::push(general, scratch[i], info[i].scratch_bytes, "atlas-scratch");
+      batch[batch_size++] = i;
+    }
+  }
+  const auto decode = [&](std::size_t i, memory::Arena& work) {
+    // The reserved slot, as an arena the decoder allocates the pixels from
+    memory::Arena slot;
+    memory::initialize(slot, slots[i], info[i].pixel_bytes() + kSlack, "atlas-pixels");
+    out.status[i] = image::load(level.tilesets[i].image.c_str(), slot, work, out.images[i]);
+    pending[i] = false;
     if (progress != nullptr)
     {
       progress->advance();
     }
-  });
-  // ... then copy into the destination asset arena on this thread
-  memory::clear(dest);
+  };
+  jobs::parallel_for(
+    batch_size, memory.worker_count, [&](std::size_t k, std::size_t) { decode(batch[k], scratch[batch[k]]); });
+  for (std::size_t k = batch_size; k-- > 0;)
+  {
+    memory::pop(general, scratch[batch[k]]);
+  }
   for (std::size_t i = 0; i < out.count; ++i)
   {
-    if (!out.status[i].ok or out.images[i].empty())
+    if (pending[i])
     {
-      continue;
+      // Too large to share: the whole general arena (image::load reports it if even that's too small)
+      decode(i, general);
     }
-    if (out.images[i].size() * sizeof(image::Rgba) + 64 <= memory::available(dest))
+  }
+  for (std::size_t i = 0; i < out.count; ++i)
+  {
+    if (!out.status[i].ok)
     {
-      out.images[i].pixels = memory::duplicate(dest, out.images[i].pixels, out.images[i].size());
-    }
-    else
-    {
-      out.status[i] = Status::error("atlas does not fit the asset memory");
       out.images[i] = image::Image{};
+      LVL_LOG_WARN() << "Tileset '" << level.tilesets[i].name << "': " << out.status[i].message;
     }
   }
 }
@@ -130,7 +197,7 @@ void HeightmapJob::run(jobs::Progress& progress)
   if (!seed_image.empty() and params.seed_weight > 0.0F)
   {
     progress.stage("Loading seed image");
-    if (Status s = image::load(seed_image.c_str(), memory->general, memory->workers[0].scratch, img); !s.ok)
+    if (Status s = image::load(seed_image.c_str(), memory->general, img); !s.ok)
     {
       result = s;
       return;

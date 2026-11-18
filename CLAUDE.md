@@ -67,7 +67,15 @@ zero heap allocations. The state is thread-local, so every I/O worker installs i
 
 **Images**: `core/src/image.cpp` compiles stb_image, stb_image_write and stb_image_resize2 with
 `STBI_MALLOC` & co. routed into a thread-local scratch arena. Results are copied to a destination
-arena, and the two must differ.
+arena, and the two must differ. Image sizes come from user files, so running out of either arena is
+a `Status`, not an assert. `image::probe` reads a file's header and estimates the scratch a decode
+needs (`Info::scratch_bytes`, checked against stb's real peak in `//core:image_test`). The stb
+allocator refuses rather than asserts when scratch runs out. The one-arena `image::load(path, arena,
+out)` reserves the pixels, then lends the rest of the arena to the decoder.
+
+Atlas loading (`editor::load_atlases`) probes every atlas and reserves its pixels in the asset arena
+first. It then decodes, in parallel, the atlases whose scratch fits side by side in the job's general
+arena, each in its own sub-arena. Larger ones decode one at a time with the whole general arena.
 
 **Bitsery** (binary) writes into arena-backed vectors and reads in place from the arena the file was
 read into.
@@ -162,7 +170,8 @@ one check to mark required:
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints.
 - `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export.
-- `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
+- `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
+  memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators, undo/redo, save/load in both formats, all exports, and a style profile
   save/load. It requires no

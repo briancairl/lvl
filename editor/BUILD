@@ -130,6 +130,17 @@ wasm_cc_binary(
 )
 
 cc_test(
+    name = "jobs_test",
+    size = "small",
+    srcs = ["test/jobs_test.cpp"],
+    copts = LVL_COPTS,
+    deps = [
+        ":jobs",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "style_test",
     size = "small",
     srcs = ["test/style_test.cpp"],

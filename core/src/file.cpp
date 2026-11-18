@@ -5,6 +5,7 @@
  */
 
 // C++ Standard Library
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -48,6 +49,36 @@ Status read(const char* path, memory::Arena& arena, char*& data, std::size_t& si
       size,
       arena.label,
       memory::available(arena));
+  }
+  std::FILE* const f = std::fopen(path, "rb");
+  if (f == nullptr)
+  {
+    return Status::error("cannot open '%s': %s", path, std::strerror(errno));
+  }
+  data = memory::allocate<char>(arena, size + 1);
+  const std::size_t read_size = std::fread(data, 1, size, f);
+  std::fclose(f);
+  data[size] = '\0';
+  if (read_size != size)
+  {
+    return Status::error("failed to read '%s'", path);
+  }
+  return Status::okay();
+}
+
+Status read_prefix(
+  const char* path,
+  memory::Arena& arena,
+  std::size_t max_bytes,
+  char*& data,
+  std::size_t& size,
+  std::size_t& total)
+{
+  LVL_RETURN_IF_ERROR(file::size(path, total));
+  size = std::min(total, max_bytes);
+  if (size + 1 > memory::available(arena))
+  {
+    return Status::error("'%s': %zu bytes do not fit in arena '%s'", path, size, arena.label);
   }
   std::FILE* const f = std::fopen(path, "rb");
   if (f == nullptr)

@@ -53,13 +53,51 @@ struct Image
 /// Allocates a <code>width</code> x <code>height</code> image filled with <code>fill</code>
 Image create(memory::Arena& arena, int width, int height, Rgba fill = Rgba{0, 0, 0, 0});
 
-/// Decodes an image file (PNG, JPEG, BMP, TGA, ...) into <code>dest</code> as RGBA8
+/// What an encoded image needs, read from its header without decoding it
+struct Info
+{
+  int width = 0;
+  int height = 0;
+  /// Channels stored in the file (decoding always produces 4)
+  int channels = 0;
+  bool sixteen_bit = false;
+  /// Size of the encoded file
+  std::size_t file_bytes = 0;
+  /// Scratch memory <code>load()</code> needs for this image: the file plus stb's decode buffers (an
+  /// upper bound)
+  std::size_t scratch_bytes = 0;
+
+  /// Destination memory for the decoded RGBA8 pixels
+  [[nodiscard]] std::size_t pixel_bytes() const
+  {
+    return static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * sizeof(Rgba);
+  }
+};
+
+/// Reads the header of an encoded image held in memory (stb may use a little of <code>scratch</code>, released after)
+Status info(const void* data, std::size_t size, memory::Arena& scratch, Info& out);
+
+/// Reads the header of an image file (the start of the file is read into <code>scratch</code>, then released)
+Status probe(const char* path, memory::Arena& scratch, Info& out);
+
+/**
+ * @brief Decodes an image file (PNG, JPEG, BMP, TGA, ...) into <code>dest</code> as RGBA8
+ *
+ * Fails (rather than asserting) if <code>scratch</code> can't hold the file and decode buffers, or
+ * <code>dest</code> the pixels; see probe() for how much each needs.
+ */
 Status load(const char* path, memory::Arena& dest, memory::Arena& scratch, Image& out);
 
-/// Decodes an encoded image held in memory into <code>dest</code> as RGBA8
+/**
+ * @brief As load(), with one arena for both: the pixels are allocated from <code>arena</code> first,
+ *        then the rest of it is lent to the decoder as scratch and given back
+ */
+Status load(const char* path, memory::Arena& arena, Image& out);
+
+/// Decodes an encoded image held in memory into <code>dest</code> as RGBA8 (same checks as load())
 Status decode(const void* data, std::size_t size, memory::Arena& dest, memory::Arena& scratch, Image& out);
 
-/// Encodes <code>img</code> as PNG and writes it to <code>path</code>
+/// Encodes <code>img</code> as PNG and writes it to <code>path</code> (fails if <code>scratch</code> is too small)
 Status save_png(const char* path, const Image& img, memory::Arena& scratch);
 
 /// Resamples <code>src</code> to <code>width</code> x <code>height</code> into <code>dest</code>
