@@ -197,5 +197,6 @@ template <typename S> void serialize(S& s, Season& v)
 
 template <> struct lvl::EnumNames<lvl::level::Direction>
 {
-  static constexpr std::array<std::string_view, 4> kNames = {"north", "east", "south", "west"};
+  static constexpr std::array<std::string_view, 8> kNames =
+    {"north", "east", "south", "west", "north_east", "south_east", "south_west", "north_west"};
 };

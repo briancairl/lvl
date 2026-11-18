@@ -82,6 +82,8 @@ void minimap_panel(App& app);
 void log_panel(App& app);
 void file_dialog(App& app);
 void style_panel(App& app);
+/// The pop-out WFC neighbor editor: drag tiles into the eight sides around a rule tile
+void wfc_neighbors_window(App& app);
 
 /// Generators (as the Generate panel's buttons): start their background jobs with the current settings
 void start_heightmap(App& app);
@@ -97,6 +99,9 @@ void request_delete(App& app, const PendingDelete& request);
 
 /// Shows the confirmation dialog and applies confirmed deletes (once per frame, after the panels)
 void process_deletes(App& app);
+
+/// Texture and UV rectangle of a tile; false if it has no loaded texture
+bool tile_uv(const App& app, level::TileRef tile, ImTextureID& texture, ImVec2& uv0, ImVec2& uv1);
 
 /// Draws tile <code>tile</code> of tileset <code>ts</code> as an ImGui image of the given size
 void tile_image(const App& app, level::TileRef tile, float size);

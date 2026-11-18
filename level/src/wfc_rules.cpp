@@ -45,7 +45,9 @@ void remove_tile(WfcRules& rules, WfcTileId id)
 
 WfcAdjacency canonical(WfcAdjacency adj)
 {
-  if (adj.direction == Direction::kWest or adj.direction == Direction::kNorth)
+  if (
+    adj.direction == Direction::kWest or adj.direction == Direction::kNorth or adj.direction == Direction::kNorthEast or
+    adj.direction == Direction::kNorthWest)
   {
     return WfcAdjacency{.a = adj.b, .b = adj.a, .direction = opposite(adj.direction)};
   }
@@ -98,7 +100,9 @@ void learn(WfcRules& rules, const Grid<TileRef>& example)
       rules.tiles[i].weight = counts[i];
     }
   }
-  // Second pass: observed east/south neighbor pairs
+  // Second pass: observed neighbor pairs (the canonical directions cover every pair once)
+  static constexpr Direction kCanonical[] = {
+    Direction::kEast, Direction::kSouth, Direction::kSouthEast, Direction::kSouthWest};
   for (int y = 0; y < e.height; ++y)
   {
     for (int x = 0; x < e.width; ++x)
@@ -109,13 +113,69 @@ void learn(WfcRules& rules, const Grid<TileRef>& example)
         continue;
       }
       const WfcTileId a = find_tile(rules, here);
-      if (x + 1 < e.width and !example.at(x + 1, y).empty())
+      for (const Direction d : kCanonical)
       {
-        set_allowed(rules, a, find_tile(rules, example.at(x + 1, y)), Direction::kEast, true);
+        const Cell n = step(Cell{x, y}, d);
+        if (e.contains(n) and !example.at(n).empty())
+        {
+          set_allowed(rules, a, find_tile(rules, example.at(n)), d, true);
+        }
       }
-      if (y + 1 < e.height and !example.at(x, y + 1).empty())
+    }
+  }
+}
+
+std::size_t diagonal_count(const WfcRules& rules)
+{
+  return static_cast<std::size_t>(std::count_if(
+    rules.adjacency.begin(), rules.adjacency.end(), [](const WfcAdjacency& a) { return diagonal(a.direction); }));
+}
+
+void derive_diagonals(WfcRules& rules, memory::Arena& scratch)
+{
+  memory::Scope scope{scratch};
+  // A corner is reached through either of its two sides: {corner, first side, second side}
+  struct Path
+  {
+    Direction corner;
+    Direction first;
+    Direction second;
+  };
+  static constexpr Path kPaths[] = {
+    {Direction::kSouthEast, Direction::kEast, Direction::kSouth},
+    {Direction::kSouthEast, Direction::kSouth, Direction::kEast},
+    {Direction::kSouthWest, Direction::kWest, Direction::kSouth},
+    {Direction::kSouthWest, Direction::kSouth, Direction::kWest},
+  };
+  const auto n = static_cast<WfcTileId>(rules.tiles.size());
+  // Snapshot of the side relation (an n*n bit matrix per side), so new corner rules don't feed back
+  auto side = memory::make_vector<std::uint8_t>(scratch, 4 * static_cast<std::size_t>(n) * n, std::uint8_t{0});
+  const auto at = [n](Direction d, WfcTileId a, WfcTileId b) { return (static_cast<std::size_t>(d) * n + a) * n + b; };
+  for (const WfcAdjacency& adj : rules.adjacency)
+  {
+    if (!diagonal(adj.direction) and adj.a < n and adj.b < n)
+    {
+      side[at(adj.direction, adj.a, adj.b)] = 1;
+      side[at(opposite(adj.direction), adj.b, adj.a)] = 1;
+    }
+  }
+  for (const Path& p : kPaths)
+  {
+    for (WfcTileId a = 0; a < n; ++a)
+    {
+      for (WfcTileId c = 0; c < n; ++c)
       {
-        set_allowed(rules, a, find_tile(rules, example.at(x, y + 1)), Direction::kSouth, true);
+        if (side[at(p.first, a, c)] == 0)
+        {
+          continue;
+        }
+        for (WfcTileId b = 0; b < n; ++b)
+        {
+          if (side[at(p.second, c, b)] != 0)
+          {
+            set_allowed(rules, a, b, p.corner, true);
+          }
+        }
       }
     }
   }

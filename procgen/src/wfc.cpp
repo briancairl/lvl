@@ -56,7 +56,7 @@ public:
       extents_{out.extents},
       tiles_{rules.tiles.size()},
       words_{(rules.tiles.size() + 63) / 64},
-      compat_{memory::make_vector<Word>(scratch, 4 * tiles_ * words_, Word{0})},
+      compat_{memory::make_vector<Word>(scratch, 8 * tiles_ * words_, Word{0})},
       initial_{memory::make_vector<Word>(scratch, extents_.count() * words_, Word{0})},
       wave_{memory::make_vector<Word>(scratch, extents_.count() * words_, Word{0})},
       in_region_{memory::make_vector<std::uint8_t>(scratch, extents_.count(), std::uint8_t{0})},
@@ -82,7 +82,7 @@ public:
     }
     for (const auto& a : rules.adjacency)
     {
-      if (a.a < tiles_ and a.b < tiles_)
+      if (a.a < tiles_ and a.b < tiles_ and (rules.diagonals or !level::diagonal(a.direction)))
       {
         set(compat(a.direction, a.a), a.b);
         set(compat(level::opposite(a.direction), a.b), a.a);
@@ -400,8 +400,12 @@ private:
       const std::uint32_t i = stack_.back();
       stack_.pop_back();
       const Cell c = extents_.cell(i);
-      for (const Direction d : level::kDirections)
+      for (const Direction d : level::kNeighbors)
       {
+        if (!rules_.diagonals and level::diagonal(d))
+        {
+          continue;
+        }
         const Cell nc = level::step(c, d);
         if (!extents_.contains(nc))
         {
