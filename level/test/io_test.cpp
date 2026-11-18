@@ -94,6 +94,8 @@ protected:
       .semantic = road};
     set_allowed(level.wfc, a, b, Direction::kNorth, true);
     set_allowed(level.wfc, a, a, Direction::kEast, true);
+    set_allowed(level.wfc, a, b, Direction::kNorthWest, true);
+    level.wfc.diagonals = true;
 
     create_portal(
       level.registry,
@@ -177,6 +179,9 @@ protected:
     EXPECT_EQ(b.wfc.tiles[1].semantic, a.wfc.tiles[1].semantic);
     EXPECT_EQ(a.wfc.adjacency.size(), b.wfc.adjacency.size());
     EXPECT_TRUE(allowed(b.wfc, 0, 1, Direction::kNorth));
+    EXPECT_TRUE(allowed(b.wfc, 1, 0, Direction::kSouthEast));
+    EXPECT_FALSE(allowed(b.wfc, 0, 1, Direction::kSouthEast));
+    EXPECT_TRUE(b.wfc.diagonals);
 
     ASSERT_EQ(a.graphs.size(), b.graphs.size());
     EXPECT_EQ(b.graphs[1].kind, GraphKind::kPatrol);

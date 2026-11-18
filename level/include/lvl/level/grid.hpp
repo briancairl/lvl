@@ -62,18 +62,48 @@ struct Extents
   friend constexpr bool operator!=(const Extents& lhs, const Extents& rhs) { return !(lhs == rhs); }
 };
 
-/// The four grid directions, in the order WFC adjacency rules are stored
+/**
+ * @brief Grid directions: the four sides, then the four corners
+ *
+ * The numeric values are serialized, so the sides keep 0..3 and the corners follow.
+ */
 enum class Direction : std::uint8_t
 {
   kNorth,
   kEast,
   kSouth,
   kWest,
+  kNorthEast,
+  kSouthEast,
+  kSouthWest,
+  kNorthWest,
 };
 
+/// The four sides
 inline constexpr Direction kDirections[] = {Direction::kNorth, Direction::kEast, Direction::kSouth, Direction::kWest};
 
-constexpr Direction opposite(Direction d) { return static_cast<Direction>((static_cast<int>(d) + 2) % 4); }
+/// The four corners
+inline constexpr Direction kDiagonals[] =
+  {Direction::kNorthEast, Direction::kSouthEast, Direction::kSouthWest, Direction::kNorthWest};
+
+/// All eight neighbors, clockwise from north
+inline constexpr Direction kNeighbors[] = {
+  Direction::kNorth,
+  Direction::kNorthEast,
+  Direction::kEast,
+  Direction::kSouthEast,
+  Direction::kSouth,
+  Direction::kSouthWest,
+  Direction::kWest,
+  Direction::kNorthWest};
+
+constexpr bool diagonal(Direction d) { return static_cast<int>(d) >= 4; }
+
+constexpr Direction opposite(Direction d)
+{
+  const int i = static_cast<int>(d);
+  return static_cast<Direction>((i < 4) ? (i + 2) % 4 : 4 + (i - 2) % 4);
+}
 
 constexpr Cell step(Cell c, Direction d)
 {
@@ -87,6 +117,14 @@ constexpr Cell step(Cell c, Direction d)
     return Cell{c.x, c.y + 1};
   case Direction::kWest:
     return Cell{c.x - 1, c.y};
+  case Direction::kNorthEast:
+    return Cell{c.x + 1, c.y - 1};
+  case Direction::kSouthEast:
+    return Cell{c.x + 1, c.y + 1};
+  case Direction::kSouthWest:
+    return Cell{c.x - 1, c.y + 1};
+  case Direction::kNorthWest:
+    return Cell{c.x - 1, c.y - 1};
   }
   return c;
 }

@@ -98,10 +98,10 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules`, EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `wfc_neighbors.cpp` the pop-out drag-and-drop WFC neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -152,6 +152,19 @@ Quit, and `--frames`/`--smoke`, which force it. With unsaved changes (`App::modi
 path yet, via the save dialog, and cancelling that dialog cancels quitting), Quit without saving,
 or Cancel. In the browser, `web::set_unsaved_changes()` arms the page's `beforeunload` "leave site?"
 prompt while there are unsaved changes.
+
+### WFC neighbor editor
+
+`wfc_neighbors_window` (View > WFC neighbors, or "Neighbor editor..." in the WFC rules tab) is a
+floating window: a palette of the rule tiles, and a 3x3 grid with the edited tile in the middle and one
+drop slot per `Direction`. Drag a tile from the palette into a slot to allow it there, between slots to
+move it (Ctrl: copy), onto the palette or right-click it to forbid it, onto the middle to edit it next.
+Each slot's context menu allows/clears everything or copies it to the other sides/corners. Corner slots
+only count when `WfcRules::diagonals` is on; turning it on with no corner rules derives them from the
+side rules (`level::derive_diagonals`), so an existing rule set stays solvable.
+
+`Direction` has the four sides (values 0..3, also used by portals) then the four corners (4..7);
+`kDirections` is the sides, `kDiagonals` the corners and `kNeighbors` all eight.
 
 ### Deleting
 
@@ -207,9 +220,9 @@ one check to mark required:
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
-  paths: demo level, generators, undo/redo, save/load in both formats, all exports, a style profile
-  save/load, deletes, the file dialog, and the unsaved-changes prompt (cancelled, then "Save and
-  quit" ends the session). It requires no
+  paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
+  in both formats, all exports, a style profile save/load, deletes, the file dialog, and the unsaved-changes
+  prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
 

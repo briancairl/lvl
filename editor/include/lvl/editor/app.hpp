@@ -215,6 +215,8 @@ struct Panels
   bool log = true;
   bool style = false;
   bool demo = false;
+  /// The pop-out WFC neighbor editor
+  bool wfc_neighbors = false;
 };
 
 /// What the modal file dialog is for

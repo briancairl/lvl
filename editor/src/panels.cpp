@@ -97,21 +97,32 @@ bool collision_edit(std::uint8_t& mask)
 
 }  // namespace
 
-void tile_image(const App& app, TileRef tile, float size)
+bool tile_uv(const App& app, TileRef tile, ImTextureID& texture, ImVec2& uv0, ImVec2& uv1)
 {
   const Level& lv = *app.level;
   if (tile.empty() or tile.tileset >= lv.tilesets.size() or !app.assets.textures[tile.tileset].valid())
   {
-    ImGui::Dummy(ImVec2{size, size});
-    return;
+    return false;
   }
   const Texture& tex = app.assets.textures[tile.tileset];
   const TileRect r = tile_rect(lv.tilesets[tile.tileset].slice, tex.width, tex.height, tile.tile);
-  ImGui::Image(
-    texture_id(tex),
-    ImVec2{size, size},
-    ImVec2{static_cast<float>(r.x) / tex.width, static_cast<float>(r.y) / tex.height},
-    ImVec2{static_cast<float>(r.x + r.width) / tex.width, static_cast<float>(r.y + r.height) / tex.height});
+  texture = texture_id(tex);
+  uv0 = ImVec2{static_cast<float>(r.x) / tex.width, static_cast<float>(r.y) / tex.height};
+  uv1 = ImVec2{static_cast<float>(r.x + r.width) / tex.width, static_cast<float>(r.y + r.height) / tex.height};
+  return true;
+}
+
+void tile_image(const App& app, TileRef tile, float size)
+{
+  ImTextureID texture{};
+  ImVec2 uv0;
+  ImVec2 uv1;
+  if (!tile_uv(app, tile, texture, uv0, uv1))
+  {
+    ImGui::Dummy(ImVec2{size, size});
+    return;
+  }
+  ImGui::Image(texture, ImVec2{size, size}, uv0, uv1);
 }
 
 // -------------------------------------------------------------------------------------------------

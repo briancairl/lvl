@@ -6,7 +6,8 @@
  * Constraints for wave-function-collapse generation (lvl::procgen::wfc):
  *
  * - which tiles take part, with relative weights;
- * - which tiles may sit next to which, per direction (adjacency);
+ * - which tiles may sit next to which, per direction (adjacency): the four sides always, and the
+ *   four corners when WfcRules::diagonals is set;
  * - per-tile constraints against other layers: a height band, a water requirement and an optional
  *   semantic type, so generation can be seeded/steered by a heightmap, rivers, or hand-painted
  *   semantics.
@@ -77,6 +78,8 @@ struct WfcRules
   {}
 
   Name name;
+  /// Also constrain the four corner neighbors (otherwise diagonal adjacencies are ignored)
+  bool diagonals = false;
   memory::Vector<WfcTile> tiles;
   memory::Vector<WfcAdjacency> adjacency;
 };
@@ -90,7 +93,7 @@ WfcTileId add_tile(WfcRules& rules, TileRef tile);
 /// Removes a tile and every adjacency involving it (renumbering later tiles)
 void remove_tile(WfcRules& rules, WfcTileId id);
 
-/// Normalizes an adjacency to its canonical stored form (direction east or south)
+/// Normalizes an adjacency to its canonical stored form (direction east, south, south-east or south-west)
 WfcAdjacency canonical(WfcAdjacency adjacency);
 
 /// True if <code>b</code> may be <code>direction</code> of <code>a</code>
@@ -103,9 +106,22 @@ void set_allowed(WfcRules& rules, WfcTileId a, WfcTileId b, Direction direction,
  * @brief Learns tiles and adjacencies from an example tile plane
  *
  * Every distinct non-empty tile found is added (weight = occurrence count), and every observed
- * neighboring pair is allowed. Existing rules are kept (merged).
+ * neighboring pair (sides and corners) is allowed. Existing rules are kept (merged).
  */
 void learn(WfcRules& rules, const Grid<TileRef>& example);
+
+/// Number of stored adjacencies in a corner direction
+std::size_t diagonal_count(const WfcRules& rules);
+
+/**
+ * @brief Allows every corner pair the side rules can produce
+ *
+ * <code>b</code> may sit south-east of <code>a</code> if some tile <code>c</code> fits east of
+ * <code>a</code> with <code>b</code> south of it, or south of <code>a</code> with <code>b</code> east
+ * of it (likewise for the other corners). A starting point for diagonal rules that never forbids a
+ * layout the side rules alone allow. <code>scratch</code> holds a 4*n*n table and is rewound.
+ */
+void derive_diagonals(WfcRules& rules, memory::Arena& scratch);
 
 }  // namespace lvl::level
 

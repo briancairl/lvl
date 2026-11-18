@@ -193,6 +193,62 @@ TEST_F(LevelModel, WfcRulesLearnFromExample)
   EXPECT_EQ(level.wfc.tiles.size(), 2UL);
 }
 
+TEST_F(LevelModel, WfcDiagonalRules)
+{
+  for (const Direction d : kNeighbors)
+  {
+    EXPECT_EQ(opposite(opposite(d)), d);
+    EXPECT_NE(opposite(d), d);
+    EXPECT_EQ(diagonal(d), diagonal(opposite(d)));
+    const Cell n = step(step(Cell{5, 5}, d), opposite(d));
+    EXPECT_EQ(n.x, 5);
+    EXPECT_EQ(n.y, 5);
+  }
+  EXPECT_EQ(opposite(Direction::kNorthEast), Direction::kSouthWest);
+  EXPECT_EQ(opposite(Direction::kNorthWest), Direction::kSouthEast);
+
+  Level level{arena};
+  create_default(level, Settings{.extents = {3, 2}});
+  auto& ground = plane<TileGrid>(level.layers[1]);
+  // a b a
+  // c c c
+  ground.at(0, 0) = {0, 1};
+  ground.at(1, 0) = {0, 2};
+  ground.at(2, 0) = {0, 1};
+  ground.at(0, 1) = {0, 3};
+  ground.at(1, 1) = {0, 3};
+  ground.at(2, 1) = {0, 3};
+  learn(level.wfc, ground);
+  const WfcTileId a = find_tile(level.wfc, {0, 1});
+  const WfcTileId b = find_tile(level.wfc, {0, 2});
+  const WfcTileId c = find_tile(level.wfc, {0, 3});
+  EXPECT_TRUE(allowed(level.wfc, a, c, Direction::kSouthEast));
+  EXPECT_TRUE(allowed(level.wfc, a, c, Direction::kSouthWest));
+  EXPECT_TRUE(allowed(level.wfc, c, a, Direction::kNorthWest));
+  EXPECT_TRUE(allowed(level.wfc, c, b, Direction::kNorthEast));
+  EXPECT_FALSE(allowed(level.wfc, a, b, Direction::kSouthEast));
+  EXPECT_FALSE(allowed(level.wfc, c, c, Direction::kNorthEast));
+  EXPECT_EQ(diagonal_count(level.wfc), 4UL);  // a-c SE, a-c SW, b-c SE, b-c SW
+
+  // Corners derived from sides: a east of a, b south of a => b south-east of a
+  WfcRules rules{arena};
+  const WfcTileId x = add_tile(rules, TileRef{0, 1});
+  const WfcTileId y = add_tile(rules, TileRef{0, 2});
+  set_allowed(rules, x, x, Direction::kEast, true);
+  set_allowed(rules, x, y, Direction::kSouth, true);
+  memory::Arena scratch;
+  memory::create(scratch, 1 << 16, "scratch");
+  derive_diagonals(rules, scratch);
+  EXPECT_TRUE(allowed(rules, x, y, Direction::kSouthEast));
+  EXPECT_TRUE(allowed(rules, x, y, Direction::kSouthWest));
+  EXPECT_TRUE(allowed(rules, y, x, Direction::kNorthWest));
+  EXPECT_FALSE(allowed(rules, x, x, Direction::kSouthEast));
+  EXPECT_FALSE(allowed(rules, y, y, Direction::kSouthEast));
+  EXPECT_EQ(diagonal_count(rules), 2UL);
+  EXPECT_EQ(scratch.utilized, 0UL);
+  memory::destroy(scratch);
+}
+
 TEST_F(LevelModel, RemovingCatalogEntriesRemapsEverythingThatUsesThem)
 {
   Level level{arena};
