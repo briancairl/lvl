@@ -82,6 +82,42 @@ bool selection_bounds(const App& app, SelectionBounds& out)
   return true;
 }
 
+void selection_preview(const App& app, float thumb, int max_rows)
+{
+  SelectionBounds bounds;
+  if (!selection_bounds(app, bounds))
+  {
+    return;
+  }
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const float rows = static_cast<float>(std::min(max_rows, bounds.height));
+  ImGui::BeginChild(
+    "selection",
+    ImVec2{0, rows * (thumb + spacing) + spacing},
+    ImGuiChildFlags_Borders,
+    ImGuiWindowFlags_HorizontalScrollbar);
+  for (int y = 0; y < bounds.height; ++y)
+  {
+    for (int x = 0; x < bounds.width; ++x)
+    {
+      const auto tile = static_cast<TileIndex>((bounds.y + y) * bounds.columns + (bounds.x + x));
+      if (x > 0)
+      {
+        ImGui::SameLine();
+      }
+      if (app.selection.has(tile))
+      {
+        tile_image(app, TileRef{static_cast<TileSetId>(app.selection.tileset), tile}, thumb);
+      }
+      else
+      {
+        ImGui::Dummy(ImVec2{thumb, thumb});
+      }
+    }
+  }
+  ImGui::EndChild();
+}
+
 bool palette_layout(const App& app, Grid<TileRef>& out)
 {
   SelectionBounds bounds;

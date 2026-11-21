@@ -842,7 +842,38 @@ void smoke(App& app)
     }
     break;
   }
-  case 20:
+  case 20: {
+    // WFC rules from the palette layout: the three tiles may only meet as the palette lays them out
+    level::WfcRules& rules = app.level->wfc;
+    const level::Extents grid = palette_grid(app, app.tileset);
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (int x = 0; x < std::min(3, grid.width); ++x)
+    {
+      app.selection.set(static_cast<level::TileIndex>(x), true);
+    }
+    app.generators.wfc_layout = level::LayoutMode::kExclusive;
+    level::Grid<level::TileRef> layout{app.memory.frame};
+    if (!palette_layout(app, layout))
+    {
+      report(app, Status::error("the palette selection has no layout"));
+      break;
+    }
+    if (level::constrain_from_layout(rules, layout, app.generators.wfc_layout, app.memory.frame) == 0)
+    {
+      report(app, Status::error("no rules came from the palette layout"));
+      break;
+    }
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    const auto first = level::find_tile(rules, level::TileRef{tileset, 0});
+    const auto second = level::find_tile(rules, level::TileRef{tileset, 1});
+    if (!level::allowed(rules, first, second, level::Direction::kEast))
+    {
+      report(app, Status::error("the palette layout did not allow its own neighbors"));
+    }
+    break;
+  }
+  case 21:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -851,7 +882,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 21:
+  case 22:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

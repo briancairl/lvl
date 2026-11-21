@@ -207,6 +207,8 @@ struct Generators
   bool wfc_use_height = true;
   bool wfc_use_water = true;
   bool wfc_use_semantic = false;
+  /// Whether rules taken from the palette layout also forbid what it does not show
+  level::LayoutMode wfc_layout = level::LayoutMode::kAllow;
   /// Region for WFC (width 0 = whole map); set with the select tool
   int region_x = 0;
   int region_y = 0;

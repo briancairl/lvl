@@ -396,6 +396,49 @@ void start_wfc(App& app, std::size_t target)
   }
 }
 
+/// Adjacencies taken from the palette: tiles sitting next to each other there may do so on the map
+void palette_layout_section(App& app)
+{
+  WfcRules& rules = app.level->wfc;
+  ImGui::SeparatorText("From the palette layout");
+  if (selection_size(app) < 2)
+  {
+    ImGui::TextDisabled("Ctrl/shift+click tiles in the palette to make the way they are laid out there a rule");
+    return;
+  }
+  SelectionBounds bounds;
+  selection_bounds(app, bounds);
+  selection_preview(app, 24.0F, 4);
+  LayoutMode& mode = app.generators.wfc_layout;
+  if (ImGui::RadioButton("Allow what it shows", mode == LayoutMode::kAllow))
+  {
+    mode = LayoutMode::kAllow;
+  }
+  ImGui::SameLine();
+  if (ImGui::RadioButton("Only what it shows", mode == LayoutMode::kExclusive))
+  {
+    mode = LayoutMode::kExclusive;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip(
+      "A hard constraint: on every side where the layout puts a neighbor, every other tile is forbidden");
+  }
+  if (ImGui::Button(format<64>("Apply the %d x %d layout", bounds.width, bounds.height)))
+  {
+    Grid<TileRef> layout{app.memory.frame};
+    if (palette_layout(app, layout))
+    {
+      const std::size_t pairs = constrain_from_layout(rules, layout, mode, app.memory.frame);
+      LVL_LOG_INFO_FMT(
+        "WFC rules: %zu neighbor pair(s) from a %d x %d palette layout", pairs, bounds.width, bounds.height);
+      app.modified = true;
+    }
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled(rules.diagonals ? "(sides and corners)" : "(sides only)");
+}
+
 /// The visual WFC rule editor (the "WFC rules" tab)
 void wfc_rules_tab(App& app)
 {
@@ -413,20 +456,31 @@ void wfc_rules_tab(App& app)
     open_file_dialog(app, FileAction::kSaveWfc);
   }
   ImGui::SameLine();
-  ImGui::BeginDisabled(app.paint.tile.empty() or app.paint.tile.tileset >= lv.tilesets.size());
+  const std::size_t selected = selection_size(app);
+  ImGui::BeginDisabled(selected == 0 and (app.paint.tile.empty() or app.paint.tile.tileset >= lv.tilesets.size()));
   if (ImGui::SmallButton("Add palette tile(s)"))
   {
-    // Adds the whole palette stamp
-    const TileSet& ts = lv.tilesets[app.paint.tile.tileset];
-    const int cols = std::max(1, slice_grid(ts.slice, ts.image_width, ts.image_height).width);
-    for (int dy = 0; dy < app.paint.stamp_height; ++dy)
+    // Adds the palette selection, or the palette stamp when there is none
+    if (selected > 0)
     {
-      for (int dx = 0; dx < app.paint.stamp_width; ++dx)
+      for (const TileIndex tile : selected_tiles(app, app.memory.frame))
       {
-        const int index = app.paint.tile.tile + dy * cols + dx;
-        if (index < static_cast<int>(ts.tiles.size()))
+        app.wfc_tile = add_tile(rules, TileRef{static_cast<TileSetId>(app.tileset), tile});
+      }
+    }
+    else
+    {
+      const TileSet& ts = lv.tilesets[app.paint.tile.tileset];
+      const int cols = std::max(1, slice_grid(ts.slice, ts.image_width, ts.image_height).width);
+      for (int dy = 0; dy < app.paint.stamp_height; ++dy)
+      {
+        for (int dx = 0; dx < app.paint.stamp_width; ++dx)
         {
-          app.wfc_tile = add_tile(rules, TileRef{app.paint.tile.tileset, static_cast<TileIndex>(index)});
+          const int index = app.paint.tile.tile + dy * cols + dx;
+          if (index < static_cast<int>(ts.tiles.size()))
+          {
+            app.wfc_tile = add_tile(rules, TileRef{app.paint.tile.tileset, static_cast<TileIndex>(index)});
+          }
         }
       }
     }
@@ -450,6 +504,7 @@ void wfc_rules_tab(App& app)
     rules.adjacency.clear();
     changed = true;
   }
+  palette_layout_section(app);
   if (rules.tiles.empty())
   {
     ImGui::TextDisabled(

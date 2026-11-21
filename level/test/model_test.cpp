@@ -240,6 +240,51 @@ TEST_F(LevelModel, WfcRulesLearnFromExample)
   EXPECT_EQ(level.wfc.tiles.size(), 2UL);
 }
 
+TEST_F(LevelModel, WfcRulesFromAPaletteLayout)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {2, 2}});
+  WfcRules& rules = level.wfc;
+  // The tile an unrelated rule uses, and two tiles laid out side by side:  a b
+  const WfcTileId other = add_tile(rules, TileRef{0, 9});
+  memory::Arena scratch;
+  memory::create(scratch, 1 << 16, "scratch");
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{2, 1}, kEmptyTile);
+  layout.at(0, 0) = TileRef{0, 1};
+  layout.at(1, 0) = TileRef{0, 2};
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kAllow, scratch), 1UL);
+  const WfcTileId a = find_tile(rules, TileRef{0, 1});
+  const WfcTileId b = find_tile(rules, TileRef{0, 2});
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kEast));
+  EXPECT_TRUE(allowed(rules, b, a, Direction::kWest));
+  EXPECT_FALSE(allowed(rules, a, b, Direction::kSouth));
+  // Corners are ignored until the rules use them
+  layout.assign(Extents{2, 2}, kEmptyTile);
+  layout.at(0, 0) = TileRef{0, 1};
+  layout.at(1, 1) = TileRef{0, 2};
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kAllow, scratch), 0UL);
+  rules.diagonals = true;
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kAllow, scratch), 1UL);
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kSouthEast));
+  rules.diagonals = false;
+
+  // Anything else east of a was allowed before; exclusive mode leaves only what the layout shows
+  set_allowed(rules, a, other, Direction::kEast, true);
+  set_allowed(rules, a, other, Direction::kNorth, true);
+  layout.assign(Extents{2, 1}, kEmptyTile);
+  layout.at(0, 0) = TileRef{0, 1};
+  layout.at(1, 0) = TileRef{0, 2};
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kExclusive, scratch), 1UL);
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kEast));
+  EXPECT_FALSE(allowed(rules, a, other, Direction::kEast));
+  // The layout says nothing about what is north of a, or about tiles it does not contain
+  EXPECT_TRUE(allowed(rules, a, other, Direction::kNorth));
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kSouthEast));
+  EXPECT_EQ(scratch.utilized, 0UL);
+  memory::destroy(scratch);
+}
+
 TEST_F(LevelModel, WfcDiagonalRules)
 {
   for (const Direction d : kNeighbors)

@@ -168,6 +168,18 @@ key/value property to set or a key to remove) is behind a checkbox saying whethe
 "Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
 tiles, count)` does the writing; like the single-tile fields, it is not undoable.
 
+### WFC rules from the palette layout
+
+"From the palette layout" in the WFC rules tab turns the palette selection into adjacency rules:
+every pair of selected tiles that sit next to each other in the palette may sit next to each other
+on the map, in that direction (corners too when `WfcRules::diagonals` is on). "Allow what it shows"
+merges those pairs into the rules; "Only what it shows"
+(`level::LayoutMode::kExclusive`) makes them a hard constraint, forbidding every other tile on the
+sides where the layout puts a neighbor — sides the layout says nothing about, and tiles it does not
+contain, keep the rules they have. `level::constrain_from_layout` does both; its scratch arena must
+not be the one the rules live in. "Add palette tile(s)" adds the selection, or the paint stamp when
+nothing is selected.
+
 ### WFC neighbor editor
 
 `wfc_neighbors_window` (View > WFC neighbors, or "Neighbor editor..." in the WFC rules tab) is a
@@ -226,7 +238,7 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
-  rule learning); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
+  rule learning, rules from a palette layout); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files.
 - `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
@@ -236,8 +248,8 @@ one check to mark required:
   memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
-  in both formats, all exports, a style profile save/load, deletes, a batch tile edit over a palette
-  selection, the file dialog, and the unsaved-changes
+  in both formats, all exports, a style profile save/load, deletes, a batch tile edit and WFC rules
+  from a palette selection, the file dialog, and the unsaved-changes
   prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

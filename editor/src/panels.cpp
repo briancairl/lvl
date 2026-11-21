@@ -581,38 +581,7 @@ void batch_edit_section(App& app, TileSet& ts)
     return;
   }
 
-  // The selection, as the palette lays it out
-  constexpr float kThumb = 24.0F;
-  SelectionBounds bounds;
-  if (selection_bounds(app, bounds))
-  {
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    ImGui::BeginChild(
-      "selected",
-      ImVec2{0, std::min(5.0F, static_cast<float>(bounds.height)) * (kThumb + spacing) + spacing},
-      ImGuiChildFlags_Borders,
-      ImGuiWindowFlags_HorizontalScrollbar);
-    for (int y = 0; y < bounds.height; ++y)
-    {
-      for (int x = 0; x < bounds.width; ++x)
-      {
-        const auto tile = static_cast<TileIndex>((bounds.y + y) * bounds.columns + (bounds.x + x));
-        if (x > 0)
-        {
-          ImGui::SameLine();
-        }
-        if (app.selection.has(tile))
-        {
-          tile_image(app, TileRef{static_cast<TileSetId>(app.tileset), tile}, kThumb);
-        }
-        else
-        {
-          ImGui::Dummy(ImVec2{kThumb, kThumb});
-        }
-      }
-    }
-    ImGui::EndChild();
-  }
+  selection_preview(app, 24.0F, 5);
 
   // One field per row, behind the checkbox that says whether the batch edit writes it
   const auto field = [](const char* id, bool& on, auto&& body) {

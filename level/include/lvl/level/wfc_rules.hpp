@@ -110,6 +110,30 @@ void set_allowed(WfcRules& rules, WfcTileId a, WfcTileId b, Direction direction,
  */
 void learn(WfcRules& rules, const Grid<TileRef>& example);
 
+/// How constraints taken from an example layout combine with the rules already there
+enum class LayoutMode : std::uint8_t
+{
+  /// Also allow every pair the layout shows
+  kAllow,
+  /// Allow only what the layout shows, in the directions it shows (a hard constraint)
+  kExclusive,
+};
+
+/**
+ * @brief Constrains tiles to sit next to one another as an example layout arranges them
+ *
+ * Every non-empty tile of <code>layout</code> is added to the rules, and each pair of neighboring
+ * cells allows that pair in the direction between them (corners only when WfcRules::diagonals).
+ * In <code>kExclusive</code> mode the layout is a hard constraint: for a tile of the layout and a
+ * direction the layout shows a neighbor in, every tile it does not show there becomes forbidden.
+ * Directions the layout says nothing about (the edges of the layout) are left alone, as are tiles
+ * that do not appear in it. <code>scratch</code> holds an 8*n*n table and is rewound.
+ *
+ * @return number of neighboring pairs the layout allows
+ */
+std::size_t
+constrain_from_layout(WfcRules& rules, const Grid<TileRef>& layout, LayoutMode mode, memory::Arena& scratch);
+
 /// Number of stored adjacencies in a corner direction
 std::size_t diagonal_count(const WfcRules& rules);
 
