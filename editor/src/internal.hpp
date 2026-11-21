@@ -135,6 +135,9 @@ bool selection_bounds(const App& app, SelectionBounds& out);
 /// Draws the selected tiles as the palette lays them out, in a child of at most <code>max_rows</code> rows
 void selection_preview(const App& app, float thumb, int max_rows);
 
+/// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked
+bool deselect_all_button(App& app);
+
 /// Fills <code>out</code> (an arena-backed grid) with the selected tiles as the palette lays them
 /// out, empty where a cell of the rectangle is not selected; false if nothing is selected
 bool palette_layout(const App& app, level::Grid<level::TileRef>& out);

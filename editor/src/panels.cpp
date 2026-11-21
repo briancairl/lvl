@@ -412,14 +412,11 @@ void tilesets_panel(App& app)
     ImGui::SliderFloat("Zoom##palette", &zoom, 0.5F, 6.0F, "%.1fx");
     ImGui::SameLine();
     ImGui::TextDisabled("click: tile, drag: stamp, ctrl/shift+click: several");
-    if (selection_size(app) > 1)
+    if (selection_size(app) > 0)
     {
       ImGui::Text("%zu tiles selected", selection_size(app));
       ImGui::SameLine();
-      if (ImGui::SmallButton("Clear selection"))
-      {
-        app.selection.clear();
-      }
+      deselect_all_button(app);
       ImGui::SameLine();
       ImGui::TextDisabled("(Tile metadata > Batch edit, Generate > WFC rules)");
     }
@@ -558,6 +555,11 @@ void batch_edit_section(App& app, TileSet& ts)
   if (count < 2)
   {
     ImGui::TextDisabled("Ctrl/shift+click tiles in the palette to edit several of them at once");
+    if (count == 1)
+    {
+      ImGui::SameLine();
+      deselect_all_button(app);
+    }
     return;
   }
   ImGui::Text("%zu tiles selected", count);
@@ -575,9 +577,8 @@ void batch_edit_section(App& app, TileSet& ts)
     ImGui::SetTooltip("Fills the fields below with the metadata of the tile shown above");
   }
   ImGui::SameLine();
-  if (ImGui::SmallButton("Clear selection"))
+  if (deselect_all_button(app))
   {
-    app.selection.clear();
     return;
   }
 

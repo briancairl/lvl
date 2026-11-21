@@ -404,6 +404,11 @@ void palette_layout_section(App& app)
   if (selection_size(app) < 2)
   {
     ImGui::TextDisabled("Ctrl/shift+click tiles in the palette to make the way they are laid out there a rule");
+    if (selection_size(app) == 1)
+    {
+      ImGui::SameLine();
+      deselect_all_button(app);
+    }
     return;
   }
   SelectionBounds bounds;
@@ -437,6 +442,11 @@ void palette_layout_section(App& app)
   }
   ImGui::SameLine();
   ImGui::TextDisabled(rules.diagonals ? "(sides and corners)" : "(sides only)");
+  ImGui::SameLine();
+  if (deselect_all_button(app))
+  {
+    return;
+  }
 }
 
 /// Batch edit: the ticked constraints are applied to every selected rule tile
@@ -450,9 +460,19 @@ void batch_constraints_section(App& app)
   if (tiles.size() < 2)
   {
     ImGui::TextDisabled("Ctrl+click rule tiles above (or several palette tiles) to constrain them together");
+    if (app.selection.count > 0)
+    {
+      ImGui::SameLine();
+      deselect_all_button(app);
+    }
     return;
   }
   ImGui::Text("%zu rule tiles selected", tiles.size());
+  ImGui::SameLine();
+  if (deselect_all_button(app))
+  {
+    return;
+  }
   ImGui::SameLine();
   if (ImGui::SmallButton("Take from this tile"))
   {

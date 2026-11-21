@@ -97,6 +97,24 @@ bool selection_bounds(const App& app, SelectionBounds& out)
   return true;
 }
 
+bool deselect_all_button(App& app)
+{
+  const bool empty = app.selection.count == 0;
+  ImGui::BeginDisabled(empty);
+  const bool clicked = ImGui::SmallButton("Deselect all");
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+  {
+    ImGui::SetTooltip(
+      empty ? "No palette tiles are selected" : "Clears the palette selection (Ctrl+Shift+A), ending the batch edit");
+  }
+  if (clicked)
+  {
+    app.selection.clear();
+  }
+  return clicked;
+}
+
 void selection_preview(const App& app, float thumb, int max_rows)
 {
   SelectionBounds bounds;

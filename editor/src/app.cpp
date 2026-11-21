@@ -380,6 +380,10 @@ void shortcuts(App& app)
   {
     open_file_dialog(app, FileAction::kOpenLevel);
   }
+  else if (ctrl and io.KeyShift and ImGui::IsKeyPressed(ImGuiKey_A))
+  {
+    app.selection.clear();
+  }
   if (ctrl or io.WantCaptureKeyboard)
   {
     return;
@@ -580,6 +584,14 @@ void main_menu(App& app)
       if (ImGui::MenuItem(format<96>("Redo %s", app.undo.redo_label()), "Ctrl+Y", false, app.undo.can_redo()))
       {
         redo(app);
+      }
+      if (ImGui::MenuItem(
+            format<64>("Deselect all tiles (%zu)", app.selection.count),
+            "Ctrl+Shift+A",
+            false,
+            app.selection.count > 0))
+      {
+        app.selection.clear();
       }
       ImGui::Separator();
       open_resize = ImGui::MenuItem("Resize level...");
@@ -884,6 +896,12 @@ void smoke(App& app)
       {
         report(app, Status::error("the batch constraints did not apply"));
       }
+    }
+    // Deselect all (Edit > Deselect all tiles, Ctrl+Shift+A): the batch sections go back to their hints
+    app.selection.clear();
+    if (selection_size(app) != 0 or !selected_rule_tiles(app, app.memory.frame).empty())
+    {
+      report(app, Status::error("deselecting all left tiles selected"));
     }
     break;
   }

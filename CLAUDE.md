@@ -160,7 +160,9 @@ A plain click or drag in the tileset palette picks one tile or a rectangle of th
 which builds `App::selection` (a `TileSelection`: one bit per tile of one tileset, plus the anchor).
 `editor/src/selection.cpp` reads it: `selected_tiles` (the indices, in an arena), `selection_bounds`
 (the palette rectangle they span) and `palette_layout` (the selection as a `Grid<TileRef>` laid out
-as in the palette).
+as in the palette). Every batch context draws the same `deselect_all_button` (the palette header,
+Batch edit, and both WFC sections), and Edit > Deselect all tiles / Ctrl+Shift+A empties it from
+anywhere.
 
 With two or more tiles selected, "Batch edit" at the bottom of the Tile metadata panel writes
 metadata to all of them at once: each field (semantic type, material, hidden, collision, a
