@@ -90,6 +90,53 @@ TEST_F(LevelModel, SlicingAndSeasonalVariants)
   EXPECT_EQ(lookup[3], 3);
 }
 
+TEST_F(LevelModel, BatchTileEditWritesOnlyTheFieldsItIsGiven)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {4, 4}});
+  const TileSetId id = add_tileset(level, "forest");
+  auto& ts = level.tilesets[id];
+  ts.image_width = 4 * 16;
+  ts.image_height = 16;
+  reslice(ts);
+  ASSERT_EQ(ts.tiles.size(), 4UL);
+  const SemanticId grass = intern_semantic(level, "grass");
+  ts.tiles[0].material = intern_material(level, "dirt");
+  ts.tiles[0].hidden = true;
+  set_property(ts, 0, "sound", "step");
+
+  // Two of the four tiles, plus an index past the end, which is skipped
+  const TileIndex tiles[] = {0, 2, 9};
+  const TileEdit edit{
+    .set_semantic = true,
+    .semantic = grass,
+    .set_collision = true,
+    .collision = collision::kSolid,
+    .set_property = true,
+    .property_key = "sound",
+    .property_value = "grass"};
+  EXPECT_EQ(apply_edit(ts, edit, tiles, 3), 2UL);
+  EXPECT_EQ(ts.tiles[0].semantic, grass);
+  EXPECT_EQ(ts.tiles[2].semantic, grass);
+  EXPECT_EQ(ts.tiles[1].semantic, kNoSemantic);
+  EXPECT_EQ(ts.tiles[0].collision, collision::kSolid);
+  // Fields the edit does not carry are left alone
+  EXPECT_EQ(ts.tiles[0].material, intern_material(level, "dirt"));
+  EXPECT_TRUE(ts.tiles[0].hidden);
+  EXPECT_FALSE(ts.tiles[2].hidden);
+  ASSERT_NE(find_property(ts, 0, "sound"), nullptr);
+  EXPECT_EQ(*find_property(ts, 0, "sound"), std::string_view{"grass"});
+  ASSERT_NE(find_property(ts, 2, "sound"), nullptr);
+  EXPECT_EQ(ts.properties.size(), 2UL);
+
+  // Removing by key, and an edit that writes nothing
+  const TileEdit remove{.clear_property = true, .property_key = "sound"};
+  EXPECT_EQ(apply_edit(ts, remove, tiles, 3), 2UL);
+  EXPECT_TRUE(ts.properties.empty());
+  EXPECT_EQ(apply_edit(ts, TileEdit{}, tiles, 3), 2UL);
+  EXPECT_EQ(ts.tiles[0].semantic, grass);
+}
+
 TEST_F(LevelModel, DeriveCollisionAndMaterialsFromTiles)
 {
   Level level{arena};
@@ -191,6 +238,74 @@ TEST_F(LevelModel, WfcRulesLearnFromExample)
   EXPECT_TRUE(allowed(level.wfc, a, a, Direction::kWest));
   remove_tile(level.wfc, a);
   EXPECT_EQ(level.wfc.tiles.size(), 2UL);
+}
+
+TEST_F(LevelModel, BatchWfcConstraintsWriteOnlyTheFieldsTheyAreGiven)
+{
+  WfcRules rules{arena};
+  const WfcTileId a = add_tile(rules, TileRef{0, 1});
+  const WfcTileId b = add_tile(rules, TileRef{0, 2});
+  add_tile(rules, TileRef{0, 3});
+  rules.tiles[a].semantic = 4;
+  rules.tiles[b].weight = 7.0F;
+
+  const WfcTileId tiles[] = {a, b, 9};
+  const WfcTileEdit edit{
+    .set_height = true, .height_min = 0.25F, .height_max = 0.75F, .set_water = true, .water = WaterRule::kDry};
+  EXPECT_EQ(apply_edit(rules, edit, tiles, 3), 2UL);
+  EXPECT_FLOAT_EQ(rules.tiles[a].height_min, 0.25F);
+  EXPECT_FLOAT_EQ(rules.tiles[b].height_max, 0.75F);
+  EXPECT_EQ(rules.tiles[a].water, WaterRule::kDry);
+  // Untouched fields and tiles keep what they had
+  EXPECT_FLOAT_EQ(rules.tiles[b].weight, 7.0F);
+  EXPECT_EQ(rules.tiles[a].semantic, 4);
+  EXPECT_FLOAT_EQ(rules.tiles[2].height_max, 1.0F);
+  EXPECT_EQ(rules.tiles[2].water, WaterRule::kAny);
+}
+
+TEST_F(LevelModel, WfcRulesFromAPaletteLayout)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {2, 2}});
+  WfcRules& rules = level.wfc;
+  // The tile an unrelated rule uses, and two tiles laid out side by side:  a b
+  const WfcTileId other = add_tile(rules, TileRef{0, 9});
+  memory::Arena scratch;
+  memory::create(scratch, 1 << 16, "scratch");
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{2, 1}, kEmptyTile);
+  layout.at(0, 0) = TileRef{0, 1};
+  layout.at(1, 0) = TileRef{0, 2};
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kAllow, scratch), 1UL);
+  const WfcTileId a = find_tile(rules, TileRef{0, 1});
+  const WfcTileId b = find_tile(rules, TileRef{0, 2});
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kEast));
+  EXPECT_TRUE(allowed(rules, b, a, Direction::kWest));
+  EXPECT_FALSE(allowed(rules, a, b, Direction::kSouth));
+  // Corners are ignored until the rules use them
+  layout.assign(Extents{2, 2}, kEmptyTile);
+  layout.at(0, 0) = TileRef{0, 1};
+  layout.at(1, 1) = TileRef{0, 2};
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kAllow, scratch), 0UL);
+  rules.diagonals = true;
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kAllow, scratch), 1UL);
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kSouthEast));
+  rules.diagonals = false;
+
+  // Anything else east of a was allowed before; exclusive mode leaves only what the layout shows
+  set_allowed(rules, a, other, Direction::kEast, true);
+  set_allowed(rules, a, other, Direction::kNorth, true);
+  layout.assign(Extents{2, 1}, kEmptyTile);
+  layout.at(0, 0) = TileRef{0, 1};
+  layout.at(1, 0) = TileRef{0, 2};
+  EXPECT_EQ(constrain_from_layout(rules, layout, LayoutMode::kExclusive, scratch), 1UL);
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kEast));
+  EXPECT_FALSE(allowed(rules, a, other, Direction::kEast));
+  // The layout says nothing about what is north of a, or about tiles it does not contain
+  EXPECT_TRUE(allowed(rules, a, other, Direction::kNorth));
+  EXPECT_TRUE(allowed(rules, a, b, Direction::kSouthEast));
+  EXPECT_EQ(scratch.utilized, 0UL);
+  memory::destroy(scratch);
 }
 
 TEST_F(LevelModel, WfcDiagonalRules)

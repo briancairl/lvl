@@ -12,6 +12,7 @@
 // C++ Standard Library
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 // Dear ImGui
@@ -39,6 +40,7 @@ struct DragPayload
 
 constexpr ImU32 kSelected = IM_COL32(255, 230, 60, 255);
 constexpr ImU32 kAllowed = IM_COL32(80, 230, 120, 255);
+constexpr ImU32 kForbidden = IM_COL32(235, 95, 95, 255);
 constexpr ImU32 kTarget = IM_COL32(90, 170, 255, 200);
 
 /// The 3x3 grid, row by row; the middle cell (-1) is the tile being edited
@@ -138,14 +140,14 @@ bool tile_cell(const App& app, WfcTileId id, float size, std::int8_t from, ImU32
   if (ImGui::IsItemHovered() and !dragging_tile())
   {
     draw->AddRectFilled(lo, hi, IM_COL32(255, 255, 255, 40));
-    ImGui::SetTooltip(
-      "#%u  %s (%u:%u)\n%s",
-      id,
-      tile_name(lv, t),
-      t.tile.tileset,
-      t.tile.tile,
-      (from < 0) ? "Drag onto a side to allow it there; click to edit its neighbors"
-                 : "Drag to another side to move it (Ctrl: copy); right-click or drag to the palette to remove");
+    const char* hint = (from < 0)
+      ? "Drag onto a side to allow it there; click to edit its neighbors"
+      : "Drag to another side to move it (Ctrl: copy); right-click or drag to the palette to remove";
+    // In a slot the direction is known, so the tooltip can show the two tiles as they would sit
+    if (from < 0 or !wfc_pair_tooltip(app, app.wfc_tile, id, static_cast<Direction>(from), hint))
+    {
+      ImGui::SetTooltip("#%u  %s (%u:%u)\n%s", id, tile_name(lv, t), t.tile.tileset, t.tile.tile, hint);
+    }
   }
   if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None))
   {
@@ -369,6 +371,71 @@ bool palette(App& app, float width)
 
 }  // namespace
 
+bool wfc_pair_tooltip(const App& app, WfcTileId a, WfcTileId b, Direction direction, const char* hint)
+{
+  const WfcRules& rules = app.level->wfc;
+  if (!app.wfc_preview or a >= rules.tiles.size() or b >= rules.tiles.size())
+  {
+    return false;
+  }
+  // The two tiles in a box just big enough to hold them, as they would sit on the map
+  const Cell neighbor = step(Cell{0, 0}, direction);
+  const Cell origin{std::min(0, neighbor.x), std::min(0, neighbor.y)};
+  const int width = std::abs(neighbor.x) + 1;
+  const int height = std::abs(neighbor.y) + 1;
+  const bool on = allowed(rules, a, b, direction);
+  constexpr float kCell = 48.0F;
+  ImGui::BeginTooltip();
+  ImGui::Text(
+    "#%u %s  %s of  #%u %s",
+    b,
+    tile_name(*app.level, rules.tiles[b]),
+    label(direction),
+    a,
+    tile_name(*app.level, rules.tiles[a]));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{0, 0});
+  for (int y = 0; y < height; ++y)
+  {
+    for (int x = 0; x < width; ++x)
+    {
+      if (x > 0)
+      {
+        ImGui::SameLine(0.0F, 0.0F);
+      }
+      const Cell cell{x + origin.x, y + origin.y};
+      const bool is_a = cell == Cell{0, 0};
+      if (!is_a and cell != neighbor)
+      {
+        ImGui::Dummy(ImVec2{kCell, kCell});
+        continue;
+      }
+      const ImVec2 p = ImGui::GetCursorScreenPos();
+      tile_image(app, rules.tiles[is_a ? a : b].tile, kCell);
+      ImGui::GetWindowDrawList()->AddRect(
+        p, ImVec2{p.x + kCell, p.y + kCell}, is_a ? kSelected : (on ? kAllowed : kForbidden), 0, 0, 2.0F);
+    }
+  }
+  ImGui::PopStyleVar();
+  if (diagonal(direction) and !rules.diagonals)
+  {
+    ImGui::TextDisabled("corners are not constrained");
+  }
+  else if (on)
+  {
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kAllowed), "allowed");
+  }
+  else
+  {
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kForbidden), "forbidden");
+  }
+  if (hint != nullptr)
+  {
+    ImGui::TextDisabled("%s", hint);
+  }
+  ImGui::EndTooltip();
+  return true;
+}
+
 void wfc_neighbors_window(App& app)
 {
   ImGui::SetNextWindowSize(ImVec2{820, 640}, ImGuiCond_FirstUseEver);
@@ -426,6 +493,12 @@ void wfc_neighbors_window(App& app)
     ImGui::SetTooltip(
       "Also constrain the four corner neighbors (8-way adjacency).\nOff: only the four sides are constrained "
       "and corner rules are kept but ignored.");
+  }
+  ImGui::SameLine();
+  ImGui::Checkbox("Preview pairs", &app.wfc_preview);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Hovering a tile in a side shows it next to the edited tile, as they would sit");
   }
   ImGui::SameLine();
   if (ImGui::Button("Derive corners"))

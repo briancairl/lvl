@@ -43,6 +43,26 @@ void remove_tile(WfcRules& rules, WfcTileId id)
   }
 }
 
+std::size_t apply_edit(WfcRules& rules, const WfcTileEdit& edit, const WfcTileId* tiles, std::size_t count)
+{
+  std::size_t edited = 0;
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    if (tiles[i] >= rules.tiles.size())
+    {
+      continue;
+    }
+    WfcTile& tile = rules.tiles[tiles[i]];
+    tile.weight = edit.set_weight ? edit.weight : tile.weight;
+    tile.height_min = edit.set_height ? edit.height_min : tile.height_min;
+    tile.height_max = edit.set_height ? edit.height_max : tile.height_max;
+    tile.water = edit.set_water ? edit.water : tile.water;
+    tile.semantic = edit.set_semantic ? edit.semantic : tile.semantic;
+    ++edited;
+  }
+  return edited;
+}
+
 WfcAdjacency canonical(WfcAdjacency adj)
 {
   if (
@@ -123,6 +143,88 @@ void learn(WfcRules& rules, const Grid<TileRef>& example)
       }
     }
   }
+}
+
+std::size_t constrain_from_layout(WfcRules& rules, const Grid<TileRef>& layout, LayoutMode mode, memory::Arena& scratch)
+{
+  memory::Scope scope{scratch};
+  for (const TileRef& t : layout.values)
+  {
+    if (!t.empty())
+    {
+      add_tile(rules, t);
+    }
+  }
+  const auto n = static_cast<std::size_t>(rules.tiles.size());
+  if (n == 0)
+  {
+    return 0;
+  }
+  // The pairs the layout shows (an n*n bit matrix per direction), and the tiles it uses
+  auto seen = memory::make_vector<std::uint8_t>(scratch, 8 * n * n, std::uint8_t{0});
+  auto present = memory::make_vector<std::uint8_t>(scratch, n, std::uint8_t{0});
+  const auto at = [n](Direction d, WfcTileId a, WfcTileId b) { return (static_cast<std::size_t>(d) * n + a) * n + b; };
+  const Extents e = layout.extents;
+  for (int y = 0; y < e.height; ++y)
+  {
+    for (int x = 0; x < e.width; ++x)
+    {
+      const TileRef here = layout.at(x, y);
+      if (here.empty())
+      {
+        continue;
+      }
+      const WfcTileId a = find_tile(rules, here);
+      present[a] = 1;
+      for (const Direction d : kNeighbors)
+      {
+        const Cell c = step(Cell{x, y}, d);
+        if ((diagonal(d) and !rules.diagonals) or !e.contains(c) or layout.at(c).empty())
+        {
+          continue;
+        }
+        const WfcTileId b = find_tile(rules, layout.at(c));
+        seen[at(d, a, b)] = 1;
+        set_allowed(rules, a, b, d, true);
+      }
+    }
+  }
+  if (mode == LayoutMode::kExclusive)
+  {
+    for (WfcTileId a = 0; a < n; ++a)
+    {
+      for (const Direction d : kNeighbors)
+      {
+        if ((diagonal(d) and !rules.diagonals) or present[a] == 0)
+        {
+          continue;
+        }
+        // A side the layout says nothing about keeps the rules it has
+        bool constrained = false;
+        for (WfcTileId b = 0; b < n; ++b)
+        {
+          constrained = constrained or seen[at(d, a, b)] != 0;
+        }
+        for (WfcTileId b = 0; constrained and b < n; ++b)
+        {
+          if (seen[at(d, a, b)] == 0)
+          {
+            set_allowed(rules, a, b, d, false);
+          }
+        }
+      }
+    }
+  }
+  // Each pair is stored once, in one of the canonical directions
+  std::size_t pairs = 0;
+  for (const Direction d : {Direction::kEast, Direction::kSouth, Direction::kSouthEast, Direction::kSouthWest})
+  {
+    for (std::size_t i = 0; i < n * n; ++i)
+    {
+      pairs += seen[static_cast<std::size_t>(d) * n * n + i];
+    }
+  }
+  return pairs;
 }
 
 std::size_t diagonal_count(const WfcRules& rules)

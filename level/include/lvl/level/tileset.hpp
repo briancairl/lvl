@@ -77,6 +77,29 @@ struct SeasonalVariant
   MaterialId material = kNoMaterial;
 };
 
+/**
+ * @brief A metadata change for one or more tiles: only the fields whose flag is set are applied
+ *
+ * What the editor's batch edit of a palette selection does to every selected tile.
+ */
+struct TileEdit
+{
+  bool set_semantic = false;
+  SemanticId semantic = kNoSemantic;
+  bool set_material = false;
+  MaterialId material = kNoMaterial;
+  bool set_collision = false;
+  std::uint8_t collision = collision::kNone;
+  bool set_hidden = false;
+  bool hidden = false;
+  /// Sets property <code>property_key</code> to <code>property_value</code>
+  bool set_property = false;
+  /// Removes property <code>property_key</code>
+  bool clear_property = false;
+  Name property_key;
+  Name property_value;
+};
+
 struct TileSet
 {
   explicit TileSet(memory::Arena& arena) :
@@ -125,6 +148,15 @@ void set_seasonal_variant(TileSet& tileset, const SeasonalVariant& variant);
 
 /// Value of property <code>key</code> of <code>tile</code>, or nullptr
 const Name* find_property(const TileSet& tileset, TileIndex tile, std::string_view key);
+
+/// Sets (replacing it, if there is one) property <code>key</code> of <code>tile</code>
+void set_property(TileSet& tileset, TileIndex tile, std::string_view key, std::string_view value);
+
+/// Removes property <code>key</code> of <code>tile</code>, if there is one
+void remove_property(TileSet& tileset, TileIndex tile, std::string_view key);
+
+/// Applies <code>edit</code> to <code>count</code> tiles, skipping indices past the end; returns how many were edited
+std::size_t apply_edit(TileSet& tileset, const TileEdit& edit, const TileIndex* tiles, std::size_t count);
 
 template <typename S> void serialize(S& s, SliceParams& p)
 {

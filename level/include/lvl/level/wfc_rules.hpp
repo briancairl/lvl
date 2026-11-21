@@ -84,6 +84,24 @@ struct WfcRules
   memory::Vector<WfcAdjacency> adjacency;
 };
 
+/**
+ * @brief A change to the constraints of one or more rule tiles: only the fields whose flag is set
+ *
+ * What the editor's batch edit of the selected rule tiles applies.
+ */
+struct WfcTileEdit
+{
+  bool set_weight = false;
+  float weight = 1.0F;
+  bool set_height = false;
+  float height_min = 0.0F;
+  float height_max = 1.0F;
+  bool set_water = false;
+  WaterRule water = WaterRule::kAny;
+  bool set_semantic = false;
+  SemanticId semantic = kNoSemantic;
+};
+
 /// Index of <code>tile</code> in <code>rules</code>, or <code>rules.tiles.size()</code>
 WfcTileId find_tile(const WfcRules& rules, TileRef tile);
 
@@ -92,6 +110,9 @@ WfcTileId add_tile(WfcRules& rules, TileRef tile);
 
 /// Removes a tile and every adjacency involving it (renumbering later tiles)
 void remove_tile(WfcRules& rules, WfcTileId id);
+
+/// Applies <code>edit</code> to <code>count</code> rule tiles, skipping ids past the end; returns how many were edited
+std::size_t apply_edit(WfcRules& rules, const WfcTileEdit& edit, const WfcTileId* tiles, std::size_t count);
 
 /// Normalizes an adjacency to its canonical stored form (direction east, south, south-east or south-west)
 WfcAdjacency canonical(WfcAdjacency adjacency);
@@ -109,6 +130,30 @@ void set_allowed(WfcRules& rules, WfcTileId a, WfcTileId b, Direction direction,
  * neighboring pair (sides and corners) is allowed. Existing rules are kept (merged).
  */
 void learn(WfcRules& rules, const Grid<TileRef>& example);
+
+/// How constraints taken from an example layout combine with the rules already there
+enum class LayoutMode : std::uint8_t
+{
+  /// Also allow every pair the layout shows
+  kAllow,
+  /// Allow only what the layout shows, in the directions it shows (a hard constraint)
+  kExclusive,
+};
+
+/**
+ * @brief Constrains tiles to sit next to one another as an example layout arranges them
+ *
+ * Every non-empty tile of <code>layout</code> is added to the rules, and each pair of neighboring
+ * cells allows that pair in the direction between them (corners only when WfcRules::diagonals).
+ * In <code>kExclusive</code> mode the layout is a hard constraint: for a tile of the layout and a
+ * direction the layout shows a neighbor in, every tile it does not show there becomes forbidden.
+ * Directions the layout says nothing about (the edges of the layout) are left alone, as are tiles
+ * that do not appear in it. <code>scratch</code> holds an 8*n*n table and is rewound.
+ *
+ * @return number of neighboring pairs the layout allows
+ */
+std::size_t
+constrain_from_layout(WfcRules& rules, const Grid<TileRef>& layout, LayoutMode mode, memory::Arena& scratch);
 
 /// Number of stored adjacencies in a corner direction
 std::size_t diagonal_count(const WfcRules& rules);

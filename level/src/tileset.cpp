@@ -136,6 +136,52 @@ const Name* find_property(const TileSet& tileset, TileIndex tile, std::string_vi
   return nullptr;
 }
 
+void set_property(TileSet& tileset, TileIndex tile, std::string_view key, std::string_view value)
+{
+  for (auto& p : tileset.properties)
+  {
+    if (p.tile == tile and p.key == key)
+    {
+      p.value.assign(value);
+      return;
+    }
+  }
+  tileset.properties.push_back(TileProperty{.tile = tile, .key = Name{key}, .value = Name{value}});
+}
+
+void remove_property(TileSet& tileset, TileIndex tile, std::string_view key)
+{
+  std::erase_if(tileset.properties, [tile, key](const TileProperty& p) { return p.tile == tile and p.key == key; });
+}
+
+std::size_t apply_edit(TileSet& tileset, const TileEdit& edit, const TileIndex* tiles, std::size_t count)
+{
+  std::size_t edited = 0;
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    const TileIndex tile = tiles[i];
+    if (tile >= tileset.tiles.size())
+    {
+      continue;
+    }
+    TileInfo& info = tileset.tiles[tile];
+    info.semantic = edit.set_semantic ? edit.semantic : info.semantic;
+    info.material = edit.set_material ? edit.material : info.material;
+    info.collision = edit.set_collision ? edit.collision : info.collision;
+    info.hidden = edit.set_hidden ? edit.hidden : info.hidden;
+    if (edit.set_property and !edit.property_key.empty())
+    {
+      set_property(tileset, tile, edit.property_key.view(), edit.property_value.view());
+    }
+    if (edit.clear_property and !edit.property_key.empty())
+    {
+      remove_property(tileset, tile, edit.property_key.view());
+    }
+    ++edited;
+  }
+  return edited;
+}
+
 bool load(json::Reader& r, const Json& j, SliceParams& p)
 {
   r.object(j, "slice");

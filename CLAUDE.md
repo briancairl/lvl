@@ -153,6 +153,43 @@ path yet, via the save dialog, and cancelling that dialog cancels quitting), Qui
 or Cancel. In the browser, `web::set_unsaved_changes()` arms the page's `beforeunload` "leave site?"
 prompt while there are unsaved changes.
 
+### Palette selection and batch tile edits
+
+A plain click or drag in the tileset palette picks one tile or a rectangle of them (the paint stamp,
+`App::paint`) as before. Ctrl+click toggles tiles and shift+click extends from the last one clicked,
+which builds `App::selection` (a `TileSelection`: one bit per tile of one tileset, plus the anchor).
+`editor/src/selection.cpp` reads it: `selected_tiles` (the indices, in an arena), `selection_bounds`
+(the palette rectangle they span) and `palette_layout` (the selection as a `Grid<TileRef>` laid out
+as in the palette). Every batch context draws the same `deselect_all_button` (the palette header,
+Batch edit, and both WFC sections), and Edit > Deselect all tiles / Ctrl+Shift+A empties it from
+anywhere.
+
+With two or more tiles selected, "Batch edit" at the bottom of the Tile metadata panel writes
+metadata to all of them at once: each field (semantic type, material, hidden, collision, a
+key/value property to set or a key to remove) is behind a checkbox saying whether it is applied, and
+"Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
+tiles, count)` does the writing; like the single-tile fields, it is not undoable.
+
+### Batch WFC constraints
+
+A rule tile counts as selected when its tile is in the palette selection; ctrl+clicking the rule
+tile strip in the WFC rules tab toggles it there too (`selected_rule_tiles`). With two or more
+selected, "Batch constraints" writes the ticked fields (weight, height band, water rule, semantic
+type) to all of them through `level::apply_edit(WfcRules&, WfcTileEdit, ...)`, the counterpart of
+the tile-metadata batch edit; `batch_field` draws one row of either.
+
+### WFC rules from the palette layout
+
+"From the palette layout" in the WFC rules tab turns the palette selection into adjacency rules:
+every pair of selected tiles that sit next to each other in the palette may sit next to each other
+on the map, in that direction (corners too when `WfcRules::diagonals` is on). "Allow what it shows"
+merges those pairs into the rules; "Only what it shows"
+(`level::LayoutMode::kExclusive`) makes them a hard constraint, forbidding every other tile on the
+sides where the layout puts a neighbor — sides the layout says nothing about, and tiles it does not
+contain, keep the rules they have. `level::constrain_from_layout` does both; its scratch arena must
+not be the one the rules live in. "Add palette tile(s)" adds the selection, or the paint stamp when
+nothing is selected.
+
 ### WFC neighbor editor
 
 `wfc_neighbors_window` (View > WFC neighbors, or "Neighbor editor..." in the WFC rules tab) is a
@@ -165,6 +202,12 @@ side rules (`level::derive_diagonals`), so an existing rule set stays solvable.
 
 `Direction` has the four sides (values 0..3, also used by portals) then the four corners (4..7);
 `kDirections` is the sides, `kDiagonals` the corners and `kNeighbors` all eight.
+
+Wherever a neighbor is picked for a known direction — a tile in one of the slots, or one of the
+thumbnails under "Allowed neighbors" in the rules tab — hovering it shows `wfc_pair_tooltip`: the two
+tiles drawn in the positions the rule would put them in (the edited one outlined yellow), and whether
+the pair is allowed. The "Preview pairs" checkbox in either window turns it off (`App::wfc_preview`),
+and the neighbor editor falls back to its plain text tooltip.
 
 ### Deleting
 
@@ -211,7 +254,7 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
-  rule learning); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
+  rule learning, rules from a palette layout, batch tile and constraint edits); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files.
 - `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
@@ -221,7 +264,8 @@ one check to mark required:
   memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
-  in both formats, all exports, a style profile save/load, deletes, the file dialog, and the unsaved-changes
+  in both formats, all exports, a style profile save/load, deletes, a batch tile edit, WFC rules and batch
+  constraints from a palette selection, the file dialog, and the unsaved-changes
   prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
