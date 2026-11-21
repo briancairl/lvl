@@ -126,6 +126,9 @@ level::Extents palette_grid(const App& app, std::size_t tileset);
 /// The selected tiles, in index order, in <code>arena</code>
 memory::Vector<level::TileIndex> selected_tiles(const App& app, memory::Arena& arena);
 
+/// The WFC rule tiles whose tile is selected in the palette, in <code>arena</code>
+memory::Vector<level::WfcTileId> selected_rule_tiles(const App& app, memory::Arena& arena);
+
 /// Palette rectangle the selected tiles span; false if nothing is selected
 bool selection_bounds(const App& app, SelectionBounds& out);
 
@@ -182,6 +185,21 @@ template <typename CatalogT> bool catalog_combo(const char* label, const Catalog
     ImGui::EndCombo();
   }
   return changed;
+}
+
+/**
+ * @brief One row of a batch edit: the checkbox saying whether the field is applied, then the field
+ *
+ * The field is drawn disabled while the checkbox is off. Returns true when the checkbox changed.
+ */
+template <typename BodyT> bool batch_field(const char* id, bool& on, BodyT&& body)
+{
+  const bool toggled = ImGui::Checkbox(id, &on);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!on);
+  body();
+  ImGui::EndDisabled();
+  return toggled;
 }
 
 /// Edits an image::Rgba with an ImGui color picker; returns true if changed

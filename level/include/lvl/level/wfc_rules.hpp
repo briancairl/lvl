@@ -84,6 +84,24 @@ struct WfcRules
   memory::Vector<WfcAdjacency> adjacency;
 };
 
+/**
+ * @brief A change to the constraints of one or more rule tiles: only the fields whose flag is set
+ *
+ * What the editor's batch edit of the selected rule tiles applies.
+ */
+struct WfcTileEdit
+{
+  bool set_weight = false;
+  float weight = 1.0F;
+  bool set_height = false;
+  float height_min = 0.0F;
+  float height_max = 1.0F;
+  bool set_water = false;
+  WaterRule water = WaterRule::kAny;
+  bool set_semantic = false;
+  SemanticId semantic = kNoSemantic;
+};
+
 /// Index of <code>tile</code> in <code>rules</code>, or <code>rules.tiles.size()</code>
 WfcTileId find_tile(const WfcRules& rules, TileRef tile);
 
@@ -92,6 +110,9 @@ WfcTileId add_tile(WfcRules& rules, TileRef tile);
 
 /// Removes a tile and every adjacency involving it (renumbering later tiles)
 void remove_tile(WfcRules& rules, WfcTileId id);
+
+/// Applies <code>edit</code> to <code>count</code> rule tiles, skipping ids past the end; returns how many were edited
+std::size_t apply_edit(WfcRules& rules, const WfcTileEdit& edit, const WfcTileId* tiles, std::size_t count);
 
 /// Normalizes an adjacency to its canonical stored form (direction east, south, south-east or south-west)
 WfcAdjacency canonical(WfcAdjacency adjacency);

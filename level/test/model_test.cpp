@@ -240,6 +240,29 @@ TEST_F(LevelModel, WfcRulesLearnFromExample)
   EXPECT_EQ(level.wfc.tiles.size(), 2UL);
 }
 
+TEST_F(LevelModel, BatchWfcConstraintsWriteOnlyTheFieldsTheyAreGiven)
+{
+  WfcRules rules{arena};
+  const WfcTileId a = add_tile(rules, TileRef{0, 1});
+  const WfcTileId b = add_tile(rules, TileRef{0, 2});
+  add_tile(rules, TileRef{0, 3});
+  rules.tiles[a].semantic = 4;
+  rules.tiles[b].weight = 7.0F;
+
+  const WfcTileId tiles[] = {a, b, 9};
+  const WfcTileEdit edit{
+    .set_height = true, .height_min = 0.25F, .height_max = 0.75F, .set_water = true, .water = WaterRule::kDry};
+  EXPECT_EQ(apply_edit(rules, edit, tiles, 3), 2UL);
+  EXPECT_FLOAT_EQ(rules.tiles[a].height_min, 0.25F);
+  EXPECT_FLOAT_EQ(rules.tiles[b].height_max, 0.75F);
+  EXPECT_EQ(rules.tiles[a].water, WaterRule::kDry);
+  // Untouched fields and tiles keep what they had
+  EXPECT_FLOAT_EQ(rules.tiles[b].weight, 7.0F);
+  EXPECT_EQ(rules.tiles[a].semantic, 4);
+  EXPECT_FLOAT_EQ(rules.tiles[2].height_max, 1.0F);
+  EXPECT_EQ(rules.tiles[2].water, WaterRule::kAny);
+}
+
 TEST_F(LevelModel, WfcRulesFromAPaletteLayout)
 {
   Level level{arena};

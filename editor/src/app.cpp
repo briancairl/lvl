@@ -871,6 +871,20 @@ void smoke(App& app)
     {
       report(app, Status::error("the palette layout did not allow its own neighbors"));
     }
+    // The same selection, as a batch edit of those rule tiles' constraints
+    app.wfc_batch = level::WfcTileEdit{.set_weight = true, .weight = 2.5F};
+    const auto rule_tiles = selected_rule_tiles(app, app.memory.frame);
+    if (level::apply_edit(rules, app.wfc_batch, rule_tiles.data(), rule_tiles.size()) < 2)
+    {
+      report(app, Status::error("the batch constraints reached fewer than two rule tiles"));
+    }
+    for (const level::WfcTileId id : rule_tiles)
+    {
+      if (rules.tiles[id].weight != 2.5F)
+      {
+        report(app, Status::error("the batch constraints did not apply"));
+      }
+    }
     break;
   }
   case 21:

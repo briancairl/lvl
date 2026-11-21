@@ -43,6 +43,26 @@ void remove_tile(WfcRules& rules, WfcTileId id)
   }
 }
 
+std::size_t apply_edit(WfcRules& rules, const WfcTileEdit& edit, const WfcTileId* tiles, std::size_t count)
+{
+  std::size_t edited = 0;
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    if (tiles[i] >= rules.tiles.size())
+    {
+      continue;
+    }
+    WfcTile& tile = rules.tiles[tiles[i]];
+    tile.weight = edit.set_weight ? edit.weight : tile.weight;
+    tile.height_min = edit.set_height ? edit.height_min : tile.height_min;
+    tile.height_max = edit.set_height ? edit.height_max : tile.height_max;
+    tile.water = edit.set_water ? edit.water : tile.water;
+    tile.semantic = edit.set_semantic ? edit.semantic : tile.semantic;
+    ++edited;
+  }
+  return edited;
+}
+
 WfcAdjacency canonical(WfcAdjacency adj)
 {
   if (

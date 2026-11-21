@@ -584,23 +584,16 @@ void batch_edit_section(App& app, TileSet& ts)
   selection_preview(app, 24.0F, 5);
 
   // One field per row, behind the checkbox that says whether the batch edit writes it
-  const auto field = [](const char* id, bool& on, auto&& body) {
-    const bool toggled = ImGui::Checkbox(id, &on);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!on);
-    body();
-    ImGui::EndDisabled();
-    return toggled;
-  };
-  field(
+  batch_field(
     "##batch_semantic", edit.set_semantic, [&] { catalog_combo("Semantic type##batch", lv.semantics, edit.semantic); });
-  field("##batch_material", edit.set_material, [&] { catalog_combo("Material##batch", lv.materials, edit.material); });
-  field("##batch_hidden", edit.set_hidden, [&] {
+  batch_field(
+    "##batch_material", edit.set_material, [&] { catalog_combo("Material##batch", lv.materials, edit.material); });
+  batch_field("##batch_hidden", edit.set_hidden, [&] {
     ImGui::Checkbox("Hidden from palettes/generation##batch", &edit.hidden);
   });
-  field("##batch_collision", edit.set_collision, [&] { collision_edit(edit.collision); });
+  batch_field("##batch_collision", edit.set_collision, [&] { collision_edit(edit.collision); });
   // A property is either set to a value or removed by key
-  if (field("##batch_property", edit.set_property, [&] {
+  if (batch_field("##batch_property", edit.set_property, [&] {
         ImGui::SetNextItemWidth(110.0F);
         input_text("##batch_key", edit.property_key);
         ImGui::SameLine();

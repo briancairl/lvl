@@ -49,6 +49,21 @@ memory::Vector<TileIndex> selected_tiles(const App& app, memory::Arena& arena)
   return out;
 }
 
+memory::Vector<WfcTileId> selected_rule_tiles(const App& app, memory::Arena& arena)
+{
+  auto out = memory::make_vector<WfcTileId>(arena);
+  const WfcRules& rules = app.level->wfc;
+  for (std::size_t i = 0; i < rules.tiles.size(); ++i)
+  {
+    const TileRef tile = rules.tiles[i].tile;
+    if (app.selection.has(tile.tileset, tile.tile))
+    {
+      out.push_back(static_cast<WfcTileId>(i));
+    }
+  }
+  return out;
+}
+
 bool selection_bounds(const App& app, SelectionBounds& out)
 {
   const Extents grid = palette_grid(app, app.selection.tileset);

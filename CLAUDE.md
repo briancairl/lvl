@@ -168,6 +168,14 @@ key/value property to set or a key to remove) is behind a checkbox saying whethe
 "Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
 tiles, count)` does the writing; like the single-tile fields, it is not undoable.
 
+### Batch WFC constraints
+
+A rule tile counts as selected when its tile is in the palette selection; ctrl+clicking the rule
+tile strip in the WFC rules tab toggles it there too (`selected_rule_tiles`). With two or more
+selected, "Batch constraints" writes the ticked fields (weight, height band, water rule, semantic
+type) to all of them through `level::apply_edit(WfcRules&, WfcTileEdit, ...)`, the counterpart of
+the tile-metadata batch edit; `batch_field` draws one row of either.
+
 ### WFC rules from the palette layout
 
 "From the palette layout" in the WFC rules tab turns the palette selection into adjacency rules:
@@ -244,7 +252,7 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
-  rule learning, rules from a palette layout); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
+  rule learning, rules from a palette layout, batch tile and constraint edits); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files.
 - `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
@@ -254,8 +262,8 @@ one check to mark required:
   memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
-  in both formats, all exports, a style profile save/load, deletes, a batch tile edit and WFC rules
-  from a palette selection, the file dialog, and the unsaved-changes
+  in both formats, all exports, a style profile save/load, deletes, a batch tile edit, WFC rules and batch
+  constraints from a palette selection, the file dialog, and the unsaved-changes
   prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

@@ -346,6 +346,8 @@ struct App
   level::WfcTileId wfc_tile = 0;
   /// WFC editor: hovering a neighbor previews how the two tiles would line up
   bool wfc_preview = true;
+  /// What the batch edit applies to the constraints of the selected rule tiles
+  level::WfcTileEdit wfc_batch;
 
   render::ComposeOptions export_options;
   int minimap_size = 256;
