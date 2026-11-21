@@ -1,0 +1,13 @@
+# ThreadSanitizer suppressions for the display test (//editor:up_down_test).
+#
+# Mesa's gallium drivers race on one of their own thread-pool barriers -- pthread_barrier_wait in
+# one of its threads against pthread_barrier_destroy in another -- in a software GL stack. Every
+# frame of the report is inside libgallium; its threads are created by glfwCreateWindow and reached
+# only through the GL calls in editor::initialize and editor::begin_frame. None of the editor's own
+# threads take part, and GL/GLFW are deliberately out of scope for the memory and threading tenets
+# (see CLAUDE.md).
+#
+# Seen on ubuntu-24.04 runners with libgallium 25.2.8, whose version is part of the library's file
+# name, so match any version. This does mean a race between first-party code and Mesa would be
+# suppressed too; narrow it if that ever becomes a concern.
+race:*libgallium*
