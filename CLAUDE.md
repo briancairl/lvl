@@ -193,6 +193,12 @@ side rules (`level::derive_diagonals`), so an existing rule set stays solvable.
 `Direction` has the four sides (values 0..3, also used by portals) then the four corners (4..7);
 `kDirections` is the sides, `kDiagonals` the corners and `kNeighbors` all eight.
 
+Wherever a neighbor is picked for a known direction — a tile in one of the slots, or one of the
+thumbnails under "Allowed neighbors" in the rules tab — hovering it shows `wfc_pair_tooltip`: the two
+tiles drawn in the positions the rule would put them in (the edited one outlined yellow), and whether
+the pair is allowed. The "Preview pairs" checkbox in either window turns it off (`App::wfc_preview`),
+and the neighbor editor falls back to its plain text tooltip.
+
 ### Deleting
 
 Rows of layers, semantic types, materials, seasons, path graphs, portals/markers and tile properties

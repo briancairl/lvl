@@ -567,6 +567,12 @@ void wfc_rules_tab(App& app)
   // Adjacency: per direction, which tiles may sit on that side of the selected tile
   ImGui::SeparatorText("Allowed neighbors (click to toggle)");
   const WfcTileId a = app.wfc_tile;
+  ImGui::Checkbox("Preview pairs", &app.wfc_preview);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Hovering a neighbor shows the two tiles as they would sit next to each other");
+  }
+  ImGui::SameLine();
   changed |= ImGui::Checkbox("Constrain corners (8-way)", &rules.diagonals);
   if (rules.diagonals and changed and diagonal_count(rules) == 0)
   {
@@ -628,6 +634,10 @@ void wfc_rules_tab(App& app)
       const bool on = allowed(rules, a, b, d);
       const ImVec2 p = ImGui::GetCursorScreenPos();
       tile_image(app, rules.tiles[b].tile, kSmall);
+      if (ImGui::IsItemHovered())
+      {
+        wfc_pair_tooltip(app, a, b, d, "Click to allow or forbid it there");
+      }
       if (ImGui::IsItemClicked())
       {
         set_allowed(rules, a, b, d, !on);

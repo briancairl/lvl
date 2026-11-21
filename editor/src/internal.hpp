@@ -85,6 +85,19 @@ void style_panel(App& app);
 /// The pop-out WFC neighbor editor: drag tiles into the eight sides around a rule tile
 void wfc_neighbors_window(App& app);
 
+/**
+ * @brief Tooltip showing how rule tile <code>b</code> lines up <code>direction</code> of rule tile
+ *        <code>a</code>, whether the rules allow it, and <code>hint</code> (if any)
+ *
+ * @return false if previews are off (App::wfc_preview), so the caller can show its own tooltip
+ */
+bool wfc_pair_tooltip(
+  const App& app,
+  level::WfcTileId a,
+  level::WfcTileId b,
+  level::Direction direction,
+  const char* hint = nullptr);
+
 /// Generators (as the Generate panel's buttons): start their background jobs with the current settings
 void start_heightmap(App& app);
 void start_watershed(App& app);
