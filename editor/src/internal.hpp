@@ -85,10 +85,62 @@ void style_panel(App& app);
 /// The pop-out WFC neighbor editor: drag tiles into the eight sides around a rule tile
 void wfc_neighbors_window(App& app);
 
+/**
+ * @brief Tooltip showing how rule tile <code>b</code> lines up <code>direction</code> of rule tile
+ *        <code>a</code>, whether the rules allow it, and <code>hint</code> (if any)
+ *
+ * @return false if previews are off (App::wfc_preview), so the caller can show its own tooltip
+ */
+bool wfc_pair_tooltip(
+  const App& app,
+  level::WfcTileId a,
+  level::WfcTileId b,
+  level::Direction direction,
+  const char* hint = nullptr);
+
 /// Generators (as the Generate panel's buttons): start their background jobs with the current settings
 void start_heightmap(App& app);
 void start_watershed(App& app);
 void start_wfc(App& app, std::size_t target_layer);
+
+/// Rectangle of palette cells (of tileset <code>columns</code> wide) the selected tiles span
+struct SelectionBounds
+{
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+  /// Columns of the palette the rectangle is in (so cell (x, y) is tile <code>y * columns + x</code>)
+  int columns = 0;
+};
+
+/// Number of tiles selected in the open tileset's palette
+inline std::size_t selection_size(const App& app)
+{
+  return (app.selection.tileset == app.tileset) ? app.selection.count : 0;
+}
+
+/// Tile grid a tileset's atlas slices into (0 x 0 if it has no image yet)
+level::Extents palette_grid(const App& app, std::size_t tileset);
+
+/// The selected tiles, in index order, in <code>arena</code>
+memory::Vector<level::TileIndex> selected_tiles(const App& app, memory::Arena& arena);
+
+/// The WFC rule tiles whose tile is selected in the palette, in <code>arena</code>
+memory::Vector<level::WfcTileId> selected_rule_tiles(const App& app, memory::Arena& arena);
+
+/// Palette rectangle the selected tiles span; false if nothing is selected
+bool selection_bounds(const App& app, SelectionBounds& out);
+
+/// Draws the selected tiles as the palette lays them out, in a child of at most <code>max_rows</code> rows
+void selection_preview(const App& app, float thumb, int max_rows);
+
+/// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked
+bool deselect_all_button(App& app);
+
+/// Fills <code>out</code> (an arena-backed grid) with the selected tiles as the palette lays them
+/// out, empty where a cell of the rectangle is not selected; false if nothing is selected
+bool palette_layout(const App& app, level::Grid<level::TileRef>& out);
 
 /// A small delete button for the start of a row; returns true when clicked
 bool delete_button(const char* tooltip);
@@ -136,6 +188,21 @@ template <typename CatalogT> bool catalog_combo(const char* label, const Catalog
     ImGui::EndCombo();
   }
   return changed;
+}
+
+/**
+ * @brief One row of a batch edit: the checkbox saying whether the field is applied, then the field
+ *
+ * The field is drawn disabled while the checkbox is off. Returns true when the checkbox changed.
+ */
+template <typename BodyT> bool batch_field(const char* id, bool& on, BodyT&& body)
+{
+  const bool toggled = ImGui::Checkbox(id, &on);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!on);
+  body();
+  ImGui::EndDisabled();
+  return toggled;
 }
 
 /// Edits an image::Rgba with an ImGui color picker; returns true if changed

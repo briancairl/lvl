@@ -12,6 +12,7 @@
 
 // C++ Standard Library
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -36,6 +37,8 @@ namespace lvl::editor
 
 inline constexpr std::size_t kMaxTileSets = 64;
 inline constexpr std::size_t kMaxLayers = 64;
+/// Tile indices are 16 bits, and slicing caps a tileset at this many tiles
+inline constexpr std::size_t kMaxTiles = 0xFFFF;
 
 struct MemoryConfig
 {
@@ -102,6 +105,54 @@ struct Paint
   std::uint8_t collision = level::collision::kSolid;
 };
 
+/**
+ * @brief The tiles selected in the tileset palette: one bit per tile of one tileset
+ *
+ * A plain click or drag in the palette selects one tile or a rectangle of them (the paint stamp);
+ * ctrl+click toggles tiles and shift+click extends from the anchor, which is how several tiles are
+ * picked for a batch metadata edit or for WFC rules taken from the palette layout.
+ */
+struct TileSelection
+{
+  /// Tileset the selection belongs to
+  std::size_t tileset = 0;
+  /// Number of selected tiles
+  std::size_t count = 0;
+  /// Tile a shift+click extends the selection from (the last one clicked)
+  level::TileIndex anchor = 0;
+  std::bitset<kMaxTiles> tiles;
+
+  [[nodiscard]] bool has(level::TileIndex tile) const { return tile < kMaxTiles and tiles.test(tile); }
+  [[nodiscard]] bool has(std::size_t set, level::TileIndex tile) const { return set == tileset and has(tile); }
+
+  void clear()
+  {
+    tiles.reset();
+    count = 0;
+  }
+
+  /// Selects (or deselects) one tile
+  void set(level::TileIndex tile, bool on)
+  {
+    if (tile >= kMaxTiles or tiles.test(tile) == on)
+    {
+      return;
+    }
+    tiles.set(tile, on);
+    count = on ? (count + 1) : (count - 1);
+  }
+
+  /// Moves the selection to tileset <code>set</code>, emptying it if it belonged to another one
+  void retarget(std::size_t set)
+  {
+    if (set != tileset)
+    {
+      clear();
+      tileset = set;
+    }
+  }
+};
+
 struct View
 {
   /// Cell at the viewport's top-left corner
@@ -156,6 +207,8 @@ struct Generators
   bool wfc_use_height = true;
   bool wfc_use_water = true;
   bool wfc_use_semantic = false;
+  /// Whether rules taken from the palette layout also forbid what it does not show
+  level::LayoutMode wfc_layout = level::LayoutMode::kAllow;
   /// Region for WFC (width 0 = whole map); set with the select tool
   int region_x = 0;
   int region_y = 0;
@@ -274,6 +327,10 @@ struct App
   std::size_t tileset = 0;
   /// Tile selected in the tileset panel (for metadata editing)
   level::TileIndex tile = 0;
+  /// Tiles selected in the palette (batch metadata edits, WFC rules from the palette layout)
+  TileSelection selection;
+  /// What the batch metadata edit applies to the selected tiles
+  level::TileEdit batch;
   /// Selected object (portal, marker or path node)
   level::Entity entity = level::kNullEntity;
   level::GraphId graph = 0;
@@ -287,6 +344,10 @@ struct App
   GeneratorTab generator_tab_request = GeneratorTab::kNone;
   /// WFC editor: the tile whose neighbors are being edited
   level::WfcTileId wfc_tile = 0;
+  /// WFC editor: hovering a neighbor previews how the two tiles would line up
+  bool wfc_preview = true;
+  /// What the batch edit applies to the constraints of the selected rule tiles
+  level::WfcTileEdit wfc_batch;
 
   render::ComposeOptions export_options;
   int minimap_size = 256;

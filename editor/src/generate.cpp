@@ -396,6 +396,109 @@ void start_wfc(App& app, std::size_t target)
   }
 }
 
+/// Adjacencies taken from the palette: tiles sitting next to each other there may do so on the map
+void palette_layout_section(App& app)
+{
+  WfcRules& rules = app.level->wfc;
+  ImGui::SeparatorText("From the palette layout");
+  if (selection_size(app) < 2)
+  {
+    ImGui::TextDisabled("Ctrl/shift+click tiles in the palette to make the way they are laid out there a rule");
+    if (selection_size(app) == 1)
+    {
+      ImGui::SameLine();
+      deselect_all_button(app);
+    }
+    return;
+  }
+  SelectionBounds bounds;
+  selection_bounds(app, bounds);
+  selection_preview(app, 24.0F, 4);
+  LayoutMode& mode = app.generators.wfc_layout;
+  if (ImGui::RadioButton("Allow what it shows", mode == LayoutMode::kAllow))
+  {
+    mode = LayoutMode::kAllow;
+  }
+  ImGui::SameLine();
+  if (ImGui::RadioButton("Only what it shows", mode == LayoutMode::kExclusive))
+  {
+    mode = LayoutMode::kExclusive;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip(
+      "A hard constraint: on every side where the layout puts a neighbor, every other tile is forbidden");
+  }
+  if (ImGui::Button(format<64>("Apply the %d x %d layout", bounds.width, bounds.height)))
+  {
+    Grid<TileRef> layout{app.memory.frame};
+    if (palette_layout(app, layout))
+    {
+      const std::size_t pairs = constrain_from_layout(rules, layout, mode, app.memory.frame);
+      LVL_LOG_INFO_FMT(
+        "WFC rules: %zu neighbor pair(s) from a %d x %d palette layout", pairs, bounds.width, bounds.height);
+      app.modified = true;
+    }
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled(rules.diagonals ? "(sides and corners)" : "(sides only)");
+  ImGui::SameLine();
+  if (deselect_all_button(app))
+  {
+    return;
+  }
+}
+
+/// Batch edit: the ticked constraints are applied to every selected rule tile
+void batch_constraints_section(App& app)
+{
+  Level& lv = *app.level;
+  WfcRules& rules = lv.wfc;
+  WfcTileEdit& edit = app.wfc_batch;
+  const auto tiles = selected_rule_tiles(app, app.memory.frame);
+  ImGui::SeparatorText("Batch constraints");
+  if (tiles.size() < 2)
+  {
+    ImGui::TextDisabled("Ctrl+click rule tiles above (or several palette tiles) to constrain them together");
+    if (app.selection.count > 0)
+    {
+      ImGui::SameLine();
+      deselect_all_button(app);
+    }
+    return;
+  }
+  ImGui::Text("%zu rule tiles selected", tiles.size());
+  ImGui::SameLine();
+  if (deselect_all_button(app))
+  {
+    return;
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Take from this tile"))
+  {
+    const WfcTile& from = rules.tiles[app.wfc_tile];
+    edit.weight = from.weight;
+    edit.height_min = from.height_min;
+    edit.height_max = from.height_max;
+    edit.water = from.water;
+    edit.semantic = from.semantic;
+  }
+  batch_field(
+    "##batch_weight", edit.set_weight, [&] { ImGui::DragFloat("Weight##batch", &edit.weight, 0.05F, 0.0F, 1000.0F); });
+  batch_field("##batch_band", edit.set_height, [&] {
+    ImGui::DragFloatRange2("Height band##batch", &edit.height_min, &edit.height_max, 0.005F, 0.0F, 1.0F);
+  });
+  batch_field("##batch_water", edit.set_water, [&] { enum_combo("Water##batch", edit.water); });
+  batch_field(
+    "##batch_semantic", edit.set_semantic, [&] { catalog_combo("Semantic##batch", lv.semantics, edit.semantic); });
+  if (ImGui::Button(format<64>("Apply to %zu rule tiles", tiles.size())))
+  {
+    const std::size_t edited = apply_edit(rules, edit, tiles.data(), tiles.size());
+    LVL_LOG_INFO() << "Batch constraints applied to " << edited << " WFC rule tiles";
+    app.modified = true;
+  }
+}
+
 /// The visual WFC rule editor (the "WFC rules" tab)
 void wfc_rules_tab(App& app)
 {
@@ -413,20 +516,31 @@ void wfc_rules_tab(App& app)
     open_file_dialog(app, FileAction::kSaveWfc);
   }
   ImGui::SameLine();
-  ImGui::BeginDisabled(app.paint.tile.empty() or app.paint.tile.tileset >= lv.tilesets.size());
+  const std::size_t selected = selection_size(app);
+  ImGui::BeginDisabled(selected == 0 and (app.paint.tile.empty() or app.paint.tile.tileset >= lv.tilesets.size()));
   if (ImGui::SmallButton("Add palette tile(s)"))
   {
-    // Adds the whole palette stamp
-    const TileSet& ts = lv.tilesets[app.paint.tile.tileset];
-    const int cols = std::max(1, slice_grid(ts.slice, ts.image_width, ts.image_height).width);
-    for (int dy = 0; dy < app.paint.stamp_height; ++dy)
+    // Adds the palette selection, or the palette stamp when there is none
+    if (selected > 0)
     {
-      for (int dx = 0; dx < app.paint.stamp_width; ++dx)
+      for (const TileIndex tile : selected_tiles(app, app.memory.frame))
       {
-        const int index = app.paint.tile.tile + dy * cols + dx;
-        if (index < static_cast<int>(ts.tiles.size()))
+        app.wfc_tile = add_tile(rules, TileRef{static_cast<TileSetId>(app.tileset), tile});
+      }
+    }
+    else
+    {
+      const TileSet& ts = lv.tilesets[app.paint.tile.tileset];
+      const int cols = std::max(1, slice_grid(ts.slice, ts.image_width, ts.image_height).width);
+      for (int dy = 0; dy < app.paint.stamp_height; ++dy)
+      {
+        for (int dx = 0; dx < app.paint.stamp_width; ++dx)
         {
-          app.wfc_tile = add_tile(rules, TileRef{app.paint.tile.tileset, static_cast<TileIndex>(index)});
+          const int index = app.paint.tile.tile + dy * cols + dx;
+          if (index < static_cast<int>(ts.tiles.size()))
+          {
+            app.wfc_tile = add_tile(rules, TileRef{app.paint.tile.tileset, static_cast<TileIndex>(index)});
+          }
         }
       }
     }
@@ -450,6 +564,7 @@ void wfc_rules_tab(App& app)
     rules.adjacency.clear();
     changed = true;
   }
+  palette_layout_section(app);
   if (rules.tiles.empty())
   {
     ImGui::TextDisabled(
@@ -459,7 +574,7 @@ void wfc_rules_tab(App& app)
   }
   app.wfc_tile = std::min<WfcTileId>(app.wfc_tile, static_cast<WfcTileId>(rules.tiles.size() - 1));
 
-  // Tile strip: pick the tile whose constraints/neighbors are edited
+  // Tile strip: pick the tile whose constraints/neighbors are edited (ctrl+click: batch selection)
   constexpr float kThumb = 32.0F;
   ImGui::BeginChild(
     "tiles",
@@ -469,16 +584,27 @@ void wfc_rules_tab(App& app)
   for (std::size_t i = 0; i < rules.tiles.size(); ++i)
   {
     ImGui::PushID(static_cast<int>(i));
+    const TileRef ref = rules.tiles[i].tile;
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    tile_image(app, rules.tiles[i].tile, kThumb);
+    tile_image(app, ref, kThumb);
     if (ImGui::IsItemClicked())
     {
+      if (ImGui::GetIO().KeyCtrl)
+      {
+        app.selection.retarget(ref.tileset);
+        app.selection.set(ref.tile, !app.selection.has(ref.tile));
+      }
       app.wfc_tile = static_cast<WfcTileId>(i);
+    }
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 q{p.x + kThumb, p.y + kThumb};
+    if (app.selection.has(ref.tileset, ref.tile))
+    {
+      draw->AddRectFilled(p, q, IM_COL32(255, 230, 60, 60));
     }
     if (i == app.wfc_tile)
     {
-      ImGui::GetWindowDrawList()->AddRect(
-        p, ImVec2{p.x + kThumb, p.y + kThumb}, IM_COL32(255, 230, 60, 255), 0, 0, 2.0F);
+      draw->AddRect(p, q, IM_COL32(255, 230, 60, 255), 0, 0, 2.0F);
     }
     ImGui::SameLine();
     ImGui::PopID();
@@ -508,10 +634,17 @@ void wfc_rules_tab(App& app)
     return;
   }
   ImGui::EndGroup();
+  batch_constraints_section(app);
 
   // Adjacency: per direction, which tiles may sit on that side of the selected tile
   ImGui::SeparatorText("Allowed neighbors (click to toggle)");
   const WfcTileId a = app.wfc_tile;
+  ImGui::Checkbox("Preview pairs", &app.wfc_preview);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Hovering a neighbor shows the two tiles as they would sit next to each other");
+  }
+  ImGui::SameLine();
   changed |= ImGui::Checkbox("Constrain corners (8-way)", &rules.diagonals);
   if (rules.diagonals and changed and diagonal_count(rules) == 0)
   {
@@ -573,6 +706,10 @@ void wfc_rules_tab(App& app)
       const bool on = allowed(rules, a, b, d);
       const ImVec2 p = ImGui::GetCursorScreenPos();
       tile_image(app, rules.tiles[b].tile, kSmall);
+      if (ImGui::IsItemHovered())
+      {
+        wfc_pair_tooltip(app, a, b, d, "Click to allow or forbid it there");
+      }
       if (ImGui::IsItemClicked())
       {
         set_allowed(rules, a, b, d, !on);

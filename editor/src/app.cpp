@@ -380,6 +380,10 @@ void shortcuts(App& app)
   {
     open_file_dialog(app, FileAction::kOpenLevel);
   }
+  else if (ctrl and io.KeyShift and ImGui::IsKeyPressed(ImGuiKey_A))
+  {
+    app.selection.clear();
+  }
   if (ctrl or io.WantCaptureKeyboard)
   {
     return;
@@ -580,6 +584,14 @@ void main_menu(App& app)
       if (ImGui::MenuItem(format<96>("Redo %s", app.undo.redo_label()), "Ctrl+Y", false, app.undo.can_redo()))
       {
         redo(app);
+      }
+      if (ImGui::MenuItem(
+            format<64>("Deselect all tiles (%zu)", app.selection.count),
+            "Ctrl+Shift+A",
+            false,
+            app.selection.count > 0))
+      {
+        app.selection.clear();
       }
       ImGui::Separator();
       open_resize = ImGui::MenuItem("Resize level...");
@@ -813,7 +825,87 @@ void smoke(App& app)
     }
     break;
   }
-  case 19:
+  case 19: {
+    // A batch metadata edit over a palette selection (which the tile panel then draws)
+    level::TileSet& ts = app.level->tilesets[app.tileset];
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (std::size_t t = 0; t < std::min<std::size_t>(4, ts.tiles.size()); ++t)
+    {
+      app.selection.set(static_cast<level::TileIndex>(t), true);
+    }
+    app.batch = level::TileEdit{
+      .set_collision = true,
+      .collision = level::collision::kSolid,
+      .set_property = true,
+      .property_key = "batch",
+      .property_value = "yes"};
+    const auto tiles = selected_tiles(app, app.memory.frame);
+    if (level::apply_edit(ts, app.batch, tiles.data(), tiles.size()) != app.selection.count)
+    {
+      report(app, Status::error("the batch edit did not reach every selected tile"));
+    }
+    for (const level::TileIndex t : tiles)
+    {
+      if (ts.tiles[t].collision != level::collision::kSolid or level::find_property(ts, t, "batch") == nullptr)
+      {
+        report(app, Status::error("the batch edit did not apply"));
+      }
+    }
+    break;
+  }
+  case 20: {
+    // WFC rules from the palette layout: the three tiles may only meet as the palette lays them out
+    level::WfcRules& rules = app.level->wfc;
+    const level::Extents grid = palette_grid(app, app.tileset);
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (int x = 0; x < std::min(3, grid.width); ++x)
+    {
+      app.selection.set(static_cast<level::TileIndex>(x), true);
+    }
+    app.generators.wfc_layout = level::LayoutMode::kExclusive;
+    level::Grid<level::TileRef> layout{app.memory.frame};
+    if (!palette_layout(app, layout))
+    {
+      report(app, Status::error("the palette selection has no layout"));
+      break;
+    }
+    if (level::constrain_from_layout(rules, layout, app.generators.wfc_layout, app.memory.frame) == 0)
+    {
+      report(app, Status::error("no rules came from the palette layout"));
+      break;
+    }
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    const auto first = level::find_tile(rules, level::TileRef{tileset, 0});
+    const auto second = level::find_tile(rules, level::TileRef{tileset, 1});
+    if (!level::allowed(rules, first, second, level::Direction::kEast))
+    {
+      report(app, Status::error("the palette layout did not allow its own neighbors"));
+    }
+    // The same selection, as a batch edit of those rule tiles' constraints
+    app.wfc_batch = level::WfcTileEdit{.set_weight = true, .weight = 2.5F};
+    const auto rule_tiles = selected_rule_tiles(app, app.memory.frame);
+    if (level::apply_edit(rules, app.wfc_batch, rule_tiles.data(), rule_tiles.size()) < 2)
+    {
+      report(app, Status::error("the batch constraints reached fewer than two rule tiles"));
+    }
+    for (const level::WfcTileId id : rule_tiles)
+    {
+      if (rules.tiles[id].weight != 2.5F)
+      {
+        report(app, Status::error("the batch constraints did not apply"));
+      }
+    }
+    // Deselect all (Edit > Deselect all tiles, Ctrl+Shift+A): the batch sections go back to their hints
+    app.selection.clear();
+    if (selection_size(app) != 0 or !selected_rule_tiles(app, app.memory.frame).empty())
+    {
+      report(app, Status::error("deselecting all left tiles selected"));
+    }
+    break;
+  }
+  case 21:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -822,7 +914,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 20:
+  case 22:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

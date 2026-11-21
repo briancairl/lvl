@@ -326,6 +326,7 @@ void tilesets_panel(App& app)
   {
     remove_tileset(lv, static_cast<TileSetId>(app.tileset));
     app.tileset = 0;
+    app.selection.clear();
     app.undo.clear();
     app.modified = true;
     reload_atlases(app);
@@ -386,6 +387,7 @@ void tilesets_panel(App& app)
     if (resliced)
     {
       reslice(ts);
+      app.selection.clear();
       if (app.tileset < kMaxTileSets and !app.assets.images[app.tileset].empty())
       {
         render::average_tile_colors(ts, app.assets.images[app.tileset], app.assets.tile_colors[app.tileset]);
@@ -409,7 +411,15 @@ void tilesets_panel(App& app)
     ImGui::SetNextItemWidth(120.0F);
     ImGui::SliderFloat("Zoom##palette", &zoom, 0.5F, 6.0F, "%.1fx");
     ImGui::SameLine();
-    ImGui::TextDisabled("click: tile, drag: stamp");
+    ImGui::TextDisabled("click: tile, drag: stamp, ctrl/shift+click: several");
+    if (selection_size(app) > 0)
+    {
+      ImGui::Text("%zu tiles selected", selection_size(app));
+      ImGui::SameLine();
+      deselect_all_button(app);
+      ImGui::SameLine();
+      ImGui::TextDisabled("(Tile metadata > Batch edit, Generate > WFC rules)");
+    }
     if (!tex.valid())
     {
       ImGui::TextDisabled("No atlas loaded");
@@ -443,7 +453,15 @@ void tilesets_panel(App& app)
         const ImVec2 a{origin.x + r.x * zoom, origin.y + r.y * zoom};
         const ImVec2 b{a.x + r.width * zoom, a.y + r.height * zoom};
         const bool hidden = static_cast<std::size_t>(i) < ts.tiles.size() and ts.tiles[i].hidden;
-        draw->AddRect(a, b, hidden ? IM_COL32(255, 80, 80, 60) : IM_COL32(255, 255, 255, 40));
+        if (app.selection.has(app.tileset, static_cast<TileIndex>(i)))
+        {
+          draw->AddRectFilled(a, b, IM_COL32(255, 230, 60, 50));
+          draw->AddRect(a, b, IM_COL32(255, 230, 60, 200));
+        }
+        else
+        {
+          draw->AddRect(a, b, hidden ? IM_COL32(255, 80, 80, 60) : IM_COL32(255, 255, 255, 40));
+        }
       }
       if (ImGui::IsItemHovered())
       {
@@ -459,18 +477,43 @@ void tilesets_panel(App& app)
         }
         if (drag_start >= 0 and ImGui::IsMouseReleased(ImGuiMouseButton_Left) and hover >= 0)
         {
+          // Ctrl and shift build up a selection (ctrl toggles, shift extends from the anchor); a
+          // plain click or drag replaces it, and is also what the paint stamp follows
+          const ImGuiIO& io = ImGui::GetIO();
+          const bool multi = io.KeyCtrl or io.KeyShift;
           const int cols = std::max(1, grid.width);
-          const int x0 = std::min(drag_start % cols, hover % cols);
-          const int y0 = std::min(drag_start / cols, hover / cols);
-          const int x1 = std::max(drag_start % cols, hover % cols);
-          const int y1 = std::max(drag_start / cols, hover / cols);
-          app.paint.tile = TileRef{static_cast<TileSetId>(app.tileset), static_cast<TileIndex>(y0 * cols + x0)};
-          app.paint.stamp_width = x1 - x0 + 1;
-          app.paint.stamp_height = y1 - y0 + 1;
-          app.tile = static_cast<TileIndex>(y0 * cols + x0);
-          if (app.tool != Tool::kPaint and app.tool != Tool::kFill and app.tool != Tool::kRect)
+          const int from = (io.KeyShift and app.selection.tileset == app.tileset) ? app.selection.anchor : drag_start;
+          const int x0 = std::min(from % cols, hover % cols);
+          const int y0 = std::min(from / cols, hover / cols);
+          const int x1 = std::max(from % cols, hover % cols);
+          const int y1 = std::max(from / cols, hover / cols);
+          app.selection.retarget(app.tileset);
+          if (!multi)
           {
-            app.tool = Tool::kPaint;
+            app.selection.clear();
+          }
+          for (int y = y0; y <= y1; ++y)
+          {
+            for (int x = x0; x <= x1; ++x)
+            {
+              const auto tile = static_cast<TileIndex>(y * cols + x);
+              if (tile < ts.tiles.size())
+              {
+                app.selection.set(tile, io.KeyCtrl ? !app.selection.has(tile) : true);
+              }
+            }
+          }
+          app.selection.anchor = static_cast<TileIndex>(hover);
+          app.tile = multi ? static_cast<TileIndex>(hover) : static_cast<TileIndex>(y0 * cols + x0);
+          if (!multi)
+          {
+            app.paint.tile = TileRef{static_cast<TileSetId>(app.tileset), app.tile};
+            app.paint.stamp_width = x1 - x0 + 1;
+            app.paint.stamp_height = y1 - y0 + 1;
+            if (app.tool != Tool::kPaint and app.tool != Tool::kFill and app.tool != Tool::kRect)
+            {
+              app.tool = Tool::kPaint;
+            }
           }
           drag_start = -1;
         }
@@ -498,6 +541,87 @@ void tilesets_panel(App& app)
 // -------------------------------------------------------------------------------------------------
 // Tile metadata
 // -------------------------------------------------------------------------------------------------
+
+namespace
+{
+
+/// Batch edit: the fields ticked here are applied to every tile selected in the palette
+void batch_edit_section(App& app, TileSet& ts)
+{
+  Level& lv = *app.level;
+  TileEdit& edit = app.batch;
+  ImGui::SeparatorText("Batch edit");
+  const std::size_t count = selection_size(app);
+  if (count < 2)
+  {
+    ImGui::TextDisabled("Ctrl/shift+click tiles in the palette to edit several of them at once");
+    if (count == 1)
+    {
+      ImGui::SameLine();
+      deselect_all_button(app);
+    }
+    return;
+  }
+  ImGui::Text("%zu tiles selected", count);
+  ImGui::SameLine();
+  if (ImGui::SmallButton(format<64>("Take from tile %u", static_cast<unsigned>(app.tile))))
+  {
+    const TileInfo& info = ts.tiles[app.tile];
+    edit.semantic = info.semantic;
+    edit.material = info.material;
+    edit.collision = info.collision;
+    edit.hidden = info.hidden;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Fills the fields below with the metadata of the tile shown above");
+  }
+  ImGui::SameLine();
+  if (deselect_all_button(app))
+  {
+    return;
+  }
+
+  selection_preview(app, 24.0F, 5);
+
+  // One field per row, behind the checkbox that says whether the batch edit writes it
+  batch_field(
+    "##batch_semantic", edit.set_semantic, [&] { catalog_combo("Semantic type##batch", lv.semantics, edit.semantic); });
+  batch_field(
+    "##batch_material", edit.set_material, [&] { catalog_combo("Material##batch", lv.materials, edit.material); });
+  batch_field("##batch_hidden", edit.set_hidden, [&] {
+    ImGui::Checkbox("Hidden from palettes/generation##batch", &edit.hidden);
+  });
+  batch_field("##batch_collision", edit.set_collision, [&] { collision_edit(edit.collision); });
+  // A property is either set to a value or removed by key
+  if (batch_field("##batch_property", edit.set_property, [&] {
+        ImGui::SetNextItemWidth(110.0F);
+        input_text("##batch_key", edit.property_key);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(130.0F);
+        input_text("##batch_value", edit.property_value);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Property");
+      }))
+  {
+    edit.clear_property = edit.set_property ? false : edit.clear_property;
+  }
+  if (ImGui::Checkbox("Remove the property with that key instead", &edit.clear_property) and edit.clear_property)
+  {
+    edit.set_property = false;
+  }
+
+  if (ImGui::Button(format<64>("Apply to %zu tiles", count)))
+  {
+    const auto tiles = selected_tiles(app, app.memory.frame);
+    const std::size_t edited = apply_edit(ts, edit, tiles.data(), tiles.size());
+    LVL_LOG_INFO() << "Batch edit applied to " << edited << " tiles of '" << ts.name.view() << '\'';
+    app.modified = true;
+    invalidate_view(app);
+  }
+}
+
+}  // namespace
 
 void tile_meta_panel(App& app)
 {
@@ -607,6 +731,7 @@ void tile_meta_panel(App& app)
     }
     ImGui::PopID();
   }
+  batch_edit_section(app, ts);
   if (changed)
   {
     app.modified = true;
