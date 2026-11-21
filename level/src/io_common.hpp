@@ -45,6 +45,15 @@ template <typename S> void serialize(S& s, PathGraph& g)
 namespace lvl::level::io
 {
 
+/// Most workers a level's layers are spread over (per-worker bookkeeping is a fixed array)
+inline constexpr std::size_t kMaxIoWorkers = 64;
+
+/// The arena for buffers sized by the level rather than by the worker count (see IoContext::shared)
+inline memory::Arena& shared_arena(IoContext& ctx)
+{
+  return (ctx.shared != nullptr) ? *ctx.shared : ctx.workers[0].scratch;
+}
+
 /// Format/kind names written into JSON files
 inline constexpr std::string_view kLevelFormat = "lvl-level";
 inline constexpr std::string_view kTileSetFormat = "lvl-tileset";
@@ -90,16 +99,6 @@ std::size_t cell_size(LayerKind kind);
 /// Raw pointer to a layer plane's cells
 const void* cells(const Layer& layer);
 void* cells(Layer& layer);
-
-/// A layer decoded by a worker into its scratch arena, before it is copied into the document
-struct DecodedLayer
-{
-  LayerHeader header;
-  Extents extents;
-  /// Cell values (layout of the kind's plane), in a worker's scratch arena
-  void* values = nullptr;
-  Status status;
-};
 
 /// Portals/markers/path graphs as plain records, with entity references as indices
 struct PortalRecord

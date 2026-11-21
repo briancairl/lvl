@@ -53,6 +53,14 @@ struct IoContext
   /// At least one worker; worker 0 is used by the calling thread
   IoWorker* workers = nullptr;
   std::size_t worker_count = 0;
+  /**
+   * @brief Optional arena for the buffers whose size follows the level's, not the worker count's
+   *
+   * A whole file's bytes when loading, and a layer's encoded text when saving. It is shared by the
+   * workers but carved up only by the calling thread, so bump allocation stays single-threaded.
+   * Worker 0's scratch is used when none is given, which caps a level at one worker's share.
+   */
+  memory::Arena* shared = nullptr;
   /// Optional
   jobs::Progress* progress = nullptr;
 };

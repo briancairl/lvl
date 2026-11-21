@@ -229,20 +229,21 @@ Status save_level_binary(const char* path, const Level& level_in, IoContext& ctx
 
 Status load_level_binary(const char* path, Level& level, IoContext& ctx)
 {
-  IoWorker& main = ctx.workers[0];
-  memory::Scope scope{main.scratch};
+  // The layer chunks are read in place, so the whole file stays resident in the shared arena
+  memory::Arena& shared = shared_arena(ctx);
+  memory::Scope scope{shared};
   progress_reset(ctx, 3);
   progress_stage(ctx, "Reading");
 
   char* data = nullptr;
   std::size_t size = 0;
-  LVL_RETURN_IF_ERROR(file::read(path, main.scratch, data, size));
+  LVL_RETURN_IF_ERROR(file::read(path, shared, data, size));
   const auto* bytes = reinterpret_cast<const std::uint8_t*>(data);
   progress_advance(ctx);
 
   progress_stage(ctx, "Decoding document");
-  ObjectRecords records{main.scratch};
-  auto headers = memory::make_vector<LayerHeader>(main.scratch);
+  ObjectRecords records{shared};
+  auto headers = memory::make_vector<LayerHeader>(shared);
   Meta meta{&level, &records, &headers};
   binary::Reader reader{binary::InputAdapter{bytes, size}};
   binary::Header header;
@@ -279,8 +280,8 @@ Status load_level_binary(const char* path, Level& level, IoContext& ctx)
   // Locate the layer chunks
   std::size_t offset = reader.adapter().currentReadPos();
   const std::size_t layer_count = headers.size();
-  auto chunk_data = memory::make_vector<const std::uint8_t*>(main.scratch, layer_count, nullptr);
-  auto chunks = memory::make_vector<ChunkHeader>(main.scratch, layer_count, ChunkHeader{});
+  auto chunk_data = memory::make_vector<const std::uint8_t*>(shared, layer_count, nullptr);
+  auto chunks = memory::make_vector<ChunkHeader>(shared, layer_count, ChunkHeader{});
   for (std::size_t i = 0; i < layer_count; ++i)
   {
     if (offset + sizeof(ChunkHeader) > size)
@@ -313,7 +314,7 @@ Status load_level_binary(const char* path, Level& level, IoContext& ctx)
   {
     apply_header(level.layers[add_layer(level, h.kind, h.name.view())], h);
   }
-  auto ok = memory::make_vector<std::uint8_t>(main.scratch, layer_count, std::uint8_t{0});
+  auto ok = memory::make_vector<std::uint8_t>(shared, layer_count, std::uint8_t{0});
   jobs::parallel_for(layer_count, ctx.worker_count, [&](std::size_t i, std::size_t) {
     ok[i] = (fnv1a(chunk_data[i], chunks[i].size) == chunks[i].checksum) ? 1 : 0;
     if (ok[i] != 0)

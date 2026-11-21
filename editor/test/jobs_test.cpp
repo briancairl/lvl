@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 // LVL
+#include "lvl/core/file.hpp"
 #include "lvl/editor/jobs.hpp"
 
 using namespace lvl;
@@ -89,7 +90,73 @@ protected:
   const std::string small_b = temp("small_b.png");
 };
 
+/// Job memory for level I/O, with no atlases in the way
+class LevelJobs : public ::testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    memory::create(root, 256UL << 20, "root");
+    memory::push(root, doc_a, 32UL << 20, "doc_a");
+    memory::push(root, doc_b, 32UL << 20, "doc_b");
+    memory::push(root, jobs_arena, 128UL << 20, "jobs");
+    editor::partition(jobs_arena, memory);
+    source = new (storage_a) Level{doc_a};
+    target = new (storage_b) Level{doc_b};
+  }
+  void TearDown() override
+  {
+    source->~Level();
+    target->~Level();
+    memory::destroy(root);
+  }
+
+  memory::Arena root;
+  memory::Arena doc_a;
+  memory::Arena doc_b;
+  memory::Arena jobs_arena;
+  editor::JobMemory memory;
+  alignas(Level) unsigned char storage_a[sizeof(Level)];
+  alignas(Level) unsigned char storage_b[sizeof(Level)];
+  Level* source = nullptr;
+  Level* target = nullptr;
+};
+
 }  // namespace
+
+TEST_F(LevelJobs, SavesAndLoadsLayersBiggerThanAWorkersScratch)
+{
+  create_default(*source, Settings{.name = "big", .extents = {1000, 700}, .cell_width = 8, .cell_height = 8});
+  auto& height = plane<ScalarGrid>(source->layers[0]);
+  for (std::size_t i = 0; i < height.values.size(); ++i)
+  {
+    height.values[i] = static_cast<float>(i % 7919) * 0.1234567F;
+  }
+  // One layer's text is far more than a worker's scratch holds (the field report)
+  ASSERT_GT(height.values.size() * 16, memory.workers[0].scratch.capacity);
+
+  jobs::Progress progress;
+  auto ctx = memory.context(&progress);
+  ASSERT_EQ(ctx.shared, &memory.general);
+
+  const auto path = temp("job_level.json");
+  const auto saved = save_level(path.c_str(), *source, ctx);
+  ASSERT_TRUE(saved.ok) << saved;
+  // And so is the file, which is read whole when loading
+  std::size_t size = 0;
+  ASSERT_TRUE(file::size(path.c_str(), size).ok);
+  EXPECT_GT(size, memory.workers[0].scratch.capacity);
+
+  const auto status = load_level(path.c_str(), *target, ctx);
+  ASSERT_TRUE(status.ok) << status;
+  ASSERT_EQ(target->layers.size(), source->layers.size());
+  const auto& reloaded = plane<ScalarGrid>(target->layers[0]);
+  ASSERT_EQ(reloaded.values.size(), height.values.size());
+  for (std::size_t i = 0; i < height.values.size(); ++i)
+  {
+    ASSERT_EQ(reloaded.values[i], height.values[i]) << "cell " << i;
+  }
+}
 
 TEST_F(AtlasLoading, LargeAtlasLoadsDespiteSmallWorkerArenas)
 {

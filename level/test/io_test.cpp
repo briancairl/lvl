@@ -23,7 +23,7 @@ class LevelIo : public ::testing::Test
 protected:
   void SetUp() override
   {
-    memory::create(root, 256UL << 20, "root");
+    memory::create(root, 512UL << 20, "root");
     memory::push(root, doc_a, 64UL << 20, "doc_a");
     memory::push(root, doc_b, 64UL << 20, "doc_b");
     for (std::size_t w = 0; w < kWorkers; ++w)
@@ -31,6 +31,8 @@ protected:
       memory::push(root, workers[w].json, 16UL << 20, "json");
       memory::push(root, workers[w].scratch, 16UL << 20, "scratch");
     }
+    // Deliberately not wired into the context: most tests exercise the fallback, worker 0's scratch
+    memory::push(root, shared, 128UL << 20, "io-shared");
     ctx = IoContext{.workers = workers.data(), .worker_count = kWorkers, .progress = &progress};
   }
 
@@ -115,6 +117,64 @@ protected:
     create_path_edge(level.registry, n2, n3);
   }
 
+  /// A level whose layers are each too big for one worker's arenas
+  void populate_big(Level& level)
+  {
+    create_default(level, Settings{.name = "big", .extents = {1280, 1280}, .cell_width = 8, .cell_height = 8});
+    const TileSetId id = add_tileset(level, "forest");
+    TileSet& ts = level.tilesets[id];
+    ts.slice = SliceParams{.tile_width = 8, .tile_height = 8};
+    ts.image_width = 8 * 16;
+    ts.image_height = 8 * 16;
+    reslice(ts);
+    auto& height = plane<ScalarGrid>(level.layers[0]);
+    auto& ground = plane<TileGrid>(level.layers[1]);
+    for (std::size_t i = 0; i < height.values.size(); ++i)
+    {
+      height.values[i] = static_cast<float>(i % 7919) * 0.1234567F;
+      ground.values[i] = TileRef{id, static_cast<TileIndex>(i % ts.tiles.size())};
+    }
+  }
+
+  /// The two files hold the same bytes
+  void expect_same_file(const std::string& a_path, const std::string& b_path)
+  {
+    memory::Scope scope{shared};
+    char* a = nullptr;
+    char* b = nullptr;
+    std::size_t na = 0;
+    std::size_t nb = 0;
+    ASSERT_TRUE(file::read(a_path.c_str(), shared, a, na).ok);
+    ASSERT_TRUE(file::read(b_path.c_str(), shared, b, nb).ok);
+    EXPECT_EQ(std::string_view(a, na), std::string_view(b, nb));
+  }
+
+  static void expect_equal_layers(const Level& a, const Level& b)
+  {
+    ASSERT_EQ(a.layers.size(), b.layers.size());
+    for (std::size_t i = 0; i < a.layers.size(); ++i)
+    {
+      const Layer& la = a.layers[i];
+      const Layer& lb = b.layers[i];
+      EXPECT_EQ(la.name, lb.name);
+      EXPECT_EQ(la.kind, lb.kind);
+      EXPECT_EQ(la.visible, lb.visible);
+      EXPECT_EQ(la.preview, lb.preview);
+      EXPECT_FLOAT_EQ(la.opacity, lb.opacity);
+      std::visit(
+        [&lb](const auto& ga) {
+          using G = std::decay_t<decltype(ga)>;
+          const auto& gb = std::get<G>(lb.data);
+          ASSERT_EQ(ga.values.size(), gb.values.size());
+          for (std::size_t k = 0; k < ga.values.size(); ++k)
+          {
+            ASSERT_EQ(ga.values[k], gb.values[k]) << "cell " << k;
+          }
+        },
+        la.data);
+    }
+  }
+
   static void expect_equal(const Level& a, const Level& b)
   {
     EXPECT_EQ(a.settings.name, b.settings.name);
@@ -149,28 +209,7 @@ protected:
     EXPECT_EQ(seasonal_tile(tb, 3, "winter"), 11);
     EXPECT_EQ(seasonal_material(tb, 3, "winter"), seasonal_material(ta, 3, "winter"));
 
-    ASSERT_EQ(a.layers.size(), b.layers.size());
-    for (std::size_t i = 0; i < a.layers.size(); ++i)
-    {
-      const Layer& la = a.layers[i];
-      const Layer& lb = b.layers[i];
-      EXPECT_EQ(la.name, lb.name);
-      EXPECT_EQ(la.kind, lb.kind);
-      EXPECT_EQ(la.visible, lb.visible);
-      EXPECT_EQ(la.preview, lb.preview);
-      EXPECT_FLOAT_EQ(la.opacity, lb.opacity);
-      std::visit(
-        [&lb](const auto& ga) {
-          using G = std::decay_t<decltype(ga)>;
-          const auto& gb = std::get<G>(lb.data);
-          ASSERT_EQ(ga.values.size(), gb.values.size());
-          for (std::size_t k = 0; k < ga.values.size(); ++k)
-          {
-            ASSERT_EQ(ga.values[k], gb.values[k]) << "cell " << k;
-          }
-        },
-        la.data);
-    }
+    expect_equal_layers(a, b);
 
     EXPECT_EQ(a.wfc.name, b.wfc.name);
     ASSERT_EQ(a.wfc.tiles.size(), b.wfc.tiles.size());
@@ -209,6 +248,7 @@ protected:
   memory::Arena root;
   memory::Arena doc_a;
   memory::Arena doc_b;
+  memory::Arena shared;
   std::array<IoWorker, kWorkers> workers;
   jobs::Progress progress;
   IoContext ctx;
@@ -368,6 +408,144 @@ TEST_F(LevelIo, BadFilesAreReportedNotFatal)
   ASSERT_TRUE(file::write(bin.c_str(), data, size - 10).ok);
   memory::clear(workers[0].scratch);
   EXPECT_FALSE(load_level(bin.c_str(), level, ctx).ok);
+}
+
+TEST_F(LevelIo, JsonSaveSplitsLayersIntoWaves)
+{
+  Level original{doc_a};
+  populate(original);
+  const auto one_wave = temp("waves_one.json");
+  const auto many_waves = temp("waves_many.json");
+
+  ctx.shared = &shared;
+  ASSERT_TRUE(save_level(one_wave.c_str(), original, ctx).ok);
+  // Every layer's text at once needs more than the arena the same save gets below
+  constexpr std::size_t kTight = 24UL << 10;
+  EXPECT_GT(shared.peak, kTight);
+
+  memory::Arena tight;
+  memory::push(shared, tight, kTight, "tight");
+  ctx.shared = &tight;
+  const auto status = save_level(many_waves.c_str(), original, ctx);
+  ASSERT_TRUE(status.ok) << status;
+  ctx.shared = nullptr;
+  memory::pop(shared, tight);
+
+  // Splitting the layers across waves is invisible in the file
+  expect_same_file(one_wave, many_waves);
+
+  Level loaded{doc_b};
+  ctx.shared = &shared;
+  ASSERT_TRUE(load_level(many_waves.c_str(), loaded, ctx).ok);
+  expect_equal(original, loaded);
+}
+
+TEST_F(LevelIo, RoundTripsALevelBiggerThanOneWorkersShare)
+{
+  Level original{doc_a};
+  populate_big(original);
+  ctx.shared = &shared;
+
+  for (const char* name : {"big.json", "big.lvlb"})
+  {
+    const auto path = temp(name);
+    const auto saved = save_level(path.c_str(), original, ctx);
+    ASSERT_TRUE(saved.ok) << saved;
+    // What the shared arena is for: neither the file nor one layer's text fits a worker's scratch
+    std::size_t size = 0;
+    ASSERT_TRUE(file::size(path.c_str(), size).ok);
+    EXPECT_GT(size, workers[0].scratch.capacity);
+
+    Level loaded{doc_b};
+    const auto status = load_level(path.c_str(), loaded, ctx);
+    ASSERT_TRUE(status.ok) << status;
+    expect_equal_layers(original, loaded);
+  }
+}
+
+TEST_F(LevelIo, JsonSaveStreamsLayersTooBigToBuffer)
+{
+  Level original{doc_a};
+  populate_big(original);
+  const auto buffered = temp("streamed_a.json");
+  const auto streamed = temp("streamed_b.json");
+
+  ctx.shared = &shared;
+  ASSERT_TRUE(save_level(buffered.c_str(), original, ctx).ok);
+
+  // Not even one layer's text fits, so every layer goes straight to the file
+  memory::Arena tiny;
+  memory::push(shared, tiny, 1UL << 20, "tiny");
+  ctx.shared = &tiny;
+  const auto status = save_level(streamed.c_str(), original, ctx);
+  ASSERT_TRUE(status.ok) << status;
+  EXPECT_LT(tiny.peak, 1UL << 20);
+  ctx.shared = nullptr;
+  memory::pop(shared, tiny);
+
+  // Streaming a layer is invisible in the file
+  ctx.shared = &shared;
+  expect_same_file(buffered, streamed);
+
+  Level loaded{doc_b};
+  const auto reloaded = load_level(streamed.c_str(), loaded, ctx);
+  ASSERT_TRUE(reloaded.ok) << reloaded;
+  expect_equal_layers(original, loaded);
+}
+
+TEST_F(LevelIo, LoadsLayersWithoutStagingThemInWorkerArenas)
+{
+  Level original{doc_a};
+  populate_big(original);
+  const auto path = temp("no_staging.json");
+  ctx.shared = &shared;
+  ASSERT_TRUE(save_level(path.c_str(), original, ctx).ok);
+
+  // Worker arenas far too small to hold a layer's cells, which is no longer where they land: the
+  // workers scan the file's text straight into the document's planes
+  std::array<IoWorker, 2> small;
+  for (auto& worker : small)
+  {
+    memory::push(shared, worker.json, 1UL << 20, "small-json");
+    memory::push(shared, worker.scratch, 256UL << 10, "small-scratch");
+  }
+  const std::size_t cells = plane<ScalarGrid>(original.layers[0]).values.size() * sizeof(float);
+  ASSERT_LT(small[0].scratch.capacity, cells);
+  IoContext small_ctx{.workers = small.data(), .worker_count = small.size(), .shared = &shared, .progress = &progress};
+
+  Level loaded{doc_b};
+  const auto status = load_level(path.c_str(), loaded, small_ctx);
+  ASSERT_TRUE(status.ok) << status;
+  expect_equal_layers(original, loaded);
+}
+
+TEST_F(LevelIo, RoundTripsLayerHeadersAtTheirWidest)
+{
+  Level original{doc_a};
+  // One cell per layer, so a layer's text is almost all header: what the encode buffer is sized for
+  create_default(original, Settings{.name = "widest", .extents = {1, 1}});
+  // Names whose every character grows when written as JSON, and the longest a float's shortest
+  // round-trip form gets
+  constexpr float kWidest = -1.12854834e-32F;
+  ASSERT_TRUE(original.layers[0].name.assign(std::string(Name::capacity() - 1, '"')));
+  ASSERT_TRUE(original.layers[1].name.assign(std::string(Name::capacity() - 1, '\\')));
+  for (auto& layer : original.layers)
+  {
+    layer.opacity = kWidest;
+    layer.range_min = kWidest;
+    layer.range_max = kWidest;
+    layer.contour_interval = kWidest;
+  }
+
+  const auto path = temp("widest.json");
+  ctx.shared = &shared;
+  const auto saved = save_level(path.c_str(), original, ctx);
+  ASSERT_TRUE(saved.ok) << saved;
+
+  Level loaded{doc_b};
+  const auto status = load_level(path.c_str(), loaded, ctx);
+  ASSERT_TRUE(status.ok) << status;
+  expect_equal_layers(original, loaded);
 }
 
 TEST_F(LevelIo, SingleWorkerWorksToo)

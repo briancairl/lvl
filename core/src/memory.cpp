@@ -18,8 +18,6 @@ namespace lvl::memory
 namespace
 {
 
-constexpr std::size_t kSubArenaAlignment = 64UL;
-
 std::size_t offset_of(const Arena& arena, const void* p)
 {
   return static_cast<std::size_t>(reinterpret_cast<std::uintptr_t>(p) - reinterpret_cast<std::uintptr_t>(arena.data));

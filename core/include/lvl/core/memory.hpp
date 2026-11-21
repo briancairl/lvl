@@ -40,6 +40,9 @@ struct Arena
   const char* label = "arena";
 };
 
+/// Alignment of an arena's memory and of every sub-arena carved from it
+inline constexpr std::size_t kSubArenaAlignment = 64UL;
+
 constexpr bool is_valid(const Arena& arena) { return (arena.data != nullptr) && (arena.capacity > 0); }
 
 /// Bytes still available

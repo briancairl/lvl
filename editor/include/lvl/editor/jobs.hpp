@@ -43,9 +43,17 @@ struct JobMemory
   std::size_t worker_count = 0;
   memory::Arena general;
 
+  /**
+   * @brief An IoContext over this memory, with the general arena shared by the workers
+   *
+   * Level I/O and the general arena's other users (atlas decoding, generator results) are separate
+   * phases of a job, never concurrent: a load decodes atlases only once the level is in, and
+   * load_atlases clears the arena first.
+   */
   [[nodiscard]] level::IoContext context(jobs::Progress* progress)
   {
-    return level::IoContext{.workers = workers.data(), .worker_count = worker_count, .progress = progress};
+    return level::IoContext{
+      .workers = workers.data(), .worker_count = worker_count, .shared = &general, .progress = progress};
   }
 };
 

@@ -19,7 +19,8 @@ void partition(memory::Arena& arena, JobMemory& out)
   memory::clear(arena);
   out = JobMemory{};
   out.worker_count = std::clamp<std::size_t>(jobs::hardware_concurrency(), 1, kMaxWorkers);
-  // Half for the general arena (job results, images); the rest split between workers
+  // Half for the general arena (job results, images, the buffers level I/O sizes by the level);
+  // the rest split between workers
   const std::size_t total = memory::available(arena);
   memory::push(arena, out.general, total / 2, "job-general");
   const std::size_t per_worker = (memory::available(arena) - 4096) / out.worker_count;
