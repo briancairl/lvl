@@ -1,4 +1,5 @@
 // C++ Standard Library
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -89,7 +90,91 @@ protected:
   const std::string small_b = temp("small_b.png");
 };
 
+/// Job memory for level I/O, with no atlases in the way
+class LevelJobs : public ::testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    memory::create(root, 512UL << 20, "root");
+    memory::push(root, doc_a, 48UL << 20, "doc_a");
+    memory::push(root, doc_b, 48UL << 20, "doc_b");
+    memory::push(root, work, 384UL << 20, "work");
+    source = new (storage_a) Level{doc_a};
+    target = new (storage_b) Level{doc_b};
+  }
+  void TearDown() override
+  {
+    source->~Level();
+    target->~Level();
+    memory::destroy(root);
+  }
+
+  /// Job memory partitioned from a jobs arena of <code>bytes</code>
+  void partition_jobs(std::size_t bytes)
+  {
+    memory::clear(work);
+    memory::Arena jobs_arena;
+    memory::push(work, jobs_arena, bytes, "jobs");
+    editor::partition(jobs_arena, memory);
+  }
+
+  memory::Arena root;
+  memory::Arena doc_a;
+  memory::Arena doc_b;
+  memory::Arena work;
+  editor::JobMemory memory;
+  alignas(Level) unsigned char storage_a[sizeof(Level)];
+  alignas(Level) unsigned char storage_b[sizeof(Level)];
+  Level* source = nullptr;
+  Level* target = nullptr;
+};
+
 }  // namespace
+
+TEST_F(LevelJobs, SavesAndLoadsLayersBiggerThanAWorkersScratch)
+{
+  // A worker gets jobs / 2 / workers, so its share depends on the core count this machine happens
+  // to have. Work backwards from that instead: the jobs arena that lands a worker's scratch on each
+  // size below, whatever the core count. The level is then sized from the scratch partition()
+  // really handed out, so one layer's text always needs more than it holds (the field report). A
+  // scalar cell's text is at most 16 bytes.
+  partition_jobs(16UL << 20);
+  const std::size_t workers = memory.worker_count;
+  for (const std::size_t want : {2UL << 20, 16UL << 20})
+  {
+    partition_jobs(want * 8 / 3 * workers + 8192);
+    const std::size_t scratch = memory.workers[0].scratch.capacity;
+    const int side = static_cast<int>(std::sqrt(static_cast<double>(scratch / 16 * 3 / 2)));
+    level::reset(*source);
+    level::reset(*target);
+    create_default(*source, Settings{.name = "big", .extents = {side, side}, .cell_width = 8, .cell_height = 8});
+    auto& height = plane<ScalarGrid>(source->layers[0]);
+    for (std::size_t i = 0; i < height.values.size(); ++i)
+    {
+      height.values[i] = static_cast<float>(i % 10);
+    }
+    ASSERT_GT(height.values.size() * 16, scratch) << (scratch >> 20) << " MiB of worker scratch";
+
+    jobs::Progress progress;
+    auto ctx = memory.context(&progress);
+    ASSERT_EQ(ctx.shared, &memory.general);
+
+    const auto path = temp("job_level.json");
+    const auto saved = save_level(path.c_str(), *source, ctx);
+    ASSERT_TRUE(saved.ok) << saved;
+
+    const auto status = load_level(path.c_str(), *target, ctx);
+    ASSERT_TRUE(status.ok) << status;
+    ASSERT_EQ(target->layers.size(), source->layers.size());
+    const auto& reloaded = plane<ScalarGrid>(target->layers[0]);
+    ASSERT_EQ(reloaded.values.size(), height.values.size());
+    for (std::size_t i = 0; i < height.values.size(); ++i)
+    {
+      ASSERT_EQ(reloaded.values[i], height.values[i]) << "cell " << i;
+    }
+  }
+}
 
 TEST_F(AtlasLoading, LargeAtlasLoadsDespiteSmallWorkerArenas)
 {

@@ -192,6 +192,10 @@ int main(int argc, char** argv)
   memory::Arena render_scratch;
   memory::push(root, document, total / 4, "document");
   memory::push(root, render_scratch, total / 4, "render");
+  // Half of what is left is shared by the workers, for the buffers sized by the level (a whole
+  // file's bytes, a layer's encoded text); the rest is split between them
+  memory::Arena io_shared;
+  memory::push(root, io_shared, memory::available(root) / 2, "io-shared");
   level::IoWorker io_workers[16];
   const std::size_t per_worker = (memory::available(root) - 4096) / workers;
   for (std::size_t w = 0; w < workers; ++w)
@@ -200,7 +204,7 @@ int main(int argc, char** argv)
     memory::push(root, io_workers[w].scratch, per_worker - per_worker / 4 - 256, "scratch");
   }
   jobs::Progress progress;
-  level::IoContext ctx{.workers = io_workers, .worker_count = workers, .progress = &progress};
+  level::IoContext ctx{.workers = io_workers, .worker_count = workers, .shared = &io_shared, .progress = &progress};
 
   int rc = EXIT_SUCCESS;
   {

@@ -183,7 +183,13 @@ sh_test(
     name = "up_down_test",
     size = "medium",
     srcs = ["test/up_down_test.sh"],
-    args = ["$(rootpath :lvl)"],
-    data = [":lvl"],
+    args = [
+        "$(rootpath :lvl)",
+        "$(rootpath test/tsan.supp)",
+    ],
+    data = [
+        "test/tsan.supp",
+        ":lvl",
+    ],
     tags = ["display"],
 )

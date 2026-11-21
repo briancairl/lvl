@@ -23,7 +23,10 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <new>
 
 // LVL
 #include "io_common.hpp"
@@ -683,8 +686,102 @@ bool load_objects(json::Reader& r, const Json& j, ObjectRecords& records)
 // Layers
 // -------------------------------------------------------------------------------------------------
 
-/// Encodes one layer as a single-line JSON object into <code>out</code> (in the worker's scratch)
-void encode_layer(const Layer& layer, IoWorker& worker, CharVector& out)
+/// Widest text one cell of a layer of <code>kind</code> encodes to, comma included
+std::size_t cell_width(const Level& level, LayerKind kind)
+{
+  switch (plane_index(kind))
+  {
+  case 0: {
+    // "-1" for an empty cell, else tileset * 65536 + tile, so as wide as the last tileset's cells
+    const std::int64_t widest = level.tilesets.empty()
+      ? 0
+      : static_cast<std::int64_t>(level.tilesets.size() - 1) * 65536 + std::numeric_limits<TileIndex>::max();
+    std::size_t digits = 1;
+    for (std::int64_t v = widest; v >= 10; v /= 10)
+    {
+      ++digits;
+    }
+    // At least the two of "-1"
+    return std::max<std::size_t>(digits, 2) + 1;
+  }
+  case 1:
+    // 65535
+    return 5 + 1;
+  case 2:
+    // The widest a float's shortest round-trip form gets, e.g. "-1.12854834e-32"
+    return 15 + 1;
+  default:
+    // 255
+    return 3 + 1;
+  }
+}
+
+/**
+ * @brief Upper bound on the text <code>layer</code> encodes to, header and data array included
+ *
+ * The buffer is reserved from this, so it must never be short: the header's keys, values and
+ * punctuation run to a little over 300 bytes with every field at its widest, and a name's every
+ * character could need escaping.
+ */
+std::size_t encoded_bound(const Level& level, const Layer& layer)
+{
+  return 512 + 6 * layer.name.size() + extents(layer).count() * cell_width(level, layer.kind);
+}
+
+/**
+ * @brief Writes a layer's text straight to the file through a small fixed buffer
+ *
+ * The sink for a layer whose text is too big to hold in memory at all (see encoded_bound). It takes
+ * the same operations a CharVector does, so encode_layer writes to either; it is serial, because the
+ * writer is, and there is only ever one of them.
+ */
+class StreamSink
+{
+public:
+  explicit StreamSink(file::Writer& writer) : writer_{&writer} {}
+
+  void push_back(char c)
+  {
+    if (size_ == kBlock)
+    {
+      flush();
+    }
+    buffer_[size_++] = c;
+  }
+
+  void insert_at_end(std::string_view text)
+  {
+    while (!text.empty())
+    {
+      if (size_ == kBlock)
+      {
+        flush();
+      }
+      const std::size_t n = std::min(text.size(), kBlock - size_);
+      std::memcpy(buffer_ + size_, text.data(), n);
+      size_ += n;
+      text.remove_prefix(n);
+    }
+  }
+
+  void flush()
+  {
+    writer_->write(buffer_, size_);
+    size_ = 0;
+  }
+
+private:
+  static constexpr std::size_t kBlock = 8UL << 10;
+  file::Writer* writer_;
+  std::size_t size_ = 0;
+  char buffer_[kBlock];
+};
+
+void append(StreamSink& out, std::string_view text) { out.insert_at_end(text); }
+
+/// Encodes one layer as a single-line JSON object into <code>out</code>, a CharVector holding
+/// <code>encoded_bound</code> bytes (so the buffer never has to grow) or a StreamSink
+template <typename Sink> void encode_layer(const Layer& layer, IoWorker& worker, Sink& out)
 {
   // Header via the JSON DOM (in the worker's JSON arena) ...
   with_json(worker, [&](IoWorker&) {
@@ -735,78 +832,9 @@ void encode_layer(const Layer& layer, IoWorker& worker, CharVector& out)
   append(out, "]}");
 }
 
-/// Parses one layer object's text into <code>out</code> (values in the worker's scratch arena)
-void decode_layer(std::string_view text, Extents extents, IoWorker& worker, DecodedLayer& out)
-{
-  out.extents = extents;
-  out.status = with_json(worker, [&](IoWorker&) -> Status {
-    json::Scope scope;
-    Json j;
-    LVL_RETURN_IF_ERROR(json::parse(text, j));
-    json::Reader r;
-    if (!r.convert(j, out.header, "layer"))
-    {
-      return r.status;
-    }
-    const auto data = j.find("data");
-    if (data == j.end() or !data->is_array())
-    {
-      return Status::error("layer '%s': missing 'data' array", out.header.name.c_str());
-    }
-    if (data->size() != extents.count())
-    {
-      return Status::error(
-        "layer '%s': 'data' has %zu cells, expected %zu", out.header.name.c_str(), data->size(), extents.count());
-    }
-    const std::size_t n = extents.count();
-    out.values = memory::allocate_bytes(worker.scratch, n * cell_size(out.header.kind), alignof(float));
-    switch (plane_index(out.header.kind))
-    {
-    case 0: {
-      auto* values = static_cast<TileRef*>(out.values);
-      for (std::size_t i = 0; i < n; ++i)
-      {
-        std::int64_t v = 0;
-        if (!r.convert((*data)[i], v, "data") or !decode(v, values[i]))
-        {
-          return Status::error("layer '%s': invalid tile at cell %zu", out.header.name.c_str(), i);
-        }
-      }
-      break;
-    }
-    case 1: {
-      auto* values = static_cast<std::uint16_t*>(out.values);
-      for (std::size_t i = 0; i < n and r.convert((*data)[i], values[i], "data"); ++i)
-      {
-      }
-      break;
-    }
-    case 2: {
-      auto* values = static_cast<float*>(out.values);
-      for (std::size_t i = 0; i < n and r.convert((*data)[i], values[i], "data"); ++i)
-      {
-      }
-      break;
-    }
-    default: {
-      auto* values = static_cast<std::uint8_t*>(out.values);
-      for (std::size_t i = 0; i < n and r.convert((*data)[i], values[i], "data"); ++i)
-      {
-      }
-      break;
-    }
-    }
-    if (!r.ok())
-    {
-      return Status::error("layer '%s': %s", out.header.name.c_str(), r.status.message.c_str());
-    }
-    return Status::okay();
-  });
-}
-
 /**
  * @brief Finds top-level member <code>key</code> of a JSON object's text, which must be an array,
- *        and the text span of each of its elements
+ *        and its span; <code>elements</code>, when given, collects the text span of each element
  *
  * A minimal scanner (strings with escapes, nesting depth); the full parse later validates the text.
  */
@@ -815,7 +843,7 @@ bool find_array_member(
   std::string_view key,
   std::size_t& array_begin,
   std::size_t& array_end,
-  memory::Vector<std::string_view>& elements)
+  memory::Vector<std::string_view>* elements = nullptr)
 {
   int depth = 0;
   std::size_t i = 0;
@@ -882,9 +910,9 @@ bool find_array_member(
           if (--d == 0)
           {
             const auto element = text.substr(element_start, i - element_start);
-            if (element.find_first_not_of(" \n\r\t") != std::string_view::npos)
+            if (elements != nullptr and element.find_first_not_of(" \n\r\t") != std::string_view::npos)
             {
-              elements.push_back(element);
+              elements->push_back(element);
             }
             array_end = i + 1;
             return true;
@@ -892,7 +920,10 @@ bool find_array_member(
         }
         else if (e == ',' and d == 1)
         {
-          elements.push_back(text.substr(element_start, i - element_start));
+          if (elements != nullptr)
+          {
+            elements->push_back(text.substr(element_start, i - element_start));
+          }
           element_start = i + 1;
         }
       }
@@ -908,6 +939,166 @@ bool find_array_member(
     }
   }
   return false;
+}
+
+/// Characters a JSON number is made of
+bool is_number_char(char c)
+{
+  return (c >= '0' and c <= '9') or c == '-' or c == '+' or c == '.' or c == 'e' or c == 'E';
+}
+
+bool is_space(char c) { return c == ' ' or c == '\n' or c == '\r' or c == '\t'; }
+
+/// Elements of a JSON array's text (brackets included), counted without parsing them
+std::size_t count_elements(std::string_view array)
+{
+  const std::string_view inner = array.substr(1, array.size() - 2);
+  if (inner.find_first_not_of(" \n\r\t") == std::string_view::npos)
+  {
+    return 0;
+  }
+  return static_cast<std::size_t>(std::count(inner.begin(), inner.end(), ',')) + 1;
+}
+
+/**
+ * @brief Copies the next number of <code>array</code> (brackets included) from <code>i</code> into
+ *        <code>buffer</code>, NUL-terminated so strtof/strtoll can read it
+ *
+ * The data arrays hold millions of cells, so they are scanned straight from the text: a DOM of one
+ * would cost several times what the cells themselves do (see encode_layer, which writes them the
+ * same way).
+ */
+bool next_number(std::string_view array, std::size_t& i, char (&buffer)[40])
+{
+  while (i < array.size() and (array[i] == ',' or is_space(array[i])))
+  {
+    ++i;
+  }
+  const std::size_t start = i;
+  while (i < array.size() and is_number_char(array[i]))
+  {
+    ++i;
+  }
+  const std::size_t size = i - start;
+  if (size == 0 or size >= sizeof(buffer))
+  {
+    return false;
+  }
+  std::memcpy(buffer, array.data() + start, size);
+  buffer[size] = '\0';
+  return true;
+}
+
+/// Reads <code>buffer</code> as an integer, rejecting trailing characters
+bool read_integer(const char* buffer, std::int64_t& value)
+{
+  char* end = nullptr;
+  value = std::strtoll(buffer, &end, 10);
+  return end != buffer and *end == '\0';
+}
+
+/// Reads <code>buffer</code> as a float, rejecting trailing characters
+bool read_float(const char* buffer, float& value)
+{
+  char* end = nullptr;
+  value = std::strtof(buffer, &end);
+  return end != buffer and *end == '\0';
+}
+
+/// Reads an integer of <code>buffer</code> that must be in [0, max]
+template <typename T> bool read_bounded(const char* buffer, T& value)
+{
+  std::int64_t v = 0;
+  if (!read_integer(buffer, v) or v < 0 or v > static_cast<std::int64_t>(std::numeric_limits<T>::max()))
+  {
+    return false;
+  }
+  value = static_cast<T>(v);
+  return true;
+}
+
+/**
+ * @brief Reads a layer's cells from its "data" array's text straight into the layer's plane
+ *
+ * Safe to run on a worker: the plane is already allocated (that happens on the calling thread, which
+ * owns the document arena) and no two layers share one.
+ */
+Status decode_cells(std::string_view array, Layer& layer)
+{
+  const char* const name = layer.name.c_str();
+  const std::size_t n = extents(layer).count();
+  if (const std::size_t count = count_elements(array); count != n)
+  {
+    return Status::error("layer '%s': 'data' has %zu cells, expected %zu", name, count, n);
+  }
+  void* const values = cells(layer);
+  const std::size_t plane = plane_index(layer.kind);
+  char buffer[40];
+  std::size_t i = 1;
+  for (std::size_t k = 0; k < n; ++k)
+  {
+    if (!next_number(array, i, buffer))
+    {
+      return Status::error("layer '%s': cell %zu is not a number", name, k);
+    }
+    bool ok = false;
+    switch (plane)
+    {
+    case 0: {
+      std::int64_t v = 0;
+      ok = read_integer(buffer, v) and decode(v, static_cast<TileRef*>(values)[k]);
+      break;
+    }
+    case 1:
+      ok = read_bounded(buffer, static_cast<std::uint16_t*>(values)[k]);
+      break;
+    case 2:
+      ok = read_float(buffer, static_cast<float*>(values)[k]);
+      break;
+    default:
+      ok = read_bounded(buffer, static_cast<std::uint8_t*>(values)[k]);
+      break;
+    }
+    if (!ok)
+    {
+      return Status::error("layer '%s': invalid value '%s' at cell %zu", name, buffer, k);
+    }
+  }
+  return Status::okay();
+}
+
+/**
+ * @brief Reads one layer object's header, and finds the text of its "data" array
+ *
+ * Only the header goes through the DOM, parsed from the object with "data": [] in place of the
+ * cells: a DOM of the cells would cost several times what the cells themselves do.
+ */
+Status decode_layer_header(std::string_view text, IoWorker& worker, LayerHeader& header, std::string_view& array)
+{
+  std::size_t array_begin = 0;
+  std::size_t array_end = 0;
+  if (!find_array_member(text, "data", array_begin, array_end))
+  {
+    return Status::error("layer: missing 'data' array");
+  }
+  array = text.substr(array_begin, array_end - array_begin);
+  memory::Scope scope{worker.scratch};
+  CharVector head = memory::make_vector<char>(worker.scratch);
+  head.reserve(text.size() - array.size() + 2);
+  append(head, text.substr(0, array_begin));
+  append(head, "[]");
+  append(head, text.substr(array_end));
+  return with_json(worker, [&](IoWorker&) -> Status {
+    json::Scope json_scope;
+    Json j;
+    LVL_RETURN_IF_ERROR(json::parse(std::string_view{head.data(), head.size()}, j));
+    json::Reader r;
+    if (!r.convert(j, header, "layer"))
+    {
+      return r.status;
+    }
+    return Status::okay();
+  });
 }
 
 /// Reads and checks the "format"/"version" members
@@ -967,83 +1158,104 @@ Status save_level_json(const char* path, const Level& level, IoContext& ctx)
 {
   const std::size_t layer_count = level.layers.size();
   progress_reset(ctx, layer_count * 2 + 2);
-  progress_stage(ctx, "Encoding layers");
+  progress_stage(ctx, "Writing document");
 
-  // Layers, in parallel, each into its worker's scratch arena
   IoWorker& main = ctx.workers[0];
-  memory::Scope main_scope{main.scratch};
-  auto texts = memory::make_vector<std::string_view>(main.scratch, layer_count, std::string_view{});
-  // Scratch marks for every worker are restored when we're done
-  memory::Arena* scratches[64];
-  std::size_t marks[64];
-  const std::size_t workers = std::min<std::size_t>(ctx.worker_count, 64);
-  for (std::size_t w = 0; w < workers; ++w)
-  {
-    scratches[w] = &ctx.workers[w].scratch;
-    marks[w] = ctx.workers[w].scratch.utilized;
-  }
-  jobs::parallel_for(layer_count, workers, [&](std::size_t i, std::size_t w) {
-    IoWorker& worker = ctx.workers[w];
-    const Layer& layer = level.layers[i];
-    CharVector out = memory::make_vector<char>(worker.scratch);
-    // Reserve up front so the buffer never moves (stays the newest block, no wasted copies)
-    out.reserve(256 + layer.name.size() + extents(layer).count() * (is_scalar(layer.kind) ? 16 : 8));
-    encode_layer(layer, worker, out);
-    texts[i] = std::string_view{out.data(), out.size()};
-    // Keep the text: detach from the vector without letting it release the block
-    new (&out) CharVector{memory::ArenaAllocator<char>{}};
-    progress_advance(ctx);
-  });
-
-  progress_stage(ctx, "Writing");
-  ObjectRecords records{main.scratch};
+  memory::Arena& shared = shared_arena(ctx);
+  memory::Scope shared_scope{shared};
+  ObjectRecords records{shared};
   collect(level.registry, records);
 
   file::Writer writer;
-  Status status = writer.open(path);
-  if (status.ok)
+  LVL_RETURN_IF_ERROR(writer.open(path));
+  LVL_RETURN_IF_ERROR(with_json(main, [&](IoWorker&) -> Status {
+    json::Scope scope;
+    Json j = Json::object();
+    write_format(j, kLevelFormat);
+    json::write(j, "settings", level.settings);
+    save_list(j, "semantics", level.semantics, 1);
+    save_list(j, "materials", level.materials, 1);
+    save_list(j, "seasons", level.seasons);
+    Json tilesets = Json::array();
+    for (const auto& ts : level.tilesets)
+    {
+      Json e;
+      save_tileset(e, level, ts);
+      tilesets.push_back(std::move(e));
+    }
+    j["tilesets"] = std::move(tilesets);
+    save_wfc(j["wfc"], level);
+    save_paths(j["paths"], level, records);
+    save_objects(j, records);
+    const JsonString text = json::dump(j, 2);
+    // Everything but the closing brace, then the layers
+    writer.write(std::string_view{text.data(), text.rfind('}')});
+    return Status::okay();
+  }));
+  progress_advance(ctx);
+
+  // Layers, a wave at a time: one sub-arena per layer of the wave, carved here (so bump allocation
+  // stays on this thread), filled in parallel, then written in order and reclaimed. Peak use is one
+  // wave's text, not the whole level's, and a layer too big to buffer at all is streamed instead --
+  // so no level is too big to save.
+  progress_stage(ctx, "Encoding layers");
+  writer.write(",\n  \"layers\": [\n");
+  memory::Arena buffers[kMaxIoWorkers];
+  std::string_view texts[kMaxIoWorkers];
+  const std::size_t workers = std::min<std::size_t>(ctx.worker_count, kMaxIoWorkers);
+  for (std::size_t first = 0; first < layer_count;)
   {
-    status = with_json(main, [&](IoWorker&) -> Status {
-      json::Scope scope;
-      Json j = Json::object();
-      write_format(j, kLevelFormat);
-      json::write(j, "settings", level.settings);
-      save_list(j, "semantics", level.semantics, 1);
-      save_list(j, "materials", level.materials, 1);
-      save_list(j, "seasons", level.seasons);
-      Json tilesets = Json::array();
-      for (const auto& ts : level.tilesets)
+    memory::Scope wave_scope{shared};
+    // As many of the next layers as fit side by side
+    std::size_t count = 0;
+    while (count < workers and first + count < layer_count)
+    {
+      const std::size_t bound = encoded_bound(level, level.layers[first + count]);
+      if (bound + 2UL * memory::kSubArenaAlignment > memory::available(shared))
       {
-        Json e;
-        save_tileset(e, level, ts);
-        tilesets.push_back(std::move(e));
+        break;
       }
-      j["tilesets"] = std::move(tilesets);
-      save_wfc(j["wfc"], level);
-      save_paths(j["paths"], level, records);
-      save_objects(j, records);
-      const JsonString text = json::dump(j, 2);
-      // Everything but the closing brace, then the layers
-      writer.write(std::string_view{text.data(), text.rfind('}')});
-      return Status::okay();
+      memory::push(shared, buffers[count], bound, "layer-text");
+      ++count;
+    }
+    if (count == 0)
+    {
+      // This one layer's text would not fit on its own: encode it straight to the file
+      StreamSink sink{writer};
+      writer.write("    ");
+      encode_layer(level.layers[first], main, sink);
+      sink.flush();
+      progress_advance(ctx);
+      writer.write((first + 1 < layer_count) ? ",\n" : "\n");
+      progress_advance(ctx);
+      ++first;
+      continue;
+    }
+    jobs::parallel_for(count, count, [&](std::size_t k, std::size_t w) {
+      CharVector out = memory::make_vector<char>(buffers[k]);
+      // The sub-arena is this text's alone: take all of it, so the buffer never has to grow
+      out.reserve(buffers[k].capacity);
+      encode_layer(level.layers[first + k], ctx.workers[w], out);
+      texts[k] = std::string_view{out.data(), out.size()};
+      // Keep the text: detach from the vector without letting it release the block
+      new (&out) CharVector{memory::ArenaAllocator<char>{}};
+      progress_advance(ctx);
     });
-    progress_advance(ctx);
-    writer.write(",\n  \"layers\": [\n");
-    for (std::size_t i = 0; i < layer_count; ++i)
+    for (std::size_t k = 0; k < count; ++k)
     {
       writer.write("    ");
-      writer.write(texts[i]);
-      writer.write((i + 1 < layer_count) ? ",\n" : "\n");
+      writer.write(texts[k]);
+      writer.write((first + k + 1 < layer_count) ? ",\n" : "\n");
       progress_advance(ctx);
     }
-    writer.write("  ]\n}\n");
-    status = writer.commit();
+    for (std::size_t k = 0; k < count; ++k)
+    {
+      memory::reset(buffers[k]);
+    }
+    first += count;
   }
-  for (std::size_t w = 1; w < workers; ++w)
-  {
-    scratches[w]->utilized = marks[w];
-    scratches[w]->last = marks[w];
-  }
+  writer.write("  ]\n}\n");
+  const Status status = writer.commit();
   progress_advance(ctx);
   return status;
 }
@@ -1051,26 +1263,28 @@ Status save_level_json(const char* path, const Level& level, IoContext& ctx)
 Status load_level_json(const char* path, Level& level, IoContext& ctx)
 {
   IoWorker& main = ctx.workers[0];
-  memory::Scope main_scope{main.scratch};
+  memory::Arena& shared = shared_arena(ctx);
+  memory::Scope shared_scope{shared};
   // read + document + build, plus one per layer once their number is known
   progress_reset(ctx, 3);
   progress_stage(ctx, "Reading");
 
   char* text = nullptr;
   std::size_t size = 0;
-  LVL_RETURN_IF_ERROR(file::read(path, main.scratch, text, size));
+  LVL_RETURN_IF_ERROR(file::read(path, shared, text, size));
   const std::string_view document{text, size};
   progress_advance(ctx);
 
   // Split out the layers
-  auto layer_texts = memory::make_vector<std::string_view>(main.scratch);
+  auto layer_texts = memory::make_vector<std::string_view>(shared);
   std::size_t array_begin = 0;
   std::size_t array_end = 0;
-  const bool has_layers = find_array_member(document, "layers", array_begin, array_end, layer_texts);
-  CharVector head = memory::make_vector<char>(main.scratch);
+  const bool has_layers = find_array_member(document, "layers", array_begin, array_end, &layer_texts);
+  CharVector head = memory::make_vector<char>(shared);
   if (has_layers)
   {
-    head.reserve(size);
+    // Everything but the layers, which are the bulk of the document
+    head.reserve(array_begin + 2 + (size - array_end));
     append(head, document.substr(0, array_begin));
     append(head, "[]");
     append(head, document.substr(array_end));
@@ -1078,8 +1292,8 @@ Status load_level_json(const char* path, Level& level, IoContext& ctx)
   const std::string_view head_text = has_layers ? std::string_view{head.data(), head.size()} : document;
 
   progress_stage(ctx, "Parsing document");
-  ObjectRecords records{main.scratch};
-  Status status = with_json(main, [&](IoWorker&) -> Status {
+  ObjectRecords records{shared};
+  const Status status = with_json(main, [&](IoWorker&) -> Status {
     json::Scope scope;
     Json j;
     if (Status s = json::parse(head_text, j); !s.ok)
@@ -1143,47 +1357,44 @@ Status load_level_json(const char* path, Level& level, IoContext& ctx)
   }
   progress_advance(ctx);
 
-  // Layers, in parallel, into worker scratch; then copied into the document on this thread
+  // Layer headers on this thread, so that the planes are allocated from the document arena (which
+  // is single-threaded) before the workers fill them
   progress_stage(ctx, "Parsing layers");
   const std::size_t layer_count = layer_texts.size();
   if (ctx.progress != nullptr)
   {
     ctx.progress->add_total(layer_count);
   }
-  auto decoded = memory::make_vector<DecodedLayer>(main.scratch, layer_count, DecodedLayer{});
-  std::size_t marks[64];
-  const std::size_t workers = std::min<std::size_t>(ctx.worker_count, 64);
-  for (std::size_t w = 0; w < workers; ++w)
+  auto arrays = memory::make_vector<std::string_view>(shared, layer_count, std::string_view{});
+  const std::size_t base = level.layers.size();
+  for (std::size_t i = 0; i < layer_count; ++i)
   {
-    marks[w] = ctx.workers[w].scratch.utilized;
+    LayerHeader header;
+    if (Status s = decode_layer_header(layer_texts[i], main, header, arrays[i]); !s.ok)
+    {
+      return Status::error("%s: %s", path, s.message.c_str());
+    }
+    const std::size_t index = add_layer(level, header.kind, header.name.view());
+    apply_header(level.layers[index], header);
   }
-  const Extents extents = level.settings.extents;
-  jobs::parallel_for(layer_count, workers, [&](std::size_t i, std::size_t w) {
-    decode_layer(layer_texts[i], extents, ctx.workers[w], decoded[i]);
+
+  // Then their cells, in parallel, straight into those planes: no staging copy, so nothing here is
+  // sized by the level but the file's own text
+  auto results = memory::make_vector<Status>(shared, layer_count, Status::okay());
+  const std::size_t workers = std::min<std::size_t>(ctx.worker_count, kMaxIoWorkers);
+  jobs::parallel_for(layer_count, workers, [&](std::size_t i, std::size_t) {
+    results[i] = decode_cells(arrays[i], level.layers[base + i]);
     progress_advance(ctx);
   });
-
-  progress_stage(ctx, "Building layers");
-  status = Status::okay();
-  for (auto& d : decoded)
+  for (const auto& result : results)
   {
-    if (!d.status.ok)
+    if (!result.ok)
     {
-      status = Status::error("%s: %s", path, d.status.message.c_str());
-      break;
+      return Status::error("%s: %s", path, result.message.c_str());
     }
-    const std::size_t index = add_layer(level, d.header.kind, d.header.name.view());
-    Layer& layer = level.layers[index];
-    apply_header(layer, d.header);
-    std::memcpy(cells(layer), d.values, extents.count() * cell_size(d.header.kind));
-  }
-  for (std::size_t w = 1; w < workers; ++w)
-  {
-    ctx.workers[w].scratch.utilized = marks[w];
-    ctx.workers[w].scratch.last = marks[w];
   }
   progress_advance(ctx);
-  return status;
+  return Status::okay();
 }
 
 // -------------------------------------------------------------------------------------------------

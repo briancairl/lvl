@@ -4,6 +4,9 @@
 # exports) through the same code paths as the UI, and exits cleanly with no errors logged.
 set -euo pipefail
 BINARY="$(realpath "$1")"
+# A software GL stack races inside Mesa itself, which would fail the thread-sanitizer build; the
+# file says which report and why it is not ours. Ignored by builds that are not sanitized.
+export TSAN_OPTIONS="suppressions=$(realpath "$2")${TSAN_OPTIONS:+:${TSAN_OPTIONS}}"
 cd "${TEST_TMPDIR:-$(mktemp -d)}"
 RUN=("${BINARY}" --smoke --frames=2000 --hidden --memory=256 --screenshot=final.png)
 if [[ -z "${DISPLAY:-}" ]]; then

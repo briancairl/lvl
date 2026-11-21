@@ -54,7 +54,7 @@ The editor's layout (`editor/src/app.cpp`, `reserve_memory`):
 | `undo` | the undo ring (`editor::UndoStack`) |
 | `frame` | per-frame scratch, cleared every frame (overlay rebuilds, file listings, mini-preview) |
 | `json` | the UI thread's JSON arena |
-| `jobs` | split per job by `editor::partition()` into one general arena plus a JSON and a scratch arena per worker; cleared after the job's result is applied |
+| `jobs` | split per job by `editor::partition()` into one general arena plus a JSON and a scratch arena per worker; cleared after the job's result is applied. The general arena doubles as level I/O's shared arena (`IoContext::shared`), which is safe because a job's I/O and its other uses of that arena are separate phases |
 
 The EnTT registry uses `ArenaAllocator` (`level::Registry`). Names and paths are inline
 `FixedString`s (`Name`, `Path`), so documents never touch the heap.
@@ -109,15 +109,37 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 ### Level I/O and parallelism
 
 `level::save_level`/`load_level` take an `IoContext`: workers, each with a JSON and a scratch arena,
-plus an optional `Progress`.
+an optional `Progress`, and an optional `shared` arena.
 
-- **JSON**: layers are written last, one object per line, with their data arrays written as text
-  directly. On load, a scanner finds each layer's span. The rest of the document is parsed on the
-  calling thread (with `"layers": []`), while workers parse the layers into their scratch arenas.
-  Results are then copied into the document on the calling thread, because document arenas are
-  single-threaded.
+Buffers whose size follows the level's — a whole file's bytes, a layer's encoded text — come from
+`shared`, not from a worker's arenas, because a worker's share of memory is `jobs / 2 / workers` and
+has nothing to do with how big a level is. Only the calling thread carves `shared` up, so bump
+allocation stays single-threaded. Without one, worker 0's scratch is used, which caps a level at one
+worker's share.
+
+- **JSON, saving**: layers are written last, one object per line, with their data arrays written as
+  text directly. The document is written first, then the layers a *wave* at a time: the calling
+  thread carves one sub-arena per layer of the wave out of `shared` (as many of the next layers as
+  fit, at least one), workers encode into them in parallel, the wave is written in order and the
+  memory reclaimed — so peak use is one wave's text, not the whole level's. `encoded_bound` sizes
+  each buffer; it must never be short, since the buffer is its sub-arena's whole capacity and so
+  cannot grow. A layer whose text will not fit on its own is encoded straight to the file through a
+  `StreamSink`'s small fixed buffer instead (serially, since the writer is), so **no level is too
+  big to save**; `encode_layer` is a template over the two sinks and writes the same bytes to either.
+- **JSON, loading**: a scanner finds each layer's span, and the rest of the document is parsed on the
+  calling thread (with `"layers": []`). Then the layer headers are read, also on the calling thread,
+  because `add_layer` allocates the plane from the document arena, which is single-threaded. The
+  workers then scan the cells straight into those planes — no staging copy, so nothing a worker holds
+  is sized by the level. A layer's *data array* never goes through the DOM, as it is never written
+  through one: a DOM of the cells costs several times what the cells do. Only the header is parsed,
+  from the object with `"data": []` in place of the cells.
 - **Binary**: a Bitsery metadata block, then raw per-layer chunks with FNV-1a checksums
-  computed/verified in parallel.
+  computed/verified in parallel. Loading reads the chunks in place, so the whole file stays resident
+  in `shared`.
+
+The one buffer still sized by the level is the file's own text when loading, which must fit `shared`.
+Lifting that means a scanner that works from disk plus ranged reads, so for the very largest levels
+JSON load, not save, is the wall.
 
 Catalogs, seasons and tilesets are referenced by name in JSON. Standalone tileset/WFC/path files carry
 the catalog entries they use and are remapped by name on load.
@@ -255,13 +277,17 @@ one check to mark required:
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
   rule learning, rules from a palette layout, batch tile and constraint edits); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
-  stability, standalone files moving between levels, malformed/truncated files.
+  stability, standalone files moving between levels, malformed/truncated files, a level whose layers
+  and file are bigger than one worker's share, saves split across waves and saves streamed layer by
+  layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
+  layer, headers at their widest.
 - `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints.
 - `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export.
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
-  memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
+  memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
+  worker's scratch), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, WFC rules and batch
