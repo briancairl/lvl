@@ -90,6 +90,36 @@ void start_heightmap(App& app);
 void start_watershed(App& app);
 void start_wfc(App& app, std::size_t target_layer);
 
+/// Rectangle of palette cells (of tileset <code>columns</code> wide) the selected tiles span
+struct SelectionBounds
+{
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+  /// Columns of the palette the rectangle is in (so cell (x, y) is tile <code>y * columns + x</code>)
+  int columns = 0;
+};
+
+/// Number of tiles selected in the open tileset's palette
+inline std::size_t selection_size(const App& app)
+{
+  return (app.selection.tileset == app.tileset) ? app.selection.count : 0;
+}
+
+/// Tile grid a tileset's atlas slices into (0 x 0 if it has no image yet)
+level::Extents palette_grid(const App& app, std::size_t tileset);
+
+/// The selected tiles, in index order, in <code>arena</code>
+memory::Vector<level::TileIndex> selected_tiles(const App& app, memory::Arena& arena);
+
+/// Palette rectangle the selected tiles span; false if nothing is selected
+bool selection_bounds(const App& app, SelectionBounds& out);
+
+/// Fills <code>out</code> (an arena-backed grid) with the selected tiles as the palette lays them
+/// out, empty where a cell of the rectangle is not selected; false if nothing is selected
+bool palette_layout(const App& app, level::Grid<level::TileRef>& out);
+
 /// A small delete button for the start of a row; returns true when clicked
 bool delete_button(const char* tooltip);
 

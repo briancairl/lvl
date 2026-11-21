@@ -153,6 +153,21 @@ path yet, via the save dialog, and cancelling that dialog cancels quitting), Qui
 or Cancel. In the browser, `web::set_unsaved_changes()` arms the page's `beforeunload` "leave site?"
 prompt while there are unsaved changes.
 
+### Palette selection and batch tile edits
+
+A plain click or drag in the tileset palette picks one tile or a rectangle of them (the paint stamp,
+`App::paint`) as before. Ctrl+click toggles tiles and shift+click extends from the last one clicked,
+which builds `App::selection` (a `TileSelection`: one bit per tile of one tileset, plus the anchor).
+`editor/src/selection.cpp` reads it: `selected_tiles` (the indices, in an arena), `selection_bounds`
+(the palette rectangle they span) and `palette_layout` (the selection as a `Grid<TileRef>` laid out
+as in the palette).
+
+With two or more tiles selected, "Batch edit" at the bottom of the Tile metadata panel writes
+metadata to all of them at once: each field (semantic type, material, hidden, collision, a
+key/value property to set or a key to remove) is behind a checkbox saying whether it is applied, and
+"Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
+tiles, count)` does the writing; like the single-tile fields, it is not undoable.
+
 ### WFC neighbor editor
 
 `wfc_neighbors_window` (View > WFC neighbors, or "Neighbor editor..." in the WFC rules tab) is a
@@ -221,7 +236,8 @@ one check to mark required:
   memory reported per atlas), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
-  in both formats, all exports, a style profile save/load, deletes, the file dialog, and the unsaved-changes
+  in both formats, all exports, a style profile save/load, deletes, a batch tile edit over a palette
+  selection, the file dialog, and the unsaved-changes
   prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

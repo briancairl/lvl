@@ -813,7 +813,36 @@ void smoke(App& app)
     }
     break;
   }
-  case 19:
+  case 19: {
+    // A batch metadata edit over a palette selection (which the tile panel then draws)
+    level::TileSet& ts = app.level->tilesets[app.tileset];
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (std::size_t t = 0; t < std::min<std::size_t>(4, ts.tiles.size()); ++t)
+    {
+      app.selection.set(static_cast<level::TileIndex>(t), true);
+    }
+    app.batch = level::TileEdit{
+      .set_collision = true,
+      .collision = level::collision::kSolid,
+      .set_property = true,
+      .property_key = "batch",
+      .property_value = "yes"};
+    const auto tiles = selected_tiles(app, app.memory.frame);
+    if (level::apply_edit(ts, app.batch, tiles.data(), tiles.size()) != app.selection.count)
+    {
+      report(app, Status::error("the batch edit did not reach every selected tile"));
+    }
+    for (const level::TileIndex t : tiles)
+    {
+      if (ts.tiles[t].collision != level::collision::kSolid or level::find_property(ts, t, "batch") == nullptr)
+      {
+        report(app, Status::error("the batch edit did not apply"));
+      }
+    }
+    break;
+  }
+  case 20:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -822,7 +851,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 20:
+  case 21:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

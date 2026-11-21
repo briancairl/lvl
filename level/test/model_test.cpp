@@ -90,6 +90,53 @@ TEST_F(LevelModel, SlicingAndSeasonalVariants)
   EXPECT_EQ(lookup[3], 3);
 }
 
+TEST_F(LevelModel, BatchTileEditWritesOnlyTheFieldsItIsGiven)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {4, 4}});
+  const TileSetId id = add_tileset(level, "forest");
+  auto& ts = level.tilesets[id];
+  ts.image_width = 4 * 16;
+  ts.image_height = 16;
+  reslice(ts);
+  ASSERT_EQ(ts.tiles.size(), 4UL);
+  const SemanticId grass = intern_semantic(level, "grass");
+  ts.tiles[0].material = intern_material(level, "dirt");
+  ts.tiles[0].hidden = true;
+  set_property(ts, 0, "sound", "step");
+
+  // Two of the four tiles, plus an index past the end, which is skipped
+  const TileIndex tiles[] = {0, 2, 9};
+  const TileEdit edit{
+    .set_semantic = true,
+    .semantic = grass,
+    .set_collision = true,
+    .collision = collision::kSolid,
+    .set_property = true,
+    .property_key = "sound",
+    .property_value = "grass"};
+  EXPECT_EQ(apply_edit(ts, edit, tiles, 3), 2UL);
+  EXPECT_EQ(ts.tiles[0].semantic, grass);
+  EXPECT_EQ(ts.tiles[2].semantic, grass);
+  EXPECT_EQ(ts.tiles[1].semantic, kNoSemantic);
+  EXPECT_EQ(ts.tiles[0].collision, collision::kSolid);
+  // Fields the edit does not carry are left alone
+  EXPECT_EQ(ts.tiles[0].material, intern_material(level, "dirt"));
+  EXPECT_TRUE(ts.tiles[0].hidden);
+  EXPECT_FALSE(ts.tiles[2].hidden);
+  ASSERT_NE(find_property(ts, 0, "sound"), nullptr);
+  EXPECT_EQ(*find_property(ts, 0, "sound"), std::string_view{"grass"});
+  ASSERT_NE(find_property(ts, 2, "sound"), nullptr);
+  EXPECT_EQ(ts.properties.size(), 2UL);
+
+  // Removing by key, and an edit that writes nothing
+  const TileEdit remove{.clear_property = true, .property_key = "sound"};
+  EXPECT_EQ(apply_edit(ts, remove, tiles, 3), 2UL);
+  EXPECT_TRUE(ts.properties.empty());
+  EXPECT_EQ(apply_edit(ts, TileEdit{}, tiles, 3), 2UL);
+  EXPECT_EQ(ts.tiles[0].semantic, grass);
+}
+
 TEST_F(LevelModel, DeriveCollisionAndMaterialsFromTiles)
 {
   Level level{arena};

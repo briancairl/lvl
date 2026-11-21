@@ -71,6 +71,7 @@ cc_library(
         "src/internal.hpp",
         "src/panels.cpp",
         "src/platform.cpp",
+        "src/selection.cpp",
         "src/wfc_neighbors.cpp",
         "src/viewport.cpp",
         "src/web.cpp",
