@@ -9,7 +9,7 @@
  * {
  *   "format": "lvl-level", "version": 100,
  *   "settings": {...}, "semantics": [...], "materials": [...], "seasons": [...],
- *   "tilesets": [...], "wfc": {...}, "paths": [...], "portals": [...], "markers": [...],
+ *   "tilesets": [...], "wfc": {...}, "auto_tiles": [...], "paths": [...], "portals": [...], "markers": [...],
  *   "layers": [ {"name": ..., "kind": ..., ..., "data": [...]}, ... ]
  * }
  * @endcode
@@ -509,6 +509,127 @@ bool load_wfc(json::Reader& r, const Json& j, Level& level)
       return r.fail("adjacency refers to WFC tile %u/%u of %zu", a.a, a.b, rules.tiles.size());
     }
     set_allowed(rules, a.a, a.b, a.direction, true);
+  }
+  return r.ok();
+}
+
+// -------------------------------------------------------------------------------------------------
+// Auto-tiling rules (terrains; tiles referenced by tileset name)
+// -------------------------------------------------------------------------------------------------
+
+/// Index of the tileset named <code>name</code>, or kNoTileSet
+TileSetId tileset_named(const Level& level, const Name& name)
+{
+  for (std::size_t i = 0; i < level.tilesets.size(); ++i)
+  {
+    if (level.tilesets[i].name == name)
+    {
+      return static_cast<TileSetId>(i);
+    }
+  }
+  return kNoTileSet;
+}
+
+void save_auto_tiles(Json& j, const Level& level)
+{
+  j = Json::array();
+  for (const AutoTerrain& terrain : level.auto_tiles.terrains)
+  {
+    Json t = Json::object();
+    json::write(t, "name", terrain.name);
+    json::write(t, "neighborhood", terrain.neighborhood);
+    json::write(t, "expand", terrain.expand);
+    Json variants = Json::array();
+    for (const AutoVariant& v : terrain.variants)
+    {
+      Json e = Json::object();
+      // The pattern reads as the directions the terrain continues in
+      Json neighbors = Json::array();
+      for (const Direction d : kNeighbors)
+      {
+        if (has(v.mask, d))
+        {
+          neighbors.push_back(JsonString{enum_name(d)});
+        }
+      }
+      e["neighbors"] = std::move(neighbors);
+      json::write(e, "tileset", level.tilesets[v.tile.tileset].name);
+      json::write(e, "tile", v.tile.tile);
+      variants.push_back(std::move(e));
+    }
+    t["variants"] = std::move(variants);
+    j.push_back(std::move(t));
+  }
+}
+
+bool load_auto_tiles(json::Reader& r, const Json& j, Level& level)
+{
+  level.auto_tiles.terrains.clear();
+  if (!r.array(j, "auto_tiles"))
+  {
+    return false;
+  }
+  for (const auto& t : j)
+  {
+    Name name;
+    r.get(t, "name", name);
+    if (!r.ok())
+    {
+      return false;
+    }
+    AutoTerrain& terrain = level.auto_tiles.terrains[add_terrain(level.auto_tiles, *level.arena, name.view())];
+    r.get_optional(t, "neighborhood", terrain.neighborhood);
+    r.get_optional(t, "expand", terrain.expand);
+    if (!r.ok())
+    {
+      return false;
+    }
+    if (terrain.expand < 0 or terrain.expand > 4)
+    {
+      return r.fail("terrain '%s' has an expand of %d, outside 0..4", name.c_str(), terrain.expand);
+    }
+    const auto variants = t.find("variants");
+    if (variants == t.end())
+    {
+      continue;
+    }
+    if (!r.array(*variants, "variants"))
+    {
+      return false;
+    }
+    for (const auto& e : *variants)
+    {
+      Name tileset;
+      TileRef tile;
+      r.get(e, "tileset", tileset);
+      r.get(e, "tile", tile.tile);
+      const auto neighbors = e.find("neighbors");
+      if (!r.ok())
+      {
+        return false;
+      }
+      if (neighbors == e.end() or !r.array(*neighbors, "neighbors"))
+      {
+        return r.fail("terrain variants need 'neighbors'");
+      }
+      NeighborMask mask = kNoNeighbors;
+      for (const auto& n : *neighbors)
+      {
+        Direction d = Direction::kNorth;
+        r.convert(n, d, "neighbors");
+        mask = static_cast<NeighborMask>(mask | mask_of(d));
+      }
+      tile.tileset = tileset_named(level, tileset);
+      if (!r.ok())
+      {
+        return false;
+      }
+      if (tile.tileset == kNoTileSet)
+      {
+        return r.fail("terrain tile refers to unknown tileset '%s'", tileset.c_str());
+      }
+      set_variant(terrain, mask, tile);
+    }
   }
   return r.ok();
 }
@@ -1185,6 +1306,7 @@ Status save_level_json(const char* path, const Level& level, IoContext& ctx)
     }
     j["tilesets"] = std::move(tilesets);
     save_wfc(j["wfc"], level);
+    save_auto_tiles(j["auto_tiles"], level);
     save_paths(j["paths"], level, records);
     save_objects(j, records);
     const JsonString text = json::dump(j, 2);
@@ -1336,6 +1458,10 @@ Status load_level_json(const char* path, Level& level, IoContext& ctx)
     {
       load_wfc(r, *wfc, level);
     }
+    if (const auto terrains = j.find("auto_tiles"); r.ok() and terrains != j.end())
+    {
+      load_auto_tiles(r, *terrains, level);
+    }
     if (const auto paths = j.find("paths"); r.ok() and paths != j.end())
     {
       load_paths(r, *paths, level, records);
@@ -1444,6 +1570,7 @@ Status save_wfc_json(const char* path, const Level& level, IoContext& ctx)
     write_format(j, kWfcFormat);
     save_list(j, "semantics", level.semantics, 1);
     save_wfc(j["wfc"], level);
+    save_auto_tiles(j["auto_tiles"], level);
   });
 }
 
@@ -1460,6 +1587,11 @@ Status load_wfc_json(const char* path, Level& level, IoContext& ctx)
       return;
     }
     load_wfc(r, *wfc, level);
+    // Auto-tiling terrains travel in the same file; older ones have none
+    if (const auto terrains = j.find("auto_tiles"); r.ok() and terrains != j.end())
+    {
+      load_auto_tiles(r, *terrains, level);
+    }
   });
 }
 

@@ -96,6 +96,20 @@ template <typename S> void serialize(S& s, WfcRules& v)
   s.container(v.adjacency, 1 << 24);
 }
 
+template <typename S> void serialize(S& s, AutoVariant& v)
+{
+  s.value1b(v.mask);
+  s.object(v.tile);
+}
+
+template <typename S> void serialize(S& s, AutoTerrain& v)
+{
+  s.object(v.name);
+  s.value1b(v.neighborhood);
+  s.value4b(v.expand);
+  s.container(v.variants, 1 << 12);
+}
+
 namespace io
 {
 namespace
@@ -104,6 +118,13 @@ namespace
 constexpr std::size_t kMaxList = 1 << 20;
 
 template <typename S> constexpr bool is_reader = std::is_same_v<S, binary::Reader>;
+
+/// Terrains aren't default-constructible either (see serialize_tilesets below)
+struct Terrains
+{
+  AutoTileRules* rules;
+  memory::Arena* arena;
+};
 
 /// Tilesets aren't default-constructible (they need the arena), so the list is (de)serialized by hand
 template <typename S> void serialize_tilesets(S& s, Level& level)
@@ -133,6 +154,33 @@ template <typename S> void serialize_tilesets(S& s, Level& level)
   }
 }
 
+template <typename S> void serialize(S& s, Terrains& t)
+{
+  auto count = static_cast<std::uint32_t>(t.rules->terrains.size());
+  s.value4b(count);
+  if constexpr (is_reader<S>)
+  {
+    if (count >= kNoTerrain)
+    {
+      s.adapter().error(bitsery::ReaderError::InvalidData);
+      return;
+    }
+    t.rules->terrains.clear();
+    for (std::uint32_t i = 0; i < count and s.adapter().error() == bitsery::ReaderError::NoError; ++i)
+    {
+      t.rules->terrains.emplace_back(*t.arena);
+      s.object(t.rules->terrains.back());
+    }
+  }
+  else
+  {
+    for (auto& terrain : t.rules->terrains)
+    {
+      s.object(terrain);
+    }
+  }
+}
+
 /// Document metadata: the level minus layer cells, with objects as records
 struct Meta
 {
@@ -150,6 +198,8 @@ template <typename S> void serialize(S& s, Meta& m)
   s.container(level.seasons, 256);
   serialize_tilesets(s, level);
   s.object(level.wfc);
+  Terrains terrains{&level.auto_tiles, level.arena};
+  s.object(terrains);
   s.container(level.graphs, kMaxList);
   s.container(m.records->portals, kMaxList);
   s.container(m.records->markers, kMaxList);
@@ -370,11 +420,14 @@ template <typename S> void serialize(S& s, TileSetFile& f)
   s.object(*f.tileset);
 }
 
+/// The standalone rules file carries both kinds of tile adjacency rules
 struct WfcFile
 {
   memory::Vector<SemanticType>* semantics;
   memory::Vector<Name>* tilesets;
   WfcRules* rules;
+  AutoTileRules* auto_tiles;
+  memory::Arena* arena;
 };
 
 template <typename S> void serialize(S& s, WfcFile& f)
@@ -382,6 +435,8 @@ template <typename S> void serialize(S& s, WfcFile& f)
   s.container(*f.semantics, kMaxList);
   s.container(*f.tilesets, kMaxList);
   s.object(*f.rules);
+  Terrains terrains{f.auto_tiles, f.arena};
+  s.object(terrains);
 }
 
 struct PathsFile
@@ -477,7 +532,11 @@ Status save_wfc_binary(const char* path, const Level& level, IoContext& ctx)
     tilesets.push_back(ts.name);
   }
   WfcFile file{
-    const_cast<memory::Vector<SemanticType>*>(&level.semantics), &tilesets, const_cast<WfcRules*>(&level.wfc)};
+    const_cast<memory::Vector<SemanticType>*>(&level.semantics),
+    &tilesets,
+    const_cast<WfcRules*>(&level.wfc),
+    const_cast<AutoTileRules*>(&level.auto_tiles),
+    &temp};
   return binary::write_file(path, ctx.workers[0].scratch, binary::Kind::kWfcRules, file);
 }
 
@@ -488,7 +547,8 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
   auto semantics = memory::make_vector<SemanticType>(temp);
   auto tilesets = memory::make_vector<Name>(temp);
   WfcRules rules{temp};
-  WfcFile file{&semantics, &tilesets, &rules};
+  AutoTileRules auto_tiles{temp};
+  WfcFile file{&semantics, &tilesets, &rules, &auto_tiles, &temp};
   LVL_RETURN_IF_ERROR(read_binary(path, ctx, binary::Kind::kWfcRules, file));
 
   auto tileset_map = memory::make_vector<TileSetId>(temp, tilesets.size(), kNoTileSet);
@@ -531,6 +591,33 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
     level.wfc.tiles.push_back(t);
   }
   level.wfc.adjacency.assign(rules.adjacency.begin(), rules.adjacency.end());
+  // Terrains, with their tiles remapped the same way
+  for (const AutoTerrain& terrain : auto_tiles.terrains)
+  {
+    for (const AutoVariant& v : terrain.variants)
+    {
+      if (v.tile.tileset >= tileset_map.size() or tileset_map[v.tile.tileset] == kNoTileSet)
+      {
+        return Status::error(
+          "%s: terrain '%s' refers to tileset '%s', which this level doesn't have",
+          path,
+          terrain.name.c_str(),
+          (v.tile.tileset < tilesets.size()) ? tilesets[v.tile.tileset].c_str() : "?");
+      }
+    }
+  }
+  level.auto_tiles.terrains.clear();
+  for (const AutoTerrain& terrain : auto_tiles.terrains)
+  {
+    AutoTerrain& out = level.auto_tiles.terrains[add_terrain(level.auto_tiles, *level.arena, terrain.name.view())];
+    out.neighborhood = terrain.neighborhood;
+    out.expand = terrain.expand;
+    for (AutoVariant v : terrain.variants)
+    {
+      v.tile.tileset = tileset_map[v.tile.tileset];
+      set_variant(out, v.mask, v.tile);
+    }
+  }
   return Status::okay();
 }
 
