@@ -16,6 +16,7 @@
 
 // LVL
 #include "internal.hpp"
+#include "lvl/core/logging.hpp"
 #include "lvl/core/random.hpp"
 
 namespace lvl::editor
@@ -267,7 +268,221 @@ void wfc_section(App& app)
   }
 }
 
+/// Combo over every scalar layer (a heightmap, or water depth); returns false if there are none
+bool scalar_layer_combo(const char* label, const Level& lv, std::size_t& index)
+{
+  std::size_t first = lv.layers.size();
+  for (std::size_t i = 0; i < lv.layers.size(); ++i)
+  {
+    first = (first == lv.layers.size() and is_scalar(lv.layers[i].kind)) ? i : first;
+  }
+  if (first == lv.layers.size())
+  {
+    ImGui::TextDisabled("(no height or water layer)");
+    return false;
+  }
+  if (index >= lv.layers.size() or !is_scalar(lv.layers[index].kind))
+  {
+    index = first;
+  }
+  if (ImGui::BeginCombo(label, lv.layers[index].name.c_str()))
+  {
+    for (std::size_t i = 0; i < lv.layers.size(); ++i)
+    {
+      if (
+        is_scalar(lv.layers[i].kind) and
+        ImGui::Selectable(format<96>("%s##%zu", lv.layers[i].name.c_str(), i), i == index))
+      {
+        index = i;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  return true;
+}
+
+/// Combo over the semantic catalog
+void semantic_combo(const char* label, const Level& lv, int& id)
+{
+  id = std::clamp(id, 0, static_cast<int>(lv.semantics.size()) - 1);
+  if (ImGui::BeginCombo(label, lv.semantics[static_cast<std::size_t>(id)].name.c_str()))
+  {
+    for (std::size_t i = 0; i < lv.semantics.size(); ++i)
+    {
+      if (ImGui::Selectable(format<96>("%s##%zu", lv.semantics[i].name.c_str(), i), static_cast<int>(i) == id))
+      {
+        id = static_cast<int>(i);
+      }
+    }
+    ImGui::EndCombo();
+  }
+}
+
+/**
+ * @brief The tiles a fill writes: the palette selection, or else the tile being painted
+ *
+ * The selection is what the fill scatters, exactly as it is what the paint tool stamps, so the
+ * same handful of grass variants serves both.
+ */
+memory::Vector<TileRef> fill_tiles(const App& app, memory::Arena& arena)
+{
+  auto out = memory::make_vector<TileRef>(arena);
+  const TileSelection& selection = app.selection;
+  if (selection.count > 0 and selection.tileset < app.level->tilesets.size())
+  {
+    const auto ts = static_cast<TileSetId>(selection.tileset);
+    for (const TileIndex tile : selected_tiles(app, arena))
+    {
+      out.push_back(TileRef{ts, tile});
+    }
+    if (!app.generators.fill_scatter and out.size() > 1)
+    {
+      out.resize(1);
+    }
+  }
+  else if (!app.paint.tile.empty())
+  {
+    out.push_back(app.paint.tile);
+  }
+  return out;
+}
+
+void fill_section(App& app)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  if (app.layer < lv.layers.size() and lv.layers[app.layer].kind == LayerKind::kTiles)
+  {
+    g.fill_layer = app.layer;
+  }
+  if (!layer_combo("Target tile layer", lv, LayerKind::kTiles, g.fill_layer))
+  {
+    return;
+  }
+
+  ImGui::SeparatorText("Tiles");
+  memory::Scope scope{app.memory.frame};
+  const auto tiles = fill_tiles(app, app.memory.frame);
+  if (app.selection.count > 1)
+  {
+    ImGui::Checkbox("Scatter the selection", &g.fill_scatter);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("On: every filled cell takes one of the selected tiles, by its position -- so variants of a "
+                        "ground cover scatter and stay put. Off: every cell takes the first selected tile.");
+    }
+  }
+  if (tiles.empty())
+  {
+    ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "No tile to fill with");
+    ImGui::TextDisabled("Pick one in the palette, or ctrl+click several to scatter them.");
+  }
+  else if (tiles.size() == 1)
+  {
+    ImGui::Text("Fills with 1 tile");
+  }
+  else
+  {
+    ImGui::Text("Scatters %zu tiles", tiles.size());
+  }
+  if (app.selection.count > 0)
+  {
+    ImGui::SameLine();
+    deselect_all_button(app);
+    selection_preview(app, 24.0F, 2);
+  }
+
+  ImGui::SeparatorText("Where");
+  ImGui::Checkbox("Height band", &g.fill_use_band);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Fill only where a scalar layer's value falls inside the band");
+  }
+  if (g.fill_use_band and scalar_layer_combo("Band layer", lv, g.fill_band_layer))
+  {
+    // The layer's own range, so the numbers mean something whatever the heightmap holds
+    const Layer& band = lv.layers[g.fill_band_layer];
+    const float lo = std::min(band.range_min, band.range_max);
+    const float hi = std::max(band.range_min, band.range_max);
+    const float speed = std::max((hi - lo) / 400.0F, 1e-4F);
+    ImGui::DragFloatRange2("Low / high", &g.fill_lo, &g.fill_hi, speed, lo, hi, "%.3f", "%.3f");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Whole range"))
+    {
+      g.fill_lo = lo;
+      g.fill_hi = hi;
+    }
+  }
+  ImGui::Checkbox("Ground type", &g.fill_use_id);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Fill only where a semantic layer holds one ground type");
+  }
+  if (g.fill_use_id and layer_combo("Semantic layer", lv, LayerKind::kSemantic, g.fill_id_layer))
+  {
+    semantic_combo("Ground type", lv, g.fill_id);
+  }
+  ImGui::Checkbox("Only empty cells", &g.fill_only_empty);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Leave every cell that already has a tile, so what is drawn survives the fill");
+  }
+  ImGui::Checkbox("Honour the selected region", &g.fill_region);
+  ImGui::SameLine();
+  if (g.region_w > 0 and g.fill_region)
+  {
+    ImGui::Text("(%d,%d %dx%d)", g.region_x, g.region_y, g.region_w, g.region_h);
+  }
+  else
+  {
+    ImGui::TextDisabled("(whole map; drag with the Select tool to limit)");
+  }
+
+  seed_input(app);
+  if (ImGui::Button("Fill", ImVec2{-1, 0}) and !tiles.empty())
+  {
+    apply_fill(app, g.fill_layer, tiles.data(), tiles.size());
+  }
+  const procgen::FillResult& result = g.fill_result;
+  if (result.matched > 0 or result.changed > 0)
+  {
+    ImGui::TextDisabled("Last fill: %zu cells matched, %zu changed", result.matched, result.changed);
+  }
+}
+
 }  // namespace
+
+void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, std::size_t count)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  LVL_ASSERT_LT(layer, lv.layers.size());
+  procgen::FillMask mask;
+  if (g.fill_use_band and g.fill_band_layer < lv.layers.size() and is_scalar(lv.layers[g.fill_band_layer].kind))
+  {
+    mask.band = &plane<ScalarGrid>(lv.layers[g.fill_band_layer]);
+    mask.lo = std::min(g.fill_lo, g.fill_hi);
+    mask.hi = std::max(g.fill_lo, g.fill_hi);
+  }
+  if (g.fill_use_id and g.fill_id_layer < lv.layers.size() and lv.layers[g.fill_id_layer].kind == LayerKind::kSemantic)
+  {
+    mask.ids = &plane<IdGrid>(lv.layers[g.fill_id_layer]);
+    mask.id = static_cast<std::uint16_t>(std::max(g.fill_id, 0));
+  }
+  if (g.fill_region and g.region_w > 0 and g.region_h > 0)
+  {
+    mask.region = procgen::Region{.x = g.region_x, .y = g.region_y, .width = g.region_w, .height = g.region_h};
+  }
+  mask.only_empty = g.fill_only_empty;
+  app.undo.snapshot(lv, layer, "Fill");
+  g.fill_result = procgen::fill_masked(tiles, count, mask, lv.settings.seed, plane<TileGrid>(lv.layers[layer]));
+  if (g.fill_result.changed > 0)
+  {
+    app.modified = true;
+  }
+  invalidate_layer(app, layer);
+  LVL_LOG_INFO() << "Fill: " << g.fill_result.matched << " cell(s) matched, " << g.fill_result.changed << " changed";
+}
 
 void start_heightmap(App& app)
 {
@@ -416,6 +631,13 @@ void generate_panel(App& app)
     {
       ImGui::BeginChild("tab");
       wfc_section(app);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Fill"))
+    {
+      ImGui::BeginChild("tab");
+      fill_section(app);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }

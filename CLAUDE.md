@@ -99,9 +99,9 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/rules/path files in JSON and binary |
-| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback) |
+| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -278,6 +278,24 @@ Both are local, greedy and deterministic rather than solvers: they never fail an
 to run on every mouse-move of a stroke. Where the rules cannot fill a cell they say so (the status
 line) rather than backtracking. Whole regions are still generated with `procgen::solve`.
 
+### Masked fills
+
+The Generate panel's **Fill** tab writes tiles over the whole map, choosing the cells from the
+layers the level already has rather than from a brush stroke: a band of a scalar layer (a heightmap,
+or water depth) and a ground type on a semantic layer, intersected, optionally narrowed to the
+Select tool's region and to the cells that have no tile yet. `procgen::fill_masked`
+(`procgen/fill.hpp`) does the writing; `editor::apply_fill` builds the mask from `App::generators`,
+takes the undo snapshot and is what the Fill button calls.
+
+The tiles it writes are the palette selection, the same set the paint tool stamps. With one tile
+every matched cell takes it; with several it **scatters** them, each cell picking one by a hash of
+its position and the level's seed. So the scatter is a function of the cell, not of the order cells
+are visited: filling twice writes the same tiles, narrowing the mask and filling again leaves the
+cells it still covers exactly as they were, and only the seed moves them. "Scatter the selection"
+off fills with the first selected tile instead, which is the plain whole-map fill.
+
+A fill is instant even on a large map, so it is not a job; it is one undoable layer edit.
+
 ### Tile adjacency rules
 
 Both kinds of rules live in one window, `adjacency_window` (View > Tile adjacency rules,
@@ -395,7 +413,9 @@ one check to mark required:
   and file are bigger than one worker's share, saves split across waves and saves streamed layer by
   layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
   layer, headers at their widest.
-- `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
+- `//procgen`: masked fills (a height band, a ground type, the two together, the scatter being even
+  and staying put under a different mask, regions and clipping, sparing what is drawn, no tiles);
+  noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints; terrain painting (a nine-slice from one painted cell, the border re-tiling as the
   shape grows, inner corners, no border, the map edge, middles scattering over an area and staying
@@ -413,7 +433,8 @@ one check to mark required:
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
   multi-tile paint stamp, a thirteen-tile terrain taken from one palette selection and painted (the
-  auto-tiling tab),
+  auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, and with the
+  scatter off),
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

@@ -12,6 +12,7 @@
 #include "lvl/level/auto_tile_rules.hpp"
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/autotile.hpp"
+#include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
@@ -830,4 +831,173 @@ TEST_F(Procgen, PaintTerrainScattersTheMiddlesOfAPattern)
   const TerrainPaintResult again = paint_terrain(rules, 0, painted.data(), painted.size(), tiles, scratch);
   EXPECT_EQ(again.changed, 0U);
   EXPECT_EQ(before.values, tiles.values);
+}
+
+namespace
+{
+
+/// Tiles 100.. , so they cannot be mistaken for anything else a test places
+constexpr TileRef fill_tile(int n) { return TileRef{0, static_cast<TileIndex>(100 + n)}; }
+
+/// A level-shaped set of planes: tiles, a heightmap rising with y, and a semantic layer in stripes
+struct Field
+{
+  Field(memory::Arena& arena, Extents e) : tiles{arena}, height{arena}, ids{arena}
+  {
+    tiles.assign(e, kEmptyTile);
+    height.assign(e, 0.0F);
+    ids.assign(e, std::uint16_t{0});
+    for (int y = 0; y < e.height; ++y)
+    {
+      for (int x = 0; x < e.width; ++x)
+      {
+        height.at(x, y) = static_cast<float>(y) / static_cast<float>(e.height - 1);
+        ids.at(x, y) = static_cast<std::uint16_t>(x % 3);
+      }
+    }
+  }
+  Grid<TileRef> tiles;
+  Grid<float> height;
+  Grid<std::uint16_t> ids;
+};
+
+}  // namespace
+
+TEST_F(Procgen, FillTakesOnlyTheHeightBand)
+{
+  Field f{doc, Extents{10, 11}};
+  const TileRef one = fill_tile(0);
+  // Rows 0..10 hold heights 0.0 .. 1.0 in steps of 0.1, so [0.3, 0.5] is rows 3, 4 and 5
+  const FillMask mask{.band = &f.height, .lo = 0.3F, .hi = 0.5F};
+  const FillResult result = fill_masked(&one, 1, mask, 1, f.tiles);
+  EXPECT_EQ(result.matched, 30U);
+  EXPECT_EQ(result.changed, 30U);
+  for (int y = 0; y < 11; ++y)
+  {
+    for (int x = 0; x < 10; ++x)
+    {
+      const bool inside = (y >= 3 and y <= 5);
+      EXPECT_EQ(f.tiles.at(x, y), inside ? one : kEmptyTile) << "at (" << x << ", " << y << ")";
+    }
+  }
+  // Filling again writes the same thing, so nothing changes
+  EXPECT_EQ(fill_masked(&one, 1, mask, 1, f.tiles).changed, 0U);
+  // A band given the wrong way round matches nothing
+  const FillMask empty{.band = &f.height, .lo = 0.5F, .hi = 0.3F};
+  EXPECT_EQ(fill_masked(&one, 1, empty, 1, f.tiles).matched, 0U);
+}
+
+TEST_F(Procgen, FillTakesOnlyTheGroundType)
+{
+  Field f{doc, Extents{9, 4}};
+  const TileRef one = fill_tile(0);
+  const FillResult result = fill_masked(&one, 1, FillMask{.ids = &f.ids, .id = 2}, 1, f.tiles);
+  EXPECT_EQ(result.matched, 12U);
+  for (int y = 0; y < 4; ++y)
+  {
+    for (int x = 0; x < 9; ++x)
+    {
+      EXPECT_EQ(f.tiles.at(x, y), (x % 3 == 2) ? one : kEmptyTile);
+    }
+  }
+}
+
+TEST_F(Procgen, FillIntersectsItsMasks)
+{
+  Field f{doc, Extents{9, 11}};
+  const TileRef one = fill_tile(0);
+  // Both tests must pass: rows 3..5 of the columns whose semantic is 1
+  const FillMask mask{.band = &f.height, .lo = 0.3F, .hi = 0.5F, .ids = &f.ids, .id = 1};
+  EXPECT_EQ(fill_masked(&one, 1, mask, 1, f.tiles).matched, 9U);
+  for (int y = 0; y < 11; ++y)
+  {
+    for (int x = 0; x < 9; ++x)
+    {
+      const bool inside = (y >= 3 and y <= 5) and (x % 3 == 1);
+      EXPECT_EQ(f.tiles.at(x, y), inside ? one : kEmptyTile) << "at (" << x << ", " << y << ")";
+    }
+  }
+  // With no mask at all, every cell is matched
+  Field all{doc, Extents{9, 11}};
+  EXPECT_EQ(fill_masked(&one, 1, FillMask{}, 1, all.tiles).matched, 99U);
+}
+
+TEST_F(Procgen, FillScattersSeveralTilesAndKeepsThemPut)
+{
+  Field f{doc, Extents{32, 32}};
+  const TileRef tiles[3] = {fill_tile(0), fill_tile(1), fill_tile(2)};
+  const FillResult result = fill_masked(tiles, 3, FillMask{}, 7, f.tiles);
+  EXPECT_EQ(result.matched, 1024U);
+  int counts[3] = {0, 0, 0};
+  for (const TileRef& t : f.tiles.values)
+  {
+    for (int i = 0; i < 3; ++i)
+    {
+      counts[i] += (t == tiles[i]) ? 1 : 0;
+    }
+  }
+  EXPECT_EQ(counts[0] + counts[1] + counts[2], 1024);
+  for (const int n : counts)
+  {
+    // Roughly even, without pinning the hash down
+    EXPECT_GT(n, 1024 / 6) << "every tile should be scattered through the area";
+  }
+  // The same seed writes the same thing, however often it is run
+  Grid<TileRef> before{doc};
+  before.assign(f.tiles.extents, kEmptyTile);
+  before.values.assign(f.tiles.values.begin(), f.tiles.values.end());
+  EXPECT_EQ(fill_masked(tiles, 3, FillMask{}, 7, f.tiles).changed, 0U);
+  EXPECT_EQ(before.values, f.tiles.values);
+  // A different seed moves them, and a cell's tile does not depend on what else was filled
+  EXPECT_GT(fill_masked(tiles, 3, FillMask{}, 8, f.tiles).changed, 0U);
+  Field narrow{doc, Extents{32, 32}};
+  fill_masked(tiles, 3, FillMask{.band = &narrow.height, .lo = 0.3F, .hi = 0.5F}, 7, narrow.tiles);
+  for (int y = 10; y <= 15; ++y)
+  {
+    for (int x = 0; x < 32; ++x)
+    {
+      EXPECT_EQ(narrow.tiles.at(x, y), before.at(x, y)) << "at (" << x << ", " << y << ")";
+    }
+  }
+}
+
+TEST_F(Procgen, FillStaysInsideItsRegionAndSparesWhatIsDrawn)
+{
+  Field f{doc, Extents{12, 12}};
+  const TileRef one = fill_tile(0);
+  const TileRef drawn = fill_tile(9);
+  f.tiles.at(5, 5) = drawn;
+  const FillResult result =
+    fill_masked(&one, 1, FillMask{.region = Region{.x = 4, .y = 4, .width = 3, .height = 3}}, 1, f.tiles);
+  EXPECT_EQ(result.matched, 9U);
+  EXPECT_EQ(f.tiles.at(4, 4), one);
+  EXPECT_EQ(f.tiles.at(6, 6), one);
+  EXPECT_EQ(f.tiles.at(3, 4), kEmptyTile);
+  EXPECT_EQ(f.tiles.at(7, 4), kEmptyTile);
+  // A region hanging off the grid is clipped, not an error
+  EXPECT_EQ(
+    fill_masked(&one, 1, FillMask{.region = Region{.x = 10, .y = 10, .width = 8, .height = 8}}, 1, f.tiles).matched,
+    4U);
+
+  // Only the empty cells, so what is already drawn survives
+  Field keep{doc, Extents{12, 12}};
+  keep.tiles.at(5, 5) = drawn;
+  EXPECT_EQ(fill_masked(&one, 1, FillMask{.only_empty = true}, 1, keep.tiles).matched, 143U);
+  EXPECT_EQ(keep.tiles.at(5, 5), drawn);
+  EXPECT_EQ(keep.tiles.at(5, 6), one);
+}
+
+TEST_F(Procgen, FillWithoutTilesWritesNothing)
+{
+  Field f{doc, Extents{4, 4}};
+  const TileRef one = fill_tile(0);
+  EXPECT_EQ(fill_masked(nullptr, 0, FillMask{}, 1, f.tiles).matched, 0U);
+  EXPECT_EQ(fill_masked(&one, 0, FillMask{}, 1, f.tiles).matched, 0U);
+  for (const TileRef& t : f.tiles.values)
+  {
+    EXPECT_EQ(t, kEmptyTile);
+  }
+  Grid<TileRef> none{doc};
+  none.assign(Extents{0, 0}, kEmptyTile);
+  EXPECT_EQ(fill_masked(&one, 1, FillMask{}, 1, none).matched, 0U);
 }
