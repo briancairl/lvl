@@ -24,6 +24,7 @@ Level::Level(memory::Arena& a) :
     tilesets{memory::ArenaAllocator<TileSet>{a}},
     layers{memory::ArenaAllocator<Layer>{a}},
     wfc{a},
+    auto_tiles{a},
     graphs{memory::ArenaAllocator<PathGraph>{a}},
     registry{memory::ArenaAllocator<Entity>{a}}
 {
@@ -144,6 +145,21 @@ void remove_tileset(Level& level, TileSetId id)
     else
     {
       fix(level.wfc.tiles[i].tile);
+    }
+  }
+  // As do a terrain's variants
+  for (auto& terrain : level.auto_tiles.terrains)
+  {
+    for (std::size_t i = terrain.variants.size(); i-- > 0;)
+    {
+      if (terrain.variants[i].tile.tileset == id)
+      {
+        terrain.variants.erase(terrain.variants.begin() + i);
+      }
+      else
+      {
+        fix(terrain.variants[i].tile);
+      }
     }
   }
 }

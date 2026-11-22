@@ -99,6 +99,17 @@ protected:
     set_allowed(level.wfc, a, b, Direction::kNorthWest, true);
     level.wfc.diagonals = true;
 
+    // Auto-tiling terrains: a nine-slice blob and a side-only one
+    AutoTerrain& shore = level.auto_tiles.terrains[add_terrain(level.auto_tiles, *level.arena, "shore")];
+    shore.expand = 1;
+    set_variant(shore, kAllNeighbors, TileRef{id, 3});
+    set_variant(
+      shore, mask_of(Direction::kEast) | mask_of(Direction::kSouth) | mask_of(Direction::kSouthEast), TileRef{id, 4});
+    AutoTerrain& road_tiles = level.auto_tiles.terrains[add_terrain(level.auto_tiles, *level.arena, "road")];
+    road_tiles.neighborhood = Neighborhood::kSides;
+    road_tiles.expand = 0;
+    set_variant(road_tiles, kSideNeighbors, TileRef{id, 1});
+
     create_portal(
       level.registry,
       "cave",
@@ -221,6 +232,20 @@ protected:
     EXPECT_TRUE(allowed(b.wfc, 1, 0, Direction::kSouthEast));
     EXPECT_FALSE(allowed(b.wfc, 0, 1, Direction::kSouthEast));
     EXPECT_TRUE(b.wfc.diagonals);
+
+    ASSERT_EQ(b.auto_tiles.terrains.size(), 2UL);
+    const AutoTerrain& shore = b.auto_tiles.terrains[0];
+    EXPECT_EQ(shore.name, std::string_view{"shore"});
+    EXPECT_EQ(shore.neighborhood, Neighborhood::kBlob);
+    EXPECT_EQ(shore.expand, 1);
+    ASSERT_EQ(shore.variants.size(), 2UL);
+    EXPECT_EQ(resolve(shore, kAllNeighbors), (TileRef{0, 3}));
+    EXPECT_EQ(
+      resolve(shore, mask_of(Direction::kEast) | mask_of(Direction::kSouth) | mask_of(Direction::kSouthEast)),
+      (TileRef{0, 4}));
+    EXPECT_EQ(b.auto_tiles.terrains[1].neighborhood, Neighborhood::kSides);
+    EXPECT_EQ(b.auto_tiles.terrains[1].expand, 0);
+    EXPECT_EQ(terrain_of(b.auto_tiles, TileRef{0, 4}), 0U);
 
     ASSERT_EQ(a.graphs.size(), b.graphs.size());
     EXPECT_EQ(b.graphs[1].kind, GraphKind::kPatrol);
@@ -359,6 +384,14 @@ TEST_F(LevelIo, StandaloneWfcRulesAndPaths)
     EXPECT_EQ(target.wfc.tiles.size(), 2UL);
     EXPECT_TRUE(allowed(target.wfc, 0, 1, Direction::kNorth));
     EXPECT_EQ(target.semantics[target.wfc.tiles[1].semantic].name, std::string_view{"road"});
+    // The same file carries the auto-tiling terrains, remapped onto this level's tilesets
+    ASSERT_EQ(target.auto_tiles.terrains.size(), 2UL);
+    EXPECT_EQ(target.auto_tiles.terrains[0].name, std::string_view{"shore"});
+    EXPECT_EQ(resolve(target.auto_tiles.terrains[0], kAllNeighbors), (TileRef{0, 3}));
+    EXPECT_EQ(target.auto_tiles.terrains[1].neighborhood, Neighborhood::kSides);
+    // Loading again replaces rather than duplicates
+    ASSERT_TRUE(load_wfc_rules(wfc_path.c_str(), target, ctx).ok);
+    EXPECT_EQ(target.auto_tiles.terrains.size(), 2UL);
 
     const auto paths_status = load_paths(paths_path.c_str(), target, ctx);
     ASSERT_TRUE(paths_status.ok) << paths_status;

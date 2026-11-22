@@ -4,7 +4,7 @@
  * @file selection.cpp
  *
  * Readers of the palette selection (App::selection), shared by the batch metadata edit in the tile
- * panel and the WFC rules taken from the palette layout.
+ * panel, the paint stamp and the WFC rules taken from the palette layout.
  */
 
 // C++ Standard Library
@@ -149,6 +149,47 @@ void selection_preview(const App& app, float thumb, int max_rows)
     }
   }
   ImGui::EndChild();
+}
+
+Extents stamp_extents(const App& app)
+{
+  SelectionBounds bounds;
+  if (app.selection.count >= 2 and selection_bounds(app, bounds))
+  {
+    return Extents{bounds.width, bounds.height};
+  }
+  return Extents{std::max(1, app.paint.stamp_width), std::max(1, app.paint.stamp_height)};
+}
+
+bool paint_stamp(const App& app, Grid<TileRef>& out)
+{
+  // Two or more selected tiles are painted as the palette lays them out, holes and all
+  if (app.selection.count >= 2 and palette_layout(app, out))
+  {
+    return true;
+  }
+  const Level& lv = *app.level;
+  const TileRef base = app.paint.tile;
+  if (base.empty() or base.tileset >= lv.tilesets.size())
+  {
+    return false;
+  }
+  const TileSet& ts = lv.tilesets[base.tileset];
+  const int columns = std::max(1, palette_grid(app, base.tileset).width);
+  const Extents e = Extents{std::max(1, app.paint.stamp_width), std::max(1, app.paint.stamp_height)};
+  out.assign(e, kEmptyTile);
+  for (int y = 0; y < e.height; ++y)
+  {
+    for (int x = 0; x < e.width; ++x)
+    {
+      const int index = static_cast<int>(base.tile) + y * columns + x;
+      if (index < static_cast<int>(ts.tiles.size()))
+      {
+        out.at(x, y) = TileRef{base.tileset, static_cast<TileIndex>(index)};
+      }
+    }
+  }
+  return true;
 }
 
 bool palette_layout(const App& app, Grid<TileRef>& out)

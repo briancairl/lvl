@@ -159,6 +159,31 @@ bool deselect_all_button(App& app);
 /// out, empty where a cell of the rectangle is not selected; false if nothing is selected
 bool palette_layout(const App& app, level::Grid<level::TileRef>& out);
 
+/**
+ * @brief The tiles one application of the paint tool writes, laid out as the palette has them
+ *
+ * With two or more tiles selected in the palette it is the selection's layout (so a multi-tile
+ * object keeps its shape; cells the selection skips are left alone), otherwise the paint stamp: one
+ * tile, or the rectangle a palette drag picked. False if there is no tile to paint with.
+ */
+bool paint_stamp(const App& app, level::Grid<level::TileRef>& out);
+
+/// Footprint of <code>paint_stamp</code>, without building it (for the cursor's hover preview)
+level::Extents stamp_extents(const App& app);
+
+/// Auto-tiling terrain the tile being painted belongs to, or <code>level::kNoTerrain</code>
+level::TerrainId auto_tile_terrain(const App& app);
+
+/**
+ * @brief Tiles the cells one stroke of the Auto tool painted, from whichever rules apply
+ *
+ * The tile being painted decides which: the auto-tiling terrain it belongs to
+ * (<code>auto_tile_terrain</code>), which prescribes edges and inner/outer corners, or else the WFC
+ * adjacency rules, scored against each cell's neighbors, as the fallback. Records what the stroke
+ * did in <code>App::auto_tile_status</code>; <code>layer</code> must be a tile layer.
+ */
+void auto_tile_stroke(App& app, std::size_t layer, const level::Cell* painted, std::size_t count);
+
 /// A small delete button for the start of a row; returns true when clicked
 bool delete_button(const char* tooltip);
 

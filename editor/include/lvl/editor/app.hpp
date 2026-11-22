@@ -61,6 +61,8 @@ enum class Tool : std::uint8_t
 {
   kPan,
   kPaint,
+  /// Paint centers and let the tile adjacency rules re-fill around them
+  kAutoTile,
   kErase,
   kFill,
   kRect,
@@ -91,6 +93,44 @@ struct Brush
   float strength = 0.05F;
   /// Scalar brushes: value for kSet
   float value = 0.5F;
+};
+
+/// Which kind of tile adjacency rules the rules window is editing
+enum class RulesMode : std::uint8_t
+{
+  /// What may sit next to what, per direction (level::WfcRules), for the WFC generator
+  kWfc,
+  /// Terrains keyed on the pattern of like neighbors (level::AutoTileRules), for auto-tiled painting
+  kAutoTile,
+};
+
+/**
+ * @brief Settings of auto-tiled painting (the Auto tool)
+ *
+ * The tool paints the palette tile (or stamp) as the middle of a shape and tiles the border around
+ * it from the level's rules: from the terrain the painted tile belongs to
+ * (lvl::level::AutoTileRules, which is what prescribes edges and inner/outer corners), or, for a
+ * tile with no terrain, by scoring the WFC adjacencies around the stroke. These settings are the
+ * fallback's; a terrain carries its own border width. See lvl::procgen::autotile.
+ */
+struct AutoTile
+{
+  /// WFC fallback: cells around the painted ones the rules may re-fill
+  int radius = 2;
+  /// WFC fallback: relaxation sweeps (each carries the rules one cell further outward)
+  int iterations = 4;
+};
+
+/// What the last auto-tiled stroke did (the viewport's status line)
+struct AutoTileStatus
+{
+  /// Whether a terrain tiled the stroke, or the WFC fallback scored it
+  bool terrain = false;
+  FixedString<64> name;
+  std::size_t cells = 0;
+  std::size_t changed = 0;
+  /// Cells the rules could not fill (no tile for the pattern / no tile satisfies the adjacencies)
+  std::size_t trouble = 0;
 };
 
 /// What painting writes, per layer kind
@@ -229,6 +269,8 @@ enum class DeleteKind : std::uint8_t
   kObject,
   /// A tile property (index within tileset <code>owner</code>)
   kProperty,
+  /// An auto-tiling terrain
+  kTerrain,
 };
 
 /// A delete waiting for confirmation (or, when confirmed, for the end of the frame)
@@ -326,6 +368,7 @@ struct App
   Tool tool = Tool::kPaint;
   Brush brush;
   Paint paint;
+  AutoTile auto_tile;
   std::size_t layer = 1;
   std::size_t tileset = 0;
   /// Tile selected in the tileset panel (for metadata editing)
@@ -349,6 +392,12 @@ struct App
   bool wfc_preview = true;
   /// What the batch edit applies to the constraints of the selected rule tiles
   level::WfcTileEdit wfc_batch;
+  /// Which kind of rules the rules window is editing
+  RulesMode rules_mode = RulesMode::kWfc;
+  /// Auto-tiling rules: the terrain being edited
+  level::TerrainId terrain = 0;
+  /// What the last auto-tiled stroke did
+  AutoTileStatus auto_tile_status;
 
   render::ComposeOptions export_options;
   int minimap_size = 256;

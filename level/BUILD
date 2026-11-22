@@ -4,10 +4,12 @@ load("//bazel:copts.bzl", "LVL_COPTS")
 
 package(default_visibility = ["//visibility:public"])
 
-# The level document model: grid layers, tilesets, catalogs, seasons, WFC rules, objects (EnTT).
+# The level document model: grid layers, tilesets, catalogs, seasons, WFC and auto-tiling rules,
+# objects (EnTT).
 cc_library(
     name = "model",
     srcs = [
+        "src/auto_tile_rules.cpp",
         "src/layer.cpp",
         "src/level.cpp",
         "src/objects.cpp",
@@ -16,6 +18,7 @@ cc_library(
         "src/wfc_rules.cpp",
     ],
     hdrs = [
+        "include/lvl/level/auto_tile_rules.hpp",
         "include/lvl/level/grid.hpp",
         "include/lvl/level/layer.hpp",
         "include/lvl/level/level.hpp",

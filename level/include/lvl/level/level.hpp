@@ -3,9 +3,9 @@
  *
  * @file level.hpp
  *
- * The level document: grid settings, catalogs, tilesets, layers, seasons, WFC rules, path graphs
- * and objects. Everything it holds is allocated from one document arena; <code>reset()</code> rewinds
- * that arena wholesale (new/load), so there is no per-object freeing to get wrong.
+ * The level document: grid settings, catalogs, tilesets, layers, seasons, WFC and auto-tiling
+ * rules, path graphs and objects. Everything it holds is allocated from one document arena; <code>reset()</code>
+ * rewinds that arena wholesale (new/load), so there is no per-object freeing to get wrong.
  */
 #pragma once
 
@@ -16,6 +16,7 @@
 // LVL
 #include "lvl/core/fixed_string.hpp"
 #include "lvl/core/memory.hpp"
+#include "lvl/level/auto_tile_rules.hpp"
 #include "lvl/level/layer.hpp"
 #include "lvl/level/objects.hpp"
 #include "lvl/level/tileset.hpp"
@@ -61,6 +62,8 @@ struct Level
   /// Layers, bottom to top
   memory::Vector<Layer> layers;
   WfcRules wfc;
+  /// Auto-tiling terrains (the other kind of tile adjacency rules; see auto_tile_rules.hpp)
+  AutoTileRules auto_tiles;
   memory::Vector<PathGraph> graphs;
   Registry registry;
 };

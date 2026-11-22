@@ -1,13 +1,17 @@
 // C++ Standard Library
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numeric>
+#include <utility>
 
 // GTest
 #include <gtest/gtest.h>
 
 // LVL
+#include "lvl/level/auto_tile_rules.hpp"
 #include "lvl/level/level.hpp"
+#include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
@@ -410,4 +414,420 @@ TEST_F(Procgen, WfcReportsImpossibleConstraints)
 
   WfcRules empty{doc};
   EXPECT_FALSE(solve(empty, WfcConstraints{}, WfcParams{}, out, scratch).status.ok);
+}
+
+namespace
+{
+
+/// Tiles of the auto-tiling rule sets below
+enum : TileIndex
+{
+  kGrass = 0,
+  kEdge = 1,
+  kCenter = 2,
+  /// A tile of another tileset, which the rules know nothing about
+  kDecoration = 7,
+};
+
+constexpr TileRef tile_of(TileIndex tile) { return TileRef{0, tile}; }
+
+/**
+ * @brief Rules for a path (or a lake) in a field: an edge tile has to come between the two
+ *
+ * Grass, edge and center may each sit next to themselves and next to the one beside them, but grass
+ * may never touch a center, so painting centers forces edges around them.
+ */
+WfcRules path_rules(memory::Arena& arena, bool diagonals)
+{
+  WfcRules rules{arena};
+  rules.diagonals = diagonals;
+  for (const TileIndex tile : {kGrass, kEdge, kCenter})
+  {
+    add_tile(rules, tile_of(tile));
+  }
+  // Grass is the most frequent tile, so it is what an empty cell falls back to
+  rules.tiles[kGrass].weight = 10.0F;
+  static constexpr std::pair<TileIndex, TileIndex> kPairs[] = {
+    {kGrass, kGrass}, {kGrass, kEdge}, {kEdge, kEdge}, {kEdge, kCenter}, {kCenter, kCenter}};
+  for (const auto& [a, b] : kPairs)
+  {
+    for (const Direction d : kNeighbors)
+    {
+      if (!diagonal(d) or diagonals)
+      {
+        set_allowed(rules, a, b, d, true);
+        set_allowed(rules, b, a, d, true);
+      }
+    }
+  }
+  return rules;
+}
+
+/// A field of grass with <code>centers</code> painted into it
+Grid<TileRef> field(memory::Arena& arena, Extents extents)
+{
+  Grid<TileRef> tiles{arena};
+  tiles.assign(extents, tile_of(kGrass));
+  return tiles;
+}
+
+}  // namespace
+
+TEST_F(Procgen, AutoTileFillsEdgesAroundPaintedCenters)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(result.unresolved, 0U);
+  EXPECT_EQ(result.changed, 4U);
+  // The painted center stays, an edge comes between it and the grass, and the rest is untouched
+  EXPECT_EQ(tiles.at(painted), tile_of(kCenter));
+  for (const Direction d : kDirections)
+  {
+    EXPECT_EQ(tiles.at(step(painted, d)), tile_of(kEdge)) << "direction " << static_cast<int>(d);
+  }
+  EXPECT_EQ(tiles.at(3, 3), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(2, 4), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(0, 0), tile_of(kGrass));
+}
+
+TEST_F(Procgen, AutoTileRefillsAroundCentersPaintedLater)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{12, 5});
+  // A path drawn one cell at a time: each stroke re-fills the band around the growing shape
+  for (int x = 2; x <= 8; ++x)
+  {
+    const Cell painted{x, 2};
+    tiles.at(painted) = tile_of(kCenter);
+    const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+    EXPECT_EQ(result.unresolved, 0U) << "at x = " << x;
+  }
+  for (int x = 2; x <= 8; ++x)
+  {
+    // Every center painted stayed a center, with edges above and below
+    EXPECT_EQ(tiles.at(x, 2), tile_of(kCenter)) << "at x = " << x;
+    EXPECT_EQ(tiles.at(x, 1), tile_of(kEdge)) << "at x = " << x;
+    EXPECT_EQ(tiles.at(x, 3), tile_of(kEdge)) << "at x = " << x;
+  }
+  // The ends of the path are capped, and the field beyond the edges is untouched
+  EXPECT_EQ(tiles.at(1, 2), tile_of(kEdge));
+  EXPECT_EQ(tiles.at(9, 2), tile_of(kEdge));
+  EXPECT_EQ(tiles.at(0, 2), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(5, 0), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(5, 4), tile_of(kGrass));
+}
+
+TEST_F(Procgen, AutoTileIsStableOnceTheRulesHold)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+  autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+
+  const AutoTileResult again = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(again.changed, 0U);
+  EXPECT_EQ(again.unresolved, 0U);
+  EXPECT_GT(again.considered, 0U);
+}
+
+TEST_F(Procgen, AutoTileFillsCornersWhenDiagonalsAreOn)
+{
+  WfcRules rules = path_rules(doc, true);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(result.unresolved, 0U);
+  // Grass may not touch a center at a corner either, so the whole ring becomes edge
+  for (const Direction d : kNeighbors)
+  {
+    EXPECT_EQ(tiles.at(step(painted, d)), tile_of(kEdge)) << "direction " << static_cast<int>(d);
+  }
+  EXPECT_EQ(tiles.at(2, 2), tile_of(kGrass));
+}
+
+TEST_F(Procgen, AutoTileLeavesTilesTheRulesDoNotKnow)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+  // Hand-placed decoration from another tileset, right where an edge would go
+  const TileRef decoration = TileRef{1, kDecoration};
+  tiles.at(4, 3) = decoration;
+  // An empty cell, which has no tile worth keeping
+  tiles.at(4, 5) = kEmptyTile;
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(tiles.at(4, 3), decoration);
+  EXPECT_EQ(tiles.at(4, 5), tile_of(kEdge));
+  // The decoration constrains nothing, so the cell beyond it is free to stay grass
+  EXPECT_EQ(tiles.at(4, 2), tile_of(kGrass));
+  EXPECT_EQ(result.unresolved, 0U);
+}
+
+TEST_F(Procgen, AutoTileReportsWhatTheRulesCannotExpress)
+{
+  // No edge tile: grass may not touch a center, and nothing can go between them
+  WfcRules rules{doc};
+  rules.diagonals = false;
+  add_tile(rules, tile_of(kGrass));
+  add_tile(rules, tile_of(kCenter));
+  for (const Direction d : kDirections)
+  {
+    set_allowed(rules, 0, 0, d, true);
+    set_allowed(rules, 1, 1, d, true);
+  }
+  Grid<TileRef> tiles = field(doc, Extents{7, 7});
+  const Cell painted{3, 3};
+  tiles.at(painted) = tile_of(kCenter);
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_GT(result.unresolved, 0U);
+  // The painted cell is never rewritten, whatever the rules say
+  EXPECT_EQ(tiles.at(painted), tile_of(kCenter));
+}
+
+TEST_F(Procgen, AutoTileDoesNothingWithoutRulesOrPaintedCells)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{5, 5});
+  const Cell painted{2, 2};
+  EXPECT_EQ(autotile(rules, nullptr, 0, AutoTileParams{}, tiles, scratch).considered, 0U);
+  EXPECT_EQ(autotile(rules, &painted, 1, AutoTileParams{.radius = 0}, tiles, scratch).considered, 0U);
+  WfcRules empty{doc};
+  EXPECT_EQ(autotile(empty, &painted, 1, AutoTileParams{}, tiles, scratch).considered, 0U);
+  for (const TileRef& tile : tiles.values)
+  {
+    EXPECT_EQ(tile, tile_of(kGrass));
+  }
+}
+
+namespace
+{
+
+enum : TileIndex
+{
+  /// The nine-slice occupies tiles 0..8 (reading across), the inner corners 9..12
+  kNineSlice = 0,
+  kInnerCorners = 9,
+  /// What the map holds where the terrain is not
+  kBackground = 20,
+};
+
+/// A terrain whose tiles are a nine-slice, optionally with the four inner corners
+AutoTileRules terrain_rules(memory::Arena& arena, bool inner_corners, int expand)
+{
+  AutoTileRules rules{arena};
+  AutoTerrain& terrain = rules.terrains[add_terrain(rules, arena, "path")];
+  terrain.expand = expand;
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{3, 3}, kEmptyTile);
+  for (int i = 0; i < 9; ++i)
+  {
+    layout.values[i] = TileRef{0, static_cast<TileIndex>(kNineSlice + i)};
+  }
+  learn_from_layout(terrain, layout);
+  if (inner_corners)
+  {
+    Grid<TileRef> inner{arena};
+    inner.assign(Extents{2, 2}, kEmptyTile);
+    for (int i = 0; i < 4; ++i)
+    {
+      inner.values[i] = TileRef{0, static_cast<TileIndex>(kInnerCorners + i)};
+    }
+    learn_from_layout(terrain, inner);
+  }
+  return rules;
+}
+
+/// Tile of the nine-slice at (x, y) of its block
+constexpr TileRef slice(int x, int y) { return TileRef{0, static_cast<TileIndex>(kNineSlice + y * 3 + x)}; }
+
+Grid<TileRef> background(memory::Arena& arena, Extents extents)
+{
+  Grid<TileRef> tiles{arena};
+  tiles.assign(extents, TileRef{0, kBackground});
+  return tiles;
+}
+
+}  // namespace
+
+TEST_F(Procgen, PaintTerrainLaysDownTheWholeNineSlice)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 1);
+  Grid<TileRef> tiles = background(doc, Extents{11, 11});
+  const Cell painted{5, 5};
+
+  const TerrainPaintResult result = paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  EXPECT_EQ(result.covered, 9U);
+  EXPECT_EQ(result.changed, 9U);
+  // One painted cell becomes the middle, and the ring around it the edges and outer corners
+  for (int y = 0; y < 3; ++y)
+  {
+    for (int x = 0; x < 3; ++x)
+    {
+      EXPECT_EQ(tiles.at(4 + x, 4 + y), slice(x, y)) << "at (" << x << ", " << y << ")";
+    }
+  }
+  // Nothing beyond the border is touched
+  EXPECT_EQ(tiles.at(3, 5), (TileRef{0, kBackground}));
+  EXPECT_EQ(tiles.at(7, 5), (TileRef{0, kBackground}));
+  EXPECT_EQ(tiles.at(0, 0), (TileRef{0, kBackground}));
+}
+
+TEST_F(Procgen, PaintTerrainRetilesTheBorderAsTheShapeGrows)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 1);
+  Grid<TileRef> tiles = background(doc, Extents{14, 9});
+  const Cell first{5, 4};
+  paint_terrain(rules, 0, &first, 1, tiles, scratch);
+  ASSERT_EQ(tiles.at(6, 3), slice(2, 0));
+
+  // Painting the next cell of the path turns the old corner into a straight edge
+  const Cell second{6, 4};
+  const TerrainPaintResult result = paint_terrain(rules, 0, &second, 1, tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  EXPECT_EQ(tiles.at(6, 3), slice(1, 0));
+  EXPECT_EQ(tiles.at(7, 3), slice(2, 0));
+  EXPECT_EQ(tiles.at(5, 4), slice(1, 1));
+  EXPECT_EQ(tiles.at(6, 4), slice(1, 1));
+  EXPECT_EQ(tiles.at(4, 4), slice(0, 1));
+  EXPECT_EQ(tiles.at(7, 4), slice(2, 1));
+  EXPECT_EQ(tiles.at(6, 5), slice(1, 2));
+
+  // Painting over what is already the middle changes nothing
+  const TerrainPaintResult again = paint_terrain(rules, 0, &second, 1, tiles, scratch);
+  EXPECT_EQ(again.changed, 0U);
+}
+
+TEST_F(Procgen, PaintTerrainDrawsInnerCornersWhereTheTerrainWraps)
+{
+  // No border to grow: the painted cells themselves take the edge tiles
+  const AutoTileRules rules = terrain_rules(doc, true, 0);
+  Grid<TileRef> tiles = background(doc, Extents{11, 11});
+  // A 5x5 patch with one corner cell missing, so the cell inside that corner wraps around it
+  auto painted = memory::make_vector<Cell>(doc);
+  for (int y = 3; y <= 7; ++y)
+  {
+    for (int x = 3; x <= 7; ++x)
+    {
+      if (x != 3 or y != 3)
+      {
+        painted.push_back(Cell{x, y});
+      }
+    }
+  }
+  const TerrainPaintResult result = paint_terrain(rules, 0, painted.data(), painted.size(), tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  // Surrounded on every side but the north-west corner: the first of the inner-corner tiles
+  EXPECT_EQ(tiles.at(4, 4), (TileRef{0, kInnerCorners}));
+  // The middle of the patch is fully surrounded, and the hole was left alone
+  EXPECT_EQ(tiles.at(5, 5), slice(1, 1));
+  EXPECT_EQ(tiles.at(3, 3), (TileRef{0, kBackground}));
+}
+
+TEST_F(Procgen, PaintTerrainWithoutABorderLeavesNeighborsAlone)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 0);
+  Grid<TileRef> tiles = background(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+
+  const TerrainPaintResult result = paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  EXPECT_EQ(result.covered, 1U);
+  EXPECT_EQ(result.missing, 0U);
+  // Only the painted cell is the terrain's, and with no like neighbors it takes the pattern for none
+  EXPECT_NE(tiles.at(painted), (TileRef{0, kBackground}));
+  for (const Direction d : kNeighbors)
+  {
+    EXPECT_EQ(tiles.at(step(painted, d)), (TileRef{0, kBackground})) << "direction " << static_cast<int>(d);
+  }
+}
+
+TEST_F(Procgen, PaintTerrainTreatsTheMapEdgeAsTerrain)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 1);
+  Grid<TileRef> tiles = background(doc, Extents{9, 9});
+  const Cell painted{0, 0};
+
+  paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  // Nothing off the map to draw a border against, so the painted corner cell is fully surrounded
+  // and the border only appears on the inward sides
+  EXPECT_EQ(tiles.at(0, 0), slice(1, 1));
+  EXPECT_EQ(tiles.at(1, 0), slice(2, 1));
+  EXPECT_EQ(tiles.at(0, 1), slice(1, 2));
+  EXPECT_EQ(tiles.at(1, 1), slice(2, 2));
+  EXPECT_EQ(tiles.at(2, 0), (TileRef{0, kBackground}));
+  EXPECT_EQ(tiles.at(0, 2), (TileRef{0, kBackground}));
+}
+
+TEST_F(Procgen, PaintTerrainReportsATerrainWithNoTiles)
+{
+  AutoTileRules rules{doc};
+  add_terrain(rules, doc, "empty");
+  Grid<TileRef> tiles = background(doc, Extents{7, 7});
+  const Cell painted{3, 3};
+
+  const TerrainPaintResult result = paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  EXPECT_EQ(result.covered, 0U);
+  EXPECT_EQ(result.changed, 0U);
+  EXPECT_GT(result.missing, 0U);
+  for (const TileRef& tile : tiles.values)
+  {
+    EXPECT_EQ(tile, (TileRef{0, kBackground}));
+  }
+  // An unknown terrain, or nothing painted, does nothing at all
+  EXPECT_EQ(paint_terrain(rules, kNoTerrain, &painted, 1, tiles, scratch).missing, 0U);
+  EXPECT_EQ(paint_terrain(rules, 0, nullptr, 0, tiles, scratch).missing, 0U);
+}
+
+TEST_F(Procgen, PaintTerrainScattersTheMiddlesOfAPattern)
+{
+  AutoTileRules rules = terrain_rules(doc, true, 1);
+  AutoTerrain& terrain = rules.terrains[0];
+  // Three middles instead of one: a painted area should use all of them, and keep what it has
+  add_variant(terrain, kAllNeighbors, TileRef{0, 30});
+  add_variant(terrain, kAllNeighbors, TileRef{0, 31});
+  ASSERT_EQ(variant_count(terrain, kAllNeighbors), 3U);
+
+  Grid<TileRef> tiles = background(doc, Extents{21, 21});
+  auto painted = memory::make_vector<Cell>(doc);
+  for (int y = 4; y <= 16; ++y)
+  {
+    for (int x = 4; x <= 16; ++x)
+    {
+      painted.push_back(Cell{x, y});
+    }
+  }
+  const TerrainPaintResult result = paint_terrain(rules, 0, painted.data(), painted.size(), tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  std::array<int, 3> counts = {0, 0, 0};
+  for (int y = 5; y <= 15; ++y)
+  {
+    for (int x = 5; x <= 15; ++x)
+    {
+      counts[0] += (tiles.at(x, y) == slice(1, 1)) ? 1 : 0;
+      counts[1] += (tiles.at(x, y) == TileRef{0, 30}) ? 1 : 0;
+      counts[2] += (tiles.at(x, y) == TileRef{0, 31}) ? 1 : 0;
+    }
+  }
+  EXPECT_EQ(counts[0] + counts[1] + counts[2], 11 * 11);
+  for (const int n : counts)
+  {
+    EXPECT_GT(n, 0) << "every middle should appear somewhere in a 11x11 area";
+  }
+  // Painting the area again leaves every cell exactly as it was
+  Grid<TileRef> before{doc};
+  before.assign(tiles.extents, kEmptyTile);
+  before.values.assign(tiles.values.begin(), tiles.values.end());
+  const TerrainPaintResult again = paint_terrain(rules, 0, painted.data(), painted.size(), tiles, scratch);
+  EXPECT_EQ(again.changed, 0U);
+  EXPECT_EQ(before.values, tiles.values);
 }

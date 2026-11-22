@@ -26,6 +26,7 @@
 #include "lvl/editor/app.hpp"
 #include "lvl/editor/web.hpp"
 #include "lvl/level/io.hpp"
+#include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/wfc.hpp"
 
 namespace lvl::editor
@@ -400,6 +401,7 @@ void shortcuts(App& app)
   static constexpr Hotkey kHotkeys[] = {
     {ImGuiKey_H, Tool::kPan},
     {ImGuiKey_B, Tool::kPaint},
+    {ImGuiKey_T, Tool::kAutoTile},
     {ImGuiKey_E, Tool::kErase},
     {ImGuiKey_G, Tool::kFill},
     {ImGuiKey_R, Tool::kRect},
@@ -914,6 +916,38 @@ void smoke(App& app)
     break;
   }
   case 21: {
+    // A multi-tile paint stamp: the selected tiles keep their relative positions in the palette
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    const level::Extents palette = palette_grid(app, app.tileset);
+    if (palette.width < 2 or palette.height < 2)
+    {
+      report(app, Status::error("the demo palette is too small for a multi-tile stamp"));
+      break;
+    }
+    const auto columns = static_cast<level::TileIndex>(palette.width);
+    for (const level::TileIndex tile : {level::TileIndex{0}, level::TileIndex{1}, columns})
+    {
+      app.selection.set(tile, true);
+    }
+    level::Grid<level::TileRef> stamp{app.memory.frame};
+    const level::Extents footprint = stamp_extents(app);
+    if (!paint_stamp(app, stamp) or stamp.extents != level::Extents{2, 2} or footprint != stamp.extents)
+    {
+      report(app, Status::error("the palette selection did not become a 2x2 paint stamp"));
+      break;
+    }
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    if (
+      stamp.at(0, 0) != level::TileRef{tileset, 0} or stamp.at(1, 0) != level::TileRef{tileset, 1} or
+      stamp.at(0, 1) != level::TileRef{tileset, columns} or !stamp.at(1, 1).empty())
+    {
+      report(app, Status::error("the paint stamp does not hold the selection's layout"));
+    }
+    app.selection.clear();
+    break;
+  }
+  case 22: {
     // The recent levels: the saves and the load above left their paths in the list, newest first,
     // and the newest one opens again from it (as File > Open recent does)
     load_recent_files(app);
@@ -926,7 +960,121 @@ void smoke(App& app)
     file_action(app, FileAction::kOpenLevel, newest.c_str());
     break;
   }
-  case 22:
+  case 23: {
+    // Auto-tiled painting from a terrain: the adjacency rules window's auto-tiling tab, a terrain
+    // taken from a 3x3 palette block, and one painted cell laying down the whole nine-slice
+    level::Level& lv = *app.level;
+    app.tool = Tool::kAutoTile;
+    app.panels.adjacency = true;
+    app.rules_mode = RulesMode::kAutoTile;
+    const std::size_t layer = 1;
+    if (layer >= lv.layers.size() or lv.layers[layer].kind != level::LayerKind::kTiles)
+    {
+      report(app, Status::error("the demo level has no tile layer to auto-tile"));
+      break;
+    }
+    app.layer = layer;
+    const level::Extents palette = palette_grid(app, app.tileset);
+    if (palette.width < 3 or palette.height < 3)
+    {
+      report(app, Status::error("the demo palette is too small for a nine-slice"));
+      break;
+    }
+    // The whole thirteen-tile set in one selection: the 3x3 nine-slice at the palette's top-left
+    // corner, and a 2x2 block of inner corners beside it
+    if (palette.width < 6)
+    {
+      report(app, Status::error("the demo palette is too narrow for a nine-slice and inner corners"));
+      break;
+    }
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (int y = 0; y < 3; ++y)
+    {
+      for (int x = 0; x < 3; ++x)
+      {
+        app.selection.set(static_cast<level::TileIndex>(y * palette.width + x), true);
+      }
+    }
+    for (int y = 0; y < 2; ++y)
+    {
+      for (int x = 4; x < 6; ++x)
+      {
+        app.selection.set(static_cast<level::TileIndex>(y * palette.width + x), true);
+      }
+    }
+    level::Grid<level::TileRef> layout{app.memory.frame};
+    if (!palette_layout(app, layout) or layout.extents != level::Extents{6, 3})
+    {
+      report(app, Status::error("the palette selection is not the two blocks"));
+      break;
+    }
+    level::AutoTerrain& terrain = lv.auto_tiles.terrains[add_terrain(lv.auto_tiles, *lv.arena, "demo_path")];
+    app.terrain = level::find_terrain(lv.auto_tiles, "demo_path");
+    if (level::learn_from_layout(terrain, layout) != 13)
+    {
+      report(app, Status::error("the terrain did not take all thirteen tiles of the palette selection"));
+      break;
+    }
+    // The inner corners came from the 2x2 block, not the nine-slice
+    const auto inner =
+      static_cast<level::NeighborMask>(level::kAllNeighbors & ~level::mask_of(level::Direction::kSouthEast));
+    if (
+      level::resolve(terrain, inner) !=
+      level::TileRef{static_cast<level::TileSetId>(app.tileset), static_cast<level::TileIndex>(palette.width + 5)})
+    {
+      report(app, Status::error("the inner corner did not come from the 2x2 block"));
+      break;
+    }
+    app.selection.clear();
+
+    auto& grid = level::plane<level::TileGrid>(lv.layers[layer]);
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    const auto background =
+      level::TileRef{tileset, static_cast<level::TileIndex>(lv.tilesets[app.tileset].tiles.size() - 1)};
+    grid.fill(background);
+    app.paint.tile = level::resolve(terrain, level::kAllNeighbors);
+    if (level::terrain_of(lv.auto_tiles, app.paint.tile) != app.terrain)
+    {
+      report(app, Status::error("the terrain's middle tile does not belong to it"));
+      break;
+    }
+    const level::Cell painted{grid.width() / 2, grid.height() / 2};
+    // Through the same entry point the Auto tool's strokes use, so the dispatch is covered too
+    app.tool = Tool::kAutoTile;
+    auto_tile_stroke(app, layer, &painted, 1);
+    const AutoTileStatus& result = app.auto_tile_status;
+    if (!result.terrain or result.name != terrain.name)
+    {
+      report(app, Status::error("the Auto tool did not paint with the tile's terrain"));
+      break;
+    }
+    if (result.trouble != 0 or result.cells != 9)
+    {
+      report(app, Status::error("painting one cell of the terrain did not tile the ring around it"));
+      break;
+    }
+    for (int y = 0; y < 3; ++y)
+    {
+      for (int x = 0; x < 3; ++x)
+      {
+        // The ring is the nine-slice block (the inner corners sit where the terrain wraps, which
+        // one painted cell never does)
+        if (grid.at(painted.x - 1 + x, painted.y - 1 + y) != layout.at(x, y))
+        {
+          report(app, Status::error("the terrain's border does not match the palette block it came from"));
+        }
+      }
+    }
+    // A tile of no terrain leaves the Auto tool with only the WFC fallback
+    app.paint.tile = background;
+    if (auto_tile_terrain(app) != level::kNoTerrain)
+    {
+      report(app, Status::error("the background tile should belong to no terrain"));
+    }
+    break;
+  }
+  case 24:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -935,7 +1083,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 23:
+  case 25:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

@@ -421,3 +421,233 @@ TEST_F(LevelModel, RemovingSeasonsKeepsAtLeastOne)
   EXPECT_EQ(level.seasons[0].name, std::string_view{"winter"});
   EXPECT_DEATH(remove_season(level, 0), "at least one season");
 }
+
+TEST_F(LevelModel, AutoTileRulesFromANineSliceLayout)
+{
+  AutoTileRules rules{arena};
+  const TerrainId id = add_terrain(rules, arena, "path");
+  ASSERT_EQ(id, 0U);
+  AutoTerrain& path = rules.terrains[id];
+  // The nine tiles of a large patch of path: corners, edges, middle
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{3, 3}, kEmptyTile);
+  for (int y = 0; y < 3; ++y)
+  {
+    for (int x = 0; x < 3; ++x)
+    {
+      layout.at(x, y) = TileRef{0, static_cast<TileIndex>(y * 3 + x)};
+    }
+  }
+  EXPECT_EQ(learn_from_layout(path, layout), 9U);
+  ASSERT_EQ(path.variants.size(), 9U);
+  // The middle tile is surrounded; the edges and outer corners are not
+  EXPECT_EQ(resolve(path, kAllNeighbors), (TileRef{0, 4}));
+  EXPECT_EQ(
+    resolve(path, mask_of(Direction::kEast) | mask_of(Direction::kSouth) | mask_of(Direction::kSouthEast)),
+    (TileRef{0, 0}));
+  EXPECT_EQ(
+    resolve(
+      path,
+      mask_of(Direction::kEast) | mask_of(Direction::kWest) | mask_of(Direction::kSouth) |
+        mask_of(Direction::kSouthEast) | mask_of(Direction::kSouthWest)),
+    (TileRef{0, 1}));
+  EXPECT_EQ(
+    resolve(path, mask_of(Direction::kWest) | mask_of(Direction::kNorth) | mask_of(Direction::kNorthWest)),
+    (TileRef{0, 8}));
+  // A pattern no tile covers falls back to the nearest one rather than leaving the cell empty
+  EXPECT_FALSE(resolve(path, kNoNeighbors).empty());
+  EXPECT_EQ(terrain_of(rules, TileRef{0, 4}), id);
+  EXPECT_EQ(terrain_of(rules, TileRef{0, 40}), kNoTerrain);
+  EXPECT_EQ(terrain_of(rules, kEmptyTile), kNoTerrain);
+}
+
+TEST_F(LevelModel, AutoTileInnerCornersNeedTheBlobNeighborhood)
+{
+  AutoTileRules rules{arena};
+  AutoTerrain& terrain = rules.terrains[add_terrain(rules, arena, "water")];
+  Grid<TileRef> inner{arena};
+  inner.assign(Extents{2, 2}, kEmptyTile);
+  inner.at(0, 0) = TileRef{0, 10};
+  inner.at(1, 0) = TileRef{0, 11};
+  inner.at(0, 1) = TileRef{0, 12};
+  inner.at(1, 1) = TileRef{0, 13};
+
+  EXPECT_EQ(learn_from_layout(terrain, inner), 4U);
+  // Surrounded except at one corner: the one the tile sits at in the block
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kNorthWest))), (TileRef{0, 10}));
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kSouthEast))), (TileRef{0, 13}));
+
+  // Side-only tiling cannot tell them apart, so it refuses the block instead of overwriting one slot
+  AutoTerrain& sides = rules.terrains[add_terrain(rules, arena, "road")];
+  sides.neighborhood = Neighborhood::kSides;
+  EXPECT_EQ(learn_from_layout(sides, inner), 0U);
+  EXPECT_TRUE(sides.variants.empty());
+}
+
+TEST_F(LevelModel, AutoTileNeighborhoodsDistinguishTheExpectedPatterns)
+{
+  // Corner bits only count where both of the corner's sides are terrain too
+  EXPECT_EQ(reduce(kAllNeighbors, Neighborhood::kSides), kSideNeighbors);
+  EXPECT_EQ(reduce(kAllNeighbors, Neighborhood::kBlob), kAllNeighbors);
+  EXPECT_EQ(reduce(mask_of(Direction::kNorthEast), Neighborhood::kBlob), kNoNeighbors);
+  EXPECT_EQ(
+    reduce(
+      mask_of(Direction::kNorth) | mask_of(Direction::kEast) | mask_of(Direction::kNorthEast), Neighborhood::kBlob),
+    mask_of(Direction::kNorth) | mask_of(Direction::kEast) | mask_of(Direction::kNorthEast));
+  EXPECT_EQ(patterns(Neighborhood::kSides, arena).size(), 16U);
+  EXPECT_EQ(patterns(Neighborhood::kBlob, arena).size(), 47U);
+
+  // A side-only terrain stores its tiles under the reduced patterns, so a nine-slice fills all 16
+  AutoTileRules rules{arena};
+  AutoTerrain& terrain = rules.terrains[add_terrain(rules, arena, "sides")];
+  terrain.neighborhood = Neighborhood::kSides;
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{3, 3}, kEmptyTile);
+  for (int i = 0; i < 9; ++i)
+  {
+    layout.values[i] = TileRef{0, static_cast<TileIndex>(i)};
+  }
+  EXPECT_EQ(learn_from_layout(terrain, layout), 9U);
+  // The nine tiles of the block cover nine of the sixteen side patterns; the rest come from the
+  // nearest-pattern fallback
+  EXPECT_EQ(terrain.variants.size(), 9U);
+  for (const NeighborMask mask : patterns(Neighborhood::kSides, arena))
+  {
+    EXPECT_FALSE(resolve(terrain, mask).empty()) << "pattern " << static_cast<int>(mask);
+  }
+}
+
+TEST_F(LevelModel, AutoTileVariantsAreSetRemovedAndFollowTilesets)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {4, 4}});
+  add_tileset(level, "first");
+  add_tileset(level, "second");
+  AutoTerrain& terrain = level.auto_tiles.terrains[add_terrain(level.auto_tiles, arena, "grass")];
+  set_variant(terrain, kAllNeighbors, TileRef{1, 3});
+  set_variant(terrain, kSideNeighbors, TileRef{0, 5});
+  ASSERT_EQ(terrain.variants.size(), 2U);
+  ASSERT_NE(find_variant(terrain, kAllNeighbors), nullptr);
+  EXPECT_EQ(find_variant(terrain, kAllNeighbors)->tile, (TileRef{1, 3}));
+  // Setting the same pattern again replaces the tile; an empty tile clears the slot
+  set_variant(terrain, kAllNeighbors, TileRef{1, 4});
+  EXPECT_EQ(find_variant(terrain, kAllNeighbors)->tile, (TileRef{1, 4}));
+  set_variant(terrain, kSideNeighbors, kEmptyTile);
+  EXPECT_EQ(find_variant(terrain, kSideNeighbors), nullptr);
+
+  // Removing a tileset drops the variants that used it and renumbers the rest
+  set_variant(terrain, kNoNeighbors, TileRef{0, 2});
+  remove_tileset(level, 0);
+  ASSERT_EQ(terrain.variants.size(), 1U);
+  EXPECT_EQ(terrain.variants[0].tile, (TileRef{0, 4}));
+
+  remove_terrain(level.auto_tiles, 0);
+  EXPECT_TRUE(level.auto_tiles.terrains.empty());
+}
+
+TEST_F(LevelModel, AutoTileTakesTheWholeThirteenTileSetFromOneSelection)
+{
+  AutoTileRules rules{arena};
+  AutoTerrain& terrain = rules.terrains[add_terrain(rules, arena, "path")];
+  // The nine-slice, the inner corners beside it, and two further tiles: alternative middles
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{5, 3}, kEmptyTile);
+  for (int y = 0; y < 3; ++y)
+  {
+    for (int x = 0; x < 3; ++x)
+    {
+      layout.at(x, y) = TileRef{0, static_cast<TileIndex>(y * 3 + x)};
+    }
+  }
+  layout.at(3, 0) = TileRef{0, 9};
+  layout.at(4, 0) = TileRef{0, 10};
+  layout.at(3, 1) = TileRef{0, 11};
+  layout.at(4, 1) = TileRef{0, 12};
+  layout.at(3, 2) = TileRef{0, 13};
+  layout.at(4, 2) = TileRef{0, 14};
+
+  EXPECT_EQ(learn_from_layout(terrain, layout), 15U);
+  // The nine-slice's edges and outer corners
+  EXPECT_EQ(
+    resolve(terrain, mask_of(Direction::kEast) | mask_of(Direction::kSouth) | mask_of(Direction::kSouthEast)),
+    (TileRef{0, 0}));
+  EXPECT_EQ(
+    resolve(terrain, mask_of(Direction::kWest) | mask_of(Direction::kNorth) | mask_of(Direction::kNorthWest)),
+    (TileRef{0, 8}));
+  // The 2x2 block beside it: surrounded except at the corner the tile sits at
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kNorthWest))), (TileRef{0, 9}));
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kNorthEast))), (TileRef{0, 10}));
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kSouthWest))), (TileRef{0, 11}));
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kSouthEast))), (TileRef{0, 12}));
+  // What is left over joins the middle's pool, which a key picks between
+  EXPECT_EQ(variant_count(terrain, kAllNeighbors), 3U);
+  bool all_three = true;
+  for (const TileIndex expected : {TileIndex{4}, TileIndex{13}, TileIndex{14}})
+  {
+    bool found = false;
+    for (std::uint64_t key = 0; key < 3; ++key)
+    {
+      found = found or resolve(terrain, kAllNeighbors, key) == TileRef{0, expected};
+    }
+    all_three = all_three and found;
+  }
+  EXPECT_TRUE(all_three);
+  // The same key always gives the same tile
+  EXPECT_EQ(resolve(terrain, kAllNeighbors, 7), resolve(terrain, kAllNeighbors, 7));
+  // Taking the blocks one at a time comes to the same thing
+  AutoTerrain& twice = rules.terrains[add_terrain(rules, arena, "twice")];
+  Grid<TileRef> nine{arena};
+  nine.assign(Extents{3, 3}, kEmptyTile);
+  Grid<TileRef> inner{arena};
+  inner.assign(Extents{2, 2}, kEmptyTile);
+  for (int i = 0; i < 9; ++i)
+  {
+    nine.values[i] = TileRef{0, static_cast<TileIndex>(i)};
+  }
+  for (int i = 0; i < 4; ++i)
+  {
+    inner.values[i] = TileRef{0, static_cast<TileIndex>(9 + i)};
+  }
+  EXPECT_EQ(learn_from_layout(twice, nine), 9U);
+  EXPECT_EQ(learn_from_layout(twice, inner), 4U);
+  EXPECT_EQ(twice.variants.size(), 13U);
+  EXPECT_EQ(
+    resolve(twice, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kSouthEast))), (TileRef{0, 12}));
+}
+
+TEST_F(LevelModel, AutoTileAnswersAMissingPatternWithTheRightEdge)
+{
+  AutoTileRules rules{arena};
+  AutoTerrain& terrain = rules.terrains[add_terrain(rules, arena, "path")];
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{3, 3}, kEmptyTile);
+  for (int i = 0; i < 9; ++i)
+  {
+    layout.values[i] = TileRef{0, static_cast<TileIndex>(i)};
+  }
+  learn_from_layout(terrain, layout);
+  // A nine-slice has no tile for "surrounded but for one corner": the sides decide, so the middle
+  // answers, never an edge tile that happens to share corners
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kNorthWest))), (TileRef{0, 4}));
+  // A north edge missing a far corner is still the north edge
+  const NeighborMask north_edge = mask_of(Direction::kEast) | mask_of(Direction::kWest) | mask_of(Direction::kSouth) |
+    mask_of(Direction::kSouthEast) | mask_of(Direction::kSouthWest);
+  EXPECT_EQ(resolve(terrain, static_cast<NeighborMask>(north_edge & ~mask_of(Direction::kSouthWest))), (TileRef{0, 1}));
+  // With the inner corners added, that first pattern has its own tile
+  Grid<TileRef> inner{arena};
+  inner.assign(Extents{2, 2}, kEmptyTile);
+  for (int i = 0; i < 4; ++i)
+  {
+    inner.values[i] = TileRef{0, static_cast<TileIndex>(9 + i)};
+  }
+  learn_from_layout(terrain, inner);
+  EXPECT_EQ(
+    resolve(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(Direction::kNorthWest))), (TileRef{0, 9}));
+}

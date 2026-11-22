@@ -5,7 +5,8 @@
  *
  * The map canvas: navigation (pan with middle mouse / space+drag / pan tool / arrow keys; zoom with
  * the wheel around the cursor), drawing (tiles from atlases when zoomed in, per-layer overlay
- * textures for other kinds and when zoomed out), objects, and the editing tools.
+ * textures for other kinds and when zoomed out), objects, and the editing tools (including
+ * auto-tiled painting, which re-fills the band around what was painted from the adjacency rules).
  */
 
 // C++ Standard Library
@@ -18,6 +19,7 @@
 // LVL
 #include "internal.hpp"
 #include "lvl/core/logging.hpp"
+#include "lvl/procgen/autotile.hpp"
 #include "lvl/render/preview.hpp"
 
 namespace lvl::editor
@@ -172,30 +174,34 @@ void apply_cell(App& app, Layer& layer, Cell c, bool erase, float weight)
   }
 }
 
-/// Applies the brush (radius, or a tile stamp) centered on a cell
-void apply_brush(App& app, Cell center, bool erase)
+/// Applies the brush: a tile stamp with its top-left corner at the cell, or the radius brush
+/// (<code>touched</code>, if given, collects the cells written, for auto-tiling)
+void apply_brush(
+  App& app,
+  Cell center,
+  bool erase,
+  const Grid<TileRef>* stamp = nullptr,
+  memory::Vector<Cell>* touched = nullptr)
 {
   Layer& layer = app.level->layers[app.layer];
-  if (layer.kind == LayerKind::kTiles and !erase and (app.paint.stamp_width > 1 or app.paint.stamp_height > 1))
+  if (layer.kind == LayerKind::kTiles and !erase and stamp != nullptr and stamp->size() > 1)
   {
-    // Stamp a rectangle of tiles from the palette, top-left at the cursor
-    const TileRef base = app.paint.tile;
-    if (base.tileset >= app.level->tilesets.size())
-    {
-      return;
-    }
-    const TileSet& ts = app.level->tilesets[base.tileset];
-    const int columns = std::max(1, slice_grid(ts.slice, ts.image_width, ts.image_height).width);
+    // Stamp the tiles as the palette lays them out, keeping their relative positions; a cell the
+    // stamp leaves empty (a hole in the palette selection) keeps what is under it
     auto& g = plane<TileGrid>(layer);
-    for (int dy = 0; dy < app.paint.stamp_height; ++dy)
+    for (int dy = 0; dy < stamp->height(); ++dy)
     {
-      for (int dx = 0; dx < app.paint.stamp_width; ++dx)
+      for (int dx = 0; dx < stamp->width(); ++dx)
       {
+        const TileRef tile = stamp->at(dx, dy);
         const Cell c{center.x + dx, center.y + dy};
-        const int index = static_cast<int>(base.tile) + dy * columns + dx;
-        if (g.extents.contains(c) and index < static_cast<int>(ts.tiles.size()))
+        if (!tile.empty() and g.extents.contains(c))
         {
-          g.at(c) = TileRef{base.tileset, static_cast<TileIndex>(index)};
+          g.at(c) = tile;
+          if (touched != nullptr)
+          {
+            touched->push_back(c);
+          }
         }
       }
     }
@@ -213,13 +219,24 @@ void apply_brush(App& app, Cell center, bool erase)
       }
       // Scalar brushes fall off towards the rim
       const float weight = (r == 0) ? 1.0F : std::clamp(1.0F - d / (static_cast<float>(r) + 1.0F), 0.0F, 1.0F);
-      apply_cell(app, layer, Cell{center.x + dx, center.y + dy}, erase, weight);
+      const Cell c{center.x + dx, center.y + dy};
+      apply_cell(app, layer, c, erase, weight);
+      if (touched != nullptr and extents(layer).contains(c))
+      {
+        touched->push_back(c);
+      }
     }
   }
 }
 
 /// Applies the brush along the line from a to b (so fast strokes leave no gaps)
-void apply_line(App& app, Cell a, Cell b, bool erase)
+void apply_line(
+  App& app,
+  Cell a,
+  Cell b,
+  bool erase,
+  const Grid<TileRef>* stamp = nullptr,
+  memory::Vector<Cell>* touched = nullptr)
 {
   const int steps = std::max(std::abs(b.x - a.x), std::abs(b.y - a.y));
   for (int i = (a == b) ? 0 : 1; i <= steps; ++i)
@@ -228,7 +245,9 @@ void apply_line(App& app, Cell a, Cell b, bool erase)
     apply_brush(
       app,
       Cell{static_cast<int>(std::lround(a.x + (b.x - a.x) * t)), static_cast<int>(std::lround(a.y + (b.y - a.y) * t))},
-      erase);
+      erase,
+      stamp,
+      touched);
   }
 }
 
@@ -320,6 +339,9 @@ void eyedrop(App& app, Cell c)
       app.paint.stamp_height = 1;
       app.tileset = t.tileset;
       app.tile = t.tile;
+      // A multi-tile selection would otherwise keep being what painting writes
+      app.selection.clear();
+      app.selection.retarget(t.tileset);
     }
     break;
   }
@@ -609,27 +631,52 @@ void handle_tools(App& app, const Canvas& cv, bool hovered)
     }
     break;
   case Tool::kPaint:
+  case Tool::kAutoTile:
   case Tool::kErase: {
+    const bool erase = (tool == Tool::kErase);
+    const bool on_tiles = layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles;
+    // Auto-tiling needs the cells the stroke wrote, to re-fill the band around them
+    const bool refill = (tool == Tool::kAutoTile) and on_tiles;
+    // Which rules the Auto tool paints with: the terrain the tile belongs to, or else the WFC
+    // fallback. The toolbar says which, and the status line reports what the stroke did
+    const TerrainId terrain = refill ? auto_tile_terrain(app) : kNoTerrain;
+    // The tiles a stamp writes (the palette selection's layout, or the paint stamp), built once.
+    // A terrain lays down its own tiles, so there the stroke only marks the cells it covers --
+    // stamping the selection (the terrain's own tiles, as often as not) would fight it
+    memory::Scope paint_scope{app.memory.frame};
+    Grid<TileRef> stamp{app.memory.frame};
+    const Grid<TileRef>* tiles = nullptr;
+    if (!erase and on_tiles and terrain == kNoTerrain and (pressed or stroke.active))
+    {
+      tiles = paint_stamp(app, stamp) ? &stamp : nullptr;
+    }
+    auto painted = memory::make_vector<Cell>(app.memory.frame);
+    memory::Vector<Cell>* touched = refill ? &painted : nullptr;
     if (pressed and editable)
     {
-      app.undo.snapshot(lv, app.layer, tool == Tool::kPaint ? "Paint" : "Erase");
+      static constexpr const char* kLabels[] = {"Paint", "Auto-tile", "Erase"};
+      app.undo.snapshot(lv, app.layer, kLabels[erase ? 2 : (refill ? 1 : 0)]);
       stroke.active = true;
       stroke.last = cell;
-      apply_line(app, cell, cell, tool == Tool::kErase);
+      apply_line(app, cell, cell, erase, tiles, touched);
       invalidate_layer(app, app.layer);
       app.modified = true;
     }
     else if (stroke.active and down and cell != stroke.last)
     {
-      apply_line(app, stroke.last, cell, tool == Tool::kErase);
+      apply_line(app, stroke.last, cell, erase, tiles, touched);
       stroke.last = cell;
       invalidate_layer(app, app.layer);
     }
     else if (stroke.active and down and is_scalar(lv.layers[app.layer].kind))
     {
       // Scalar brushes keep applying while held still
-      apply_brush(app, cell, tool == Tool::kErase);
+      apply_brush(app, cell, erase);
       invalidate_layer(app, app.layer);
+    }
+    if (!painted.empty())
+    {
+      auto_tile_stroke(app, app.layer, painted.data(), painted.size());
     }
     break;
   }
@@ -848,19 +895,41 @@ void handle_tools(App& app, const Canvas& cv, bool hovered)
   }
 
   // Hover feedback: brush footprint
-  if (hovered and lv.settings.extents.contains(cell) and (tool == Tool::kPaint or tool == Tool::kErase))
+  if (
+    hovered and lv.settings.extents.contains(cell) and
+    (tool == Tool::kPaint or tool == Tool::kAutoTile or tool == Tool::kErase))
   {
-    const int r =
-      (layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and tool == Tool::kPaint) ? 0 : app.brush.radius;
-    const int w = (layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and tool == Tool::kPaint)
-      ? app.paint.stamp_width
-      : 1;
-    const int h = (layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and tool == Tool::kPaint)
-      ? app.paint.stamp_height
-      : 1;
+    const bool stamping =
+      layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and (tool == Tool::kPaint or tool == Tool::kAutoTile);
+    const int r = stamping ? 0 : app.brush.radius;
+    const Extents footprint = stamping ? stamp_extents(app) : Extents{1, 1};
+    const ImU32 color = editable ? IM_COL32(255, 255, 255, 200) : IM_COL32(255, 80, 80, 200);
     const ImVec2 a = cv.to_screen(app.view, static_cast<float>(cell.x - r), static_cast<float>(cell.y - r));
-    const ImVec2 b = cv.to_screen(app.view, static_cast<float>(cell.x + r + w), static_cast<float>(cell.y + r + h));
-    cv.draw->AddRect(a, b, editable ? IM_COL32(255, 255, 255, 200) : IM_COL32(255, 80, 80, 200), 0, 0, 1.5F);
+    const ImVec2 b = cv.to_screen(
+      app.view, static_cast<float>(cell.x + r + footprint.width), static_cast<float>(cell.y + r + footprint.height));
+    cv.draw->AddRect(a, b, color, 0, 0, 1.5F);
+    // A multi-tile stamp can have holes (the palette selection's): outline the cells it writes
+    SelectionBounds bounds;
+    if (stamping and app.selection.count >= 2 and selection_bounds(app, bounds))
+    {
+      for (int y = 0; y < bounds.height; ++y)
+      {
+        for (int x = 0; x < bounds.width; ++x)
+        {
+          const auto tile = static_cast<TileIndex>((bounds.y + y) * bounds.columns + (bounds.x + x));
+          if (app.selection.has(tile))
+          {
+            cv.draw->AddRect(
+              cv.to_screen(app.view, static_cast<float>(cell.x + x), static_cast<float>(cell.y + y)),
+              cv.to_screen(app.view, static_cast<float>(cell.x + x + 1), static_cast<float>(cell.y + y + 1)),
+              color,
+              0,
+              0,
+              1.0F);
+          }
+        }
+      }
+    }
   }
 }
 
@@ -875,6 +944,11 @@ void toolbar(App& app)
   static constexpr Button kButtons[] = {
     {Tool::kPan, "Pan", "Pan (H; or middle mouse / Space+drag)"},
     {Tool::kPaint, "Paint", "Paint (B)"},
+    {Tool::kAutoTile,
+     "Auto",
+     "Auto-tile (T): paints the tile as a shape's center; the tile adjacency rules fill in the edges "
+     "and corners around it (water gets its shore, a path its sides), and painting more centers "
+     "re-fills around the larger shape"},
     {Tool::kErase, "Erase", "Erase (E)"},
     {Tool::kFill, "Fill", "Flood fill (G)"},
     {Tool::kRect, "Rect", "Rectangle fill (R; Alt to erase)"},
@@ -913,6 +987,53 @@ void toolbar(App& app)
   ImGui::SetNextItemWidth(80.0F);
   ImGui::SliderInt("Radius", &app.brush.radius, 0, 32);
   const Level& lv = *app.level;
+  if (app.tool == Tool::kAutoTile)
+  {
+    // Which of the two kinds of rules this tile paints with, so it is plain which tab to edit
+    const TerrainId terrain = terrain_of(lv.auto_tiles, app.paint.tile);
+    ImGui::SameLine();
+    if (terrain != kNoTerrain)
+    {
+      ImGui::Text("terrain '%s'", lv.auto_tiles.terrains[terrain].name.c_str());
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("This tile belongs to an auto-tiling terrain, so painting lays down its middle and tiles "
+                          "the border around it -- edges and inner/outer corners. Edit it in View > Tile adjacency "
+                          "rules > Auto-tiling.");
+      }
+    }
+    else
+    {
+      ImGui::SetNextItemWidth(80.0F);
+      ImGui::SliderInt("Refill", &app.auto_tile.radius, 1, 8);
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("How many cells around what is painted the WFC adjacency rules may re-fill");
+      }
+      // Auto-tiling has nothing to go on unless the tile being painted is in the rules
+      const bool known = find_tile(lv.wfc, app.paint.tile) < lv.wfc.tiles.size();
+      ImGui::SameLine();
+      if (!known)
+      {
+        ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "no rules for this tile");
+        if (ImGui::IsItemHovered())
+        {
+          ImGui::SetTooltip("The tile being painted is in neither kind of tile adjacency rules, so nothing can be "
+                            "filled in around it. Add it in View > Tile adjacency rules.");
+        }
+      }
+      else
+      {
+        ImGui::TextDisabled("WFC rules");
+        if (ImGui::IsItemHovered())
+        {
+          ImGui::SetTooltip("This tile has no auto-tiling terrain, so the WFC adjacency rules are scored against its "
+                            "neighbors instead. Those rules cannot prescribe inner and outer corners: give the tile a "
+                            "terrain under View > Tile adjacency rules > Auto-tiling for that.");
+        }
+      }
+    }
+  }
   if (app.layer < lv.layers.size() and is_scalar(lv.layers[app.layer].kind))
   {
     static constexpr const char* kModes[] = {"Set", "Raise", "Lower", "Smooth", "Flatten"};
@@ -940,6 +1061,45 @@ void toolbar(App& app)
 }
 
 }  // namespace
+
+TerrainId auto_tile_terrain(const App& app) { return terrain_of(app.level->auto_tiles, app.paint.tile); }
+
+void auto_tile_stroke(App& app, std::size_t layer, const Cell* painted, std::size_t count)
+{
+  Level& lv = *app.level;
+  LVL_ASSERT_LT(layer, lv.layers.size());
+  auto& grid = plane<TileGrid>(lv.layers[layer]);
+  const TerrainId terrain = auto_tile_terrain(app);
+  AutoTileStatus status;
+  if (terrain != kNoTerrain)
+  {
+    // The terrain prescribes the tile of every cell it covers, edges and inner/outer corners
+    const auto result = procgen::paint_terrain(lv.auto_tiles, terrain, painted, count, grid, app.memory.frame);
+    status.terrain = true;
+    status.name = lv.auto_tiles.terrains[terrain].name.view();
+    status.cells = result.covered;
+    status.changed = result.changed;
+    status.trouble = result.missing;
+  }
+  else
+  {
+    // No terrain: the WFC rules can still tidy the band against hard constraints
+    const auto result = procgen::autotile(
+      lv.wfc,
+      painted,
+      count,
+      procgen::AutoTileParams{.radius = app.auto_tile.radius, .iterations = app.auto_tile.iterations},
+      grid,
+      app.memory.frame);
+    status.terrain = false;
+    status.name = "WFC rules";
+    status.cells = result.considered;
+    status.changed = result.changed;
+    status.trouble = result.unresolved;
+  }
+  app.auto_tile_status = status;
+  invalidate_layer(app, layer);
+}
 
 void viewport_window(App& app)
 {
@@ -1068,6 +1228,24 @@ void viewport_window(App& app)
       ImGui::SameLine();
     }
     ImGui::Text("layer '%s' (%s)%s", layer.name.c_str(), enum_name(layer.kind).data(), layer.locked ? " [locked]" : "");
+    const AutoTileStatus& status = app.auto_tile_status;
+    if (app.tool == Tool::kAutoTile and (status.cells > 0 or status.trouble > 0))
+    {
+      ImGui::SameLine();
+      if (status.trouble > 0)
+      {
+        ImGui::TextDisabled(
+          "| %s: %zu of %zu cells tiled, %zu the rules cannot fill",
+          status.name.c_str(),
+          status.changed,
+          status.cells,
+          status.trouble);
+      }
+      else
+      {
+        ImGui::TextDisabled("| %s: %zu of %zu cells tiled", status.name.c_str(), status.changed, status.cells);
+      }
+    }
   }
   ImGui::End();
 }
