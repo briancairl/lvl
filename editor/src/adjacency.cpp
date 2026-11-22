@@ -448,10 +448,24 @@ bool pattern_slot(App& app, AutoTerrain& terrain, NeighborMask mask, float size)
     draw->AddRectFilled(lo, hi, (variant == nullptr) ? IM_COL32(40, 40, 40, 255) : IM_COL32(90, 90, 90, 255));
   }
   draw_pattern(draw, lo, hi, mask, terrain.neighborhood);
+  // A pattern can hold several tiles, which a painted area scatters between
+  const std::size_t pool = variant_count(terrain, mask);
+  if (pool > 1)
+  {
+    draw->AddText(
+      ImVec2{lo.x + 2, hi.y - ImGui::GetTextLineHeight()}, IM_COL32(255, 255, 255, 220), format<8>("x%zu", pool));
+  }
   const bool can_set = !app.paint.tile.empty() and app.paint.tile.tileset < app.level->tilesets.size();
   if (ImGui::IsItemClicked(ImGuiMouseButton_Left) and can_set)
   {
-    set_variant(terrain, mask, app.paint.tile);
+    if (ImGui::GetIO().KeyCtrl)
+    {
+      add_variant(terrain, mask, app.paint.tile);
+    }
+    else
+    {
+      set_variant(terrain, mask, app.paint.tile);
+    }
     changed = true;
   }
   if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -481,9 +495,11 @@ bool pattern_slot(App& app, AutoTerrain& terrain, NeighborMask mask, float size)
     }
     where.data[at] = '\0';
     ImGui::SetTooltip(
-      "Terrain continues: %s\n%s\nClick to use the palette tile, right-click to clear",
+      "Terrain continues: %s\n%s\nClick to use the palette tile, ctrl+click to add another to the "
+      "pool, right-click to clear",
       where.empty() ? "nowhere (a lone cell)" : where.c_str(),
-      (variant == nullptr) ? "No tile: the nearest pattern's tile is used" : "");
+      (variant == nullptr) ? "No tile: the nearest pattern's tile is used"
+                           : format<64>("%zu tile(s); a cell picks by position", pool));
   }
   ImGui::PopID();
   return changed;
@@ -542,7 +558,8 @@ bool terrain_list(App& app)
 bool terrain_layout_section(App& app, AutoTerrain& terrain)
 {
   ImGui::SeparatorText("From the palette layout");
-  ImGui::TextDisabled("Select a 3x3 block (edges and outer corners), a 2x2 block (inner corners) or one tile");
+  ImGui::TextDisabled("Select the 3x3 block of edges and outer corners, the 2x2 block of inner corners beside\n"
+                      "it, or both at once; tiles selected with them become alternative middles");
   if (selection_size(app) < 2)
   {
     if (selection_size(app) == 1)
@@ -554,19 +571,22 @@ bool terrain_layout_section(App& app, AutoTerrain& terrain)
   SelectionBounds bounds;
   selection_bounds(app, bounds);
   selection_preview(app, 24.0F, 4);
-  const bool nine = (bounds.width == 3 and bounds.height == 3);
-  const bool inner = (bounds.width == 2 and bounds.height == 2);
-  const bool blob_needed = inner and terrain.neighborhood == Neighborhood::kSides;
+  const bool inner_only = (bounds.width == 2 and bounds.height == 2);
+  const bool blob_needed = inner_only and terrain.neighborhood == Neighborhood::kSides;
   bool changed = false;
-  ImGui::BeginDisabled((!nine and !inner) or blob_needed);
-  if (ImGui::Button(format<64>("Take the %d x %d block", bounds.width, bounds.height)))
+  ImGui::BeginDisabled(blob_needed);
+  if (ImGui::Button(format<64>("Take these %zu tile(s)", selection_size(app))))
   {
     Grid<TileRef> layout{app.memory.frame};
     if (palette_layout(app, layout))
     {
       const std::size_t written = learn_from_layout(terrain, layout);
-      LVL_LOG_INFO_FMT("Terrain '%s': %zu tile(s) from a palette block", terrain.name.c_str(), written);
+      LVL_LOG_INFO_FMT("Terrain '%s': %zu tile(s) from the palette", terrain.name.c_str(), written);
       changed = written > 0;
+      if (written == 0)
+      {
+        report(app, Status::error("the selected tiles hold no 3x3 or 2x2 block to read a terrain from"));
+      }
     }
   }
   ImGui::EndDisabled();
@@ -574,10 +594,6 @@ bool terrain_layout_section(App& app, AutoTerrain& terrain)
   if (blob_needed)
   {
     ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "inner corners need the blob neighborhood");
-  }
-  else if (!nine and !inner)
-  {
-    ImGui::TextDisabled("a 3x3 or 2x2 block, please");
   }
   ImGui::SameLine();
   if (deselect_all_button(app))

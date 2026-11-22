@@ -13,6 +13,7 @@
 #include <span>
 
 // LVL
+#include "lvl/core/random.hpp"
 #include "lvl/procgen/autotile.hpp"
 
 namespace lvl::procgen
@@ -360,13 +361,23 @@ TerrainPaintResult paint_terrain(
   }
   // A cell is core where the user painted, or where it already holds the terrain's middle; with no
   // border to grow, every one of the terrain's tiles is core
-  const TileRef middle = resolve(t, level::kAllNeighbors);
+  // Any of the fully-surrounded tiles marks a cell as core
+  const auto is_middle = [&t](TileRef tile) {
+    for (const level::AutoVariant& v : t.variants)
+    {
+      if (v.mask == level::kAllNeighbors and v.tile == tile)
+      {
+        return true;
+      }
+    }
+    return false;
+  };
   memory::Scope scope{scratch};
   auto core = memory::make_vector<std::uint8_t>(scratch, window.extents.count(), std::uint8_t{0});
   for (std::size_t i = 0; i < window.extents.count(); ++i)
   {
     const TileRef tile = tiles.at(window.cell(i));
-    const bool mine = (expand > 0) ? (!middle.empty() and tile == middle) : (terrain_of(rules, tile) == terrain);
+    const bool mine = (expand > 0) ? is_middle(tile) : (terrain_of(rules, tile) == terrain);
     core[i] = mine ? 1U : 0U;
   }
   for (std::size_t i = 0; i < count; ++i)
@@ -422,7 +433,8 @@ TerrainPaintResult paint_terrain(
             mask = static_cast<NeighborMask>(mask | level::mask_of(d));
           }
         }
-        const TileRef tile = resolve(t, mask);
+        // A pattern with several tiles picks by cell, so repainting an area never re-rolls it
+        const TileRef tile = resolve(t, mask, random::hash(terrain, c.x, c.y));
         if (tile.empty())
         {
           ++result.missing;

@@ -6,6 +6,7 @@
 
 // C++ Standard Library
 #include <algorithm>
+#include <array>
 #include <bit>
 
 // LVL
@@ -16,11 +17,20 @@ namespace lvl::level
 namespace
 {
 
-/// Agreement between two patterns: how many of the eight neighbors they say the same thing about
-int agreement(NeighborMask a, NeighborMask b)
+/// Bits two patterns agree on
+int same(NeighborMask a, NeighborMask b, NeighborMask of)
 {
-  return static_cast<int>(std::popcount(static_cast<unsigned>(static_cast<NeighborMask>(~(a ^ b)))));
+  return static_cast<int>(std::popcount(static_cast<unsigned>(static_cast<NeighborMask>(~(a ^ b)) & of)));
 }
+
+/**
+ * @brief How well two patterns agree, sides before corners
+ *
+ * The sides are what place a tile -- a north edge is a north edge whatever the corners do -- so a
+ * side counts for more than every corner together. Without that, a set that has no tile for a
+ * pattern could answer it with a tile meant for another edge that happens to share corners.
+ */
+int agreement(NeighborMask a, NeighborMask b) { return same(a, b, kSideNeighbors) * 8 + same(a, b, kCornerNeighbors); }
 
 /// Whether the terrain reaches <code>offset</code> cells along one axis of a nine-slice block
 bool within(int coordinate, int size, int offset)
@@ -115,50 +125,81 @@ const AutoVariant* find_variant(const AutoTerrain& terrain, NeighborMask mask)
   return nullptr;
 }
 
+std::size_t variant_count(const AutoTerrain& terrain, NeighborMask mask)
+{
+  const NeighborMask wanted = reduce(mask, terrain.neighborhood);
+  std::size_t count = 0;
+  for (const AutoVariant& v : terrain.variants)
+  {
+    count += (v.mask == wanted) ? 1U : 0U;
+  }
+  return count;
+}
+
 void set_variant(AutoTerrain& terrain, NeighborMask mask, TileRef tile)
 {
   const NeighborMask key = reduce(mask, terrain.neighborhood);
-  const auto itr = std::find_if(
-    terrain.variants.begin(), terrain.variants.end(), [key](const AutoVariant& v) { return v.mask == key; });
+  std::erase_if(terrain.variants, [key](const AutoVariant& v) { return v.mask == key; });
+  if (!tile.empty())
+  {
+    add_variant(terrain, key, tile);
+  }
+}
+
+void add_variant(AutoTerrain& terrain, NeighborMask mask, TileRef tile)
+{
+  const NeighborMask key = reduce(mask, terrain.neighborhood);
   if (tile.empty())
   {
-    if (itr != terrain.variants.end())
-    {
-      terrain.variants.erase(itr);
-    }
     return;
   }
-  if (itr != terrain.variants.end())
+  for (const AutoVariant& v : terrain.variants)
   {
-    itr->tile = tile;
-    return;
+    if (v.mask == key and v.tile == tile)
+    {
+      return;
+    }
   }
   terrain.variants.push_back(AutoVariant{.mask = key, .tile = tile});
-  // Ascending, so the editor's slots and the files list them in a stable order
-  std::sort(terrain.variants.begin(), terrain.variants.end(), [](const AutoVariant& a, const AutoVariant& b) {
+  // By pattern, keeping each pool in the order it was given, so the editor's slots and the files
+  // list them the same way every time
+  std::stable_sort(terrain.variants.begin(), terrain.variants.end(), [](const AutoVariant& a, const AutoVariant& b) {
     return a.mask < b.mask;
   });
 }
 
-TileRef resolve(const AutoTerrain& terrain, NeighborMask mask)
+TileRef resolve(const AutoTerrain& terrain, NeighborMask mask, std::uint64_t key)
 {
   const NeighborMask wanted = reduce(mask, terrain.neighborhood);
-  const AutoVariant* best = nullptr;
-  int best_agreement = -1;
+  // The pattern itself, or the nearest one the terrain has tiles for
+  NeighborMask chosen = wanted;
+  if (find_variant(terrain, wanted) == nullptr)
+  {
+    int best = -1;
+    for (const AutoVariant& v : terrain.variants)
+    {
+      if (const int score = agreement(v.mask, wanted); score > best)
+      {
+        best = score;
+        chosen = v.mask;
+      }
+    }
+    if (best < 0)
+    {
+      return kEmptyTile;
+    }
+  }
+  // One of that pattern's pool, by key, so a cell keeps its tile however often it is repainted
+  const std::size_t count = variant_count(terrain, chosen);
+  std::size_t at = (count < 2) ? 0 : static_cast<std::size_t>(key % count);
   for (const AutoVariant& v : terrain.variants)
   {
-    if (v.mask == wanted)
+    if (v.mask == chosen and at-- == 0)
     {
       return v.tile;
     }
-    // Nothing for this pattern: the nearest one keeps the cell filled
-    if (const int score = agreement(v.mask, wanted); score > best_agreement)
-    {
-      best_agreement = score;
-      best = &v;
-    }
   }
-  return (best == nullptr) ? kEmptyTile : best->tile;
+  return kEmptyTile;
 }
 
 memory::Vector<NeighborMask> patterns(Neighborhood neighborhood, memory::Arena& arena)
@@ -175,51 +216,111 @@ memory::Vector<NeighborMask> patterns(Neighborhood neighborhood, memory::Arena& 
   return out;
 }
 
+namespace
+{
+
+/// Cells a layout may hold for a terrain to be read out of it (a handful of palette tiles)
+constexpr std::size_t kMaxLayoutCells = 1024;
+
+/// Top-left corner of the first fully-filled <code>size</code> x <code>size</code> block not yet taken
+bool find_block(const Grid<TileRef>& layout, const std::uint8_t* taken, int size, Cell& out)
+{
+  const Extents e = layout.extents;
+  for (int y = 0; y + size <= e.height; ++y)
+  {
+    for (int x = 0; x + size <= e.width; ++x)
+    {
+      bool whole = true;
+      for (int dy = 0; dy < size and whole; ++dy)
+      {
+        for (int dx = 0; dx < size and whole; ++dx)
+        {
+          const std::size_t i = e.index(x + dx, y + dy);
+          whole = !layout.values[i].empty() and taken[i] == 0U;
+        }
+      }
+      if (whole)
+      {
+        out = Cell{x, y};
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/// The nine-slice pattern of cell (x, y) of a 3x3 block: a large patch of terrain seen through it
+NeighborMask nine_slice_mask(int x, int y)
+{
+  NeighborMask mask = kNoNeighbors;
+  for (const Direction d : kNeighbors)
+  {
+    const Cell offset = step(Cell{0, 0}, d);
+    if (within(x, 3, offset.x) and within(y, 3, offset.y))
+    {
+      mask = static_cast<NeighborMask>(mask | mask_of(d));
+    }
+  }
+  return mask;
+}
+
+}  // namespace
+
 std::size_t learn_from_layout(AutoTerrain& terrain, const Grid<TileRef>& layout)
 {
   const Extents e = layout.extents;
-  const bool nine_slice = (e.width == 3 and e.height == 3);
-  const bool inner_corners = (e.width == 2 and e.height == 2);
-  const bool middle = (e.width == 1 and e.height == 1);
-  // Side-only tiling has no inner corners to put anywhere
-  if (inner_corners and terrain.neighborhood == Neighborhood::kSides)
+  if (e.count() == 0)
   {
     return 0;
   }
-  if (!nine_slice and !inner_corners and !middle)
+  if (e.count() > kMaxLayoutCells)
   {
     return 0;
   }
-  std::size_t written = 0;
-  for (int y = 0; y < e.height; ++y)
-  {
-    for (int x = 0; x < e.width; ++x)
+  // Which cells a block has already taken (on the stack: a layout is a handful of palette tiles)
+  std::array<std::uint8_t, kMaxLayoutCells> taken = {};
+  const auto take = [&](Cell corner, int size, auto&& assign) {
+    for (int dy = 0; dy < size; ++dy)
     {
-      const TileRef tile = layout.at(x, y);
-      if (tile.empty())
+      for (int dx = 0; dx < size; ++dx)
       {
-        continue;
+        const std::size_t i = e.index(corner.x + dx, corner.y + dy);
+        taken[i] = 1U;
+        assign(dx, dy, layout.values[i]);
       }
-      NeighborMask mask = kNoNeighbors;
-      if (inner_corners)
-      {
-        // The terrain surrounds the cell except at one corner: the one this tile sits at
-        static constexpr Direction kMissing[2][2] = {
-          {Direction::kNorthWest, Direction::kSouthWest}, {Direction::kNorthEast, Direction::kSouthEast}};
-        mask = static_cast<NeighborMask>(kAllNeighbors & ~mask_of(kMissing[x][y]));
-      }
-      else
-      {
-        for (const Direction d : kNeighbors)
-        {
-          const Cell offset = step(Cell{0, 0}, d);
-          if (within(x, e.width, offset.x) and within(y, e.height, offset.y))
-          {
-            mask = static_cast<NeighborMask>(mask | mask_of(d));
-          }
-        }
-      }
-      set_variant(terrain, mask, tile);
+    }
+  };
+  std::size_t written = 0;
+  // The nine-slice: the four sides, the four outer corners and the fully-surrounded tile
+  Cell corner{0, 0};
+  const bool nine_slice = find_block(layout, taken.data(), 3, corner);
+  if (nine_slice)
+  {
+    take(corner, 3, [&terrain](int x, int y, TileRef tile) { set_variant(terrain, nine_slice_mask(x, y), tile); });
+    written += 9;
+  }
+  // The inner corners: surrounded except at the corner the tile sits at in the block. A side-only
+  // terrain cannot tell them apart, so it leaves them alone
+  if (terrain.neighborhood != Neighborhood::kSides and find_block(layout, taken.data(), 2, corner))
+  {
+    static constexpr Direction kMissing[2][2] = {
+      {Direction::kNorthWest, Direction::kSouthWest}, {Direction::kNorthEast, Direction::kSouthEast}};
+    take(corner, 2, [&terrain](int x, int y, TileRef tile) {
+      set_variant(terrain, static_cast<NeighborMask>(kAllNeighbors & ~mask_of(kMissing[x][y])), tile);
+    });
+    written += 4;
+  }
+  // Whatever else was selected alongside a nine-slice: more middles, which a painted area scatters
+  // between. On its own a single tile is the middle; anything else is no shape this understands
+  if (!nine_slice and e.count() != 1)
+  {
+    return written;
+  }
+  for (std::size_t i = 0; i < e.count(); ++i)
+  {
+    if (taken[i] == 0U and !layout.values[i].empty())
+    {
+      add_variant(terrain, kAllNeighbors, layout.values[i]);
       ++written;
     }
   }

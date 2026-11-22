@@ -980,7 +980,13 @@ void smoke(App& app)
       report(app, Status::error("the demo palette is too small for a nine-slice"));
       break;
     }
-    // The 3x3 block at the palette's top-left corner, as the palette lays it out
+    // The whole thirteen-tile set in one selection: the 3x3 nine-slice at the palette's top-left
+    // corner, and a 2x2 block of inner corners beside it
+    if (palette.width < 6)
+    {
+      report(app, Status::error("the demo palette is too narrow for a nine-slice and inner corners"));
+      break;
+    }
     app.selection.retarget(app.tileset);
     app.selection.clear();
     for (int y = 0; y < 3; ++y)
@@ -990,17 +996,34 @@ void smoke(App& app)
         app.selection.set(static_cast<level::TileIndex>(y * palette.width + x), true);
       }
     }
-    level::Grid<level::TileRef> layout{app.memory.frame};
-    if (!palette_layout(app, layout) or layout.extents != level::Extents{3, 3})
+    for (int y = 0; y < 2; ++y)
     {
-      report(app, Status::error("the palette selection is not a 3x3 block"));
+      for (int x = 4; x < 6; ++x)
+      {
+        app.selection.set(static_cast<level::TileIndex>(y * palette.width + x), true);
+      }
+    }
+    level::Grid<level::TileRef> layout{app.memory.frame};
+    if (!palette_layout(app, layout) or layout.extents != level::Extents{6, 3})
+    {
+      report(app, Status::error("the palette selection is not the two blocks"));
       break;
     }
     level::AutoTerrain& terrain = lv.auto_tiles.terrains[add_terrain(lv.auto_tiles, *lv.arena, "demo_path")];
     app.terrain = level::find_terrain(lv.auto_tiles, "demo_path");
-    if (level::learn_from_layout(terrain, layout) != 9)
+    if (level::learn_from_layout(terrain, layout) != 13)
     {
-      report(app, Status::error("the terrain did not take all nine tiles of the palette block"));
+      report(app, Status::error("the terrain did not take all thirteen tiles of the palette selection"));
+      break;
+    }
+    // The inner corners came from the 2x2 block, not the nine-slice
+    const auto inner =
+      static_cast<level::NeighborMask>(level::kAllNeighbors & ~level::mask_of(level::Direction::kSouthEast));
+    if (
+      level::resolve(terrain, inner) !=
+      level::TileRef{static_cast<level::TileSetId>(app.tileset), static_cast<level::TileIndex>(palette.width + 5)})
+    {
+      report(app, Status::error("the inner corner did not come from the 2x2 block"));
       break;
     }
     app.selection.clear();
@@ -1029,6 +1052,8 @@ void smoke(App& app)
     {
       for (int x = 0; x < 3; ++x)
       {
+        // The ring is the nine-slice block (the inner corners sit where the terrain wraps, which
+        // one painted cell never does)
         if (grid.at(painted.x - 1 + x, painted.y - 1 + y) != layout.at(x, y))
         {
           report(app, Status::error("the terrain's border does not match the palette block it came from"));

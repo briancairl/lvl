@@ -234,12 +234,22 @@ permissive and weight-random, while auto-tiling must be a function: one pattern,
 A terrain's `NeighborMask` has one bit per `Direction`, set where the neighbor holds the same
 terrain (Wang/blob tiling). `Neighborhood::kSides` counts the four sides (16 patterns, which a
 nine-slice covers); `kBlob` also counts a corner wherever both of its sides are terrain (47
-patterns), which is what tells inner from outer corners. `resolve` falls back to the nearest
-pattern, so a partial set of tiles still fills every cell, and `learn_from_layout` takes a terrain's
-tiles straight from a 3x3 nine-slice, a 2x2 inner-corner block or a single tile -- the window's
-"From the palette layout" button, over the palette selection. `expand` is how far past what the user
-paints the terrain reaches: 1 (the default) means painting a cell lays its middle tile and borders
-the ring around it; 0 means the painted cells take the edge tiles themselves.
+patterns), which is what tells inner from outer corners.
+
+Several tiles may share a pattern: they are its *pool*, and a cell picks one by a hash of its
+position, so a terrain's middle can be a handful of tiles that scatter over an area and stay put
+when it is repainted (`resolve(terrain, mask, key)`, `add_variant`). Where a terrain has no tile for
+a pattern, `resolve` falls back to the nearest one it does have, ranking **the four sides above the
+corners** — a side counts for more than every corner together, since the sides are what place a
+tile. Without that a thirteen-tile set answers an edge with a tile meant for another edge that
+happens to share corners, which is the usual way auto-tiling looks subtly wrong.
+
+`learn_from_layout` reads one palette selection: a 3x3 nine-slice, a 2x2 inner-corner block among
+the tiles it did not take, and anything left over beside them as further middles — so the whole
+thirteen-tile set is one selection (the blocks side by side), and the blocks can still be taken one
+at a time. A layout of a single tile is the middle. `expand` is how far past what the user paints
+the terrain reaches: 1 (the default) means painting a cell lays its middle tile and borders the ring
+around it; 0 means the painted cells take the edge tiles themselves.
 
 Terrains follow tileset removal, and travel in the level files and in the standalone rules file
 (which carries both kinds), remapped by tileset name.
@@ -250,8 +260,8 @@ The Auto tool (toolbar, or T) paints a tile as the middle of a shape and tiles t
 Which rules it uses depends on the tile being painted, and the toolbar says which:
 
 - the tile belongs to a **terrain** (`terrain_of`): `procgen::paint_terrain`. The painted cells,
-  plus the cells already holding the terrain's fully-surrounded tile (its every tile when `expand`
-  is 0), are the *core*; the terrain covers the core grown by `expand`, and every covered cell near
+  plus the cells already holding one of the terrain's fully-surrounded tiles (its every tile when
+  `expand` is 0), are the *core*; the terrain covers the core grown by `expand`, and every covered cell near
   the stroke takes the tile for the pattern of covered neighbors around it. So one painted cell lays
   down a whole nine-slice, and painting the next cell of a path turns the old corner into a straight
   edge -- the covered area follows from the core alone, so a stroke never has to remember what the
@@ -285,8 +295,9 @@ The **Auto-tiling** tab holds the terrain list (each row with a `delete_button`)
 terrain's name, neighborhood and border, "From the palette layout", and a slot per pattern the
 neighborhood distinguishes. A slot draws the tile it holds with a line along every side the terrain
 does *not* continue through and a notch at every corner it does not reach, so the slot looks like
-the situation it covers; clicking one puts the palette tile in it, right-clicking clears it, and a
-slot with no tile is dark (`resolve` will use the nearest pattern's tile).
+the situation it covers; clicking one puts the palette tile in it, ctrl+clicking adds another tile
+to that pattern's pool (the slot then shows "xN"), right-clicking clears it, and a slot with no tile
+is dark (`resolve` will use the nearest pattern's tile).
 
 Under "Allowed neighbors", clicking a thumbnail toggles that neighbor; pressing the left button and
 dragging across several sets all of them to what the first one became (allowed if it was forbidden,
@@ -378,7 +389,8 @@ one check to mark required:
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
   rule learning, rules from a palette layout, batch tile and constraint edits, terrains from a
-  nine-slice or an inner-corner block, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
+  nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
+  selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files, a level whose layers
   and file are bigger than one worker's share, saves split across waves and saves streamed layer by
   layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
@@ -386,7 +398,8 @@ one check to mark required:
 - `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints; terrain painting (a nine-slice from one painted cell, the border re-tiling as the
-  shape grows, inner corners, no border, the map edge, a terrain with no tiles); the WFC-scored
+  shape grows, inner corners, no border, the map edge, middles scattering over an area and staying
+  put when it is repainted, a terrain with no tiles); the WFC-scored
   fallback (edges around painted centers, a path drawn one cell at a time, stability once the rules
   hold, corner fills with `diagonals`, tiles the rules do not know, rules that cannot express the
   shape).
@@ -399,7 +412,8 @@ one check to mark required:
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
-  multi-tile paint stamp, a terrain taken from a palette block and painted (the auto-tiling tab),
+  multi-tile paint stamp, a thirteen-tile terrain taken from one palette selection and painted (the
+  auto-tiling tab),
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

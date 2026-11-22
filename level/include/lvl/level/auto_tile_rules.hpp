@@ -76,7 +76,12 @@ enum class Neighborhood : std::uint8_t
   kBlob,
 };
 
-/// Tile a terrain uses where its neighbors are <code>mask</code>
+/**
+ * @brief A tile a terrain uses where its neighbors are <code>mask</code>
+ *
+ * Several variants may share a mask: they are that pattern's pool, and a cell takes one of them by
+ * position, so a terrain's middle can be a handful of tiles that scatter over an area.
+ */
 struct AutoVariant
 {
   NeighborMask mask = kNoNeighbors;
@@ -129,38 +134,53 @@ TerrainId terrain_of(const AutoTileRules& rules, TileRef tile);
 /// Drops the bits <code>neighborhood</code> does not distinguish (corners whose sides are not both set)
 NeighborMask reduce(NeighborMask mask, Neighborhood neighborhood);
 
-/// The variant for exactly <code>mask</code>, or null
+/// The first variant for exactly <code>mask</code>, or null
 const AutoVariant* find_variant(const AutoTerrain& terrain, NeighborMask mask);
 
-/// Sets the tile for <code>mask</code> (an empty tile removes the variant)
+/// How many tiles <code>mask</code>'s pool holds
+std::size_t variant_count(const AutoTerrain& terrain, NeighborMask mask);
+
+/// Makes <code>tile</code> the only tile for <code>mask</code> (an empty tile clears the pattern)
 void set_variant(AutoTerrain& terrain, NeighborMask mask, TileRef tile);
+
+/// Adds another tile to <code>mask</code>'s pool (ignoring one it already holds)
+void add_variant(AutoTerrain& terrain, NeighborMask mask, TileRef tile);
 
 /**
  * @brief The tile a terrain uses where its neighbors are <code>mask</code>
  *
- * The exact variant if there is one, else the variant whose mask agrees with the most neighbors (so
- * an incomplete set of tiles still fills every cell), else an empty tile.
+ * The pattern itself if the terrain has it, else the nearest one: the pattern agreeing with the
+ * most of the four sides, and among those the most corners, so an incomplete set of tiles still
+ * fills every cell and never answers an edge with a tile meant for another edge. A pattern whose
+ * pool holds several tiles takes one of them by <code>key</code> (the painter passes a hash of the
+ * cell, so a cell keeps its tile however often the area is repainted). Empty if the terrain has no
+ * tiles at all.
  */
-TileRef resolve(const AutoTerrain& terrain, NeighborMask mask);
+TileRef resolve(const AutoTerrain& terrain, NeighborMask mask, std::uint64_t key = 0);
 
 /// The patterns <code>neighborhood</code> distinguishes, in ascending order, in <code>arena</code>
 memory::Vector<NeighborMask> patterns(Neighborhood neighborhood, memory::Arena& arena);
 
 /**
- * @brief Takes a terrain's tiles from a block of tiles laid out as they appear on the map
+ * @brief Takes a terrain's tiles from tiles laid out as they appear on the map
  *
- * Three shapes are understood, which between them are how tilesets ship these tiles:
+ * The layout is read for the shapes tilesets ship these tiles in, in this order:
  *
- * - 3x3: a nine-slice, read as the corner, edge and middle tiles of a large patch of terrain, which
- *   gives the four sides, the four *outer* corners and the fully-surrounded tile;
- * - 2x2: the four *inner* corners, where the terrain surrounds the cell on every side but one
- *   corner (top-left is the one missing its north-west neighbor);
- * - 1x1: the fully-surrounded tile alone.
+ * - a 3x3 block: a nine-slice, read as the corner, edge and middle tiles of a large patch of
+ *   terrain, which gives the four sides, the four *outer* corners and the fully-surrounded tile;
+ * - a 2x2 block among the tiles the nine-slice did not take: the four *inner* corners, where the
+ *   terrain surrounds the cell on every side but one corner (top-left is the one missing its
+ *   north-west neighbor);
+ * - anything still left over beside a nine-slice: more tiles for the fully-surrounded pattern's
+ *   pool, which a painted area scatters between. A layout of one tile is that pattern too; a
+ *   layout holding neither block nor a single tile is no shape this understands.
  *
- * Existing variants for the patterns the layout covers are replaced; the others are kept, so a 3x3
- * block and then a 2x2 block build up the usual thirteen-tile set.
+ * So the whole thirteen-tile set is one selection -- a 3x3 block and a 2x2 block side by side --
+ * and any further tiles selected with them become alternative middles. Each block replaces the
+ * patterns it covers and leaves the others alone, so the blocks can also be taken one at a time.
  *
- * @return how many variants were set (0 if the layout is not one of those shapes)
+ * @return how many tiles were taken (0 if the layout holds none of those shapes, or is improbably
+ *         large: a layout is a handful of palette tiles, and above 1024 cells it is refused)
  */
 std::size_t learn_from_layout(AutoTerrain& terrain, const Grid<TileRef>& layout);
 

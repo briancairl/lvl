@@ -73,8 +73,8 @@ struct TerrainPaintResult
 /**
  * @brief Paints a terrain through <code>painted</code> and tiles its border from the rules
  *
- * The painted cells, together with the cells already holding the terrain's fully-surrounded tile
- * (its every tile, when <code>expand</code> is 0), are the terrain's *core*. The terrain covers the
+ * The painted cells, together with the cells already holding one of the terrain's fully-surrounded
+ * tiles (its every tile, when <code>expand</code> is 0), are the terrain's *core*. The terrain covers the
  * core grown by <code>expand</code>, and every covered cell near the stroke takes the tile for the
  * pattern of covered neighbors around it. So with the default <code>expand</code> of 1, painting
  * one cell lays down the whole nine-slice: the cell itself fully surrounded, the ring around it
@@ -83,8 +83,10 @@ struct TerrainPaintResult
  *
  * Because the covered area follows from the core alone, a stroke never has to remember what the
  * previous one did. Cells outside the grid count as covered, so a terrain running off the map has
- * no border drawn along the map's edge. <code>scratch</code> holds a few arrays over the cells
- * around the stroke, and is rewound.
+ * no border drawn along the map's edge. Where a pattern has several tiles, a cell takes one by a
+ * hash of its position, so an area scatters between them and keeps what it has when it is
+ * repainted. <code>scratch</code> holds a few arrays over the cells around the stroke, and is
+ * rewound.
  */
 TerrainPaintResult paint_terrain(
   const level::AutoTileRules& rules,

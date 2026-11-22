@@ -1,5 +1,6 @@
 // C++ Standard Library
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numeric>
 #include <utility>
@@ -785,4 +786,48 @@ TEST_F(Procgen, PaintTerrainReportsATerrainWithNoTiles)
   // An unknown terrain, or nothing painted, does nothing at all
   EXPECT_EQ(paint_terrain(rules, kNoTerrain, &painted, 1, tiles, scratch).missing, 0U);
   EXPECT_EQ(paint_terrain(rules, 0, nullptr, 0, tiles, scratch).missing, 0U);
+}
+
+TEST_F(Procgen, PaintTerrainScattersTheMiddlesOfAPattern)
+{
+  AutoTileRules rules = terrain_rules(doc, true, 1);
+  AutoTerrain& terrain = rules.terrains[0];
+  // Three middles instead of one: a painted area should use all of them, and keep what it has
+  add_variant(terrain, kAllNeighbors, TileRef{0, 30});
+  add_variant(terrain, kAllNeighbors, TileRef{0, 31});
+  ASSERT_EQ(variant_count(terrain, kAllNeighbors), 3U);
+
+  Grid<TileRef> tiles = background(doc, Extents{21, 21});
+  auto painted = memory::make_vector<Cell>(doc);
+  for (int y = 4; y <= 16; ++y)
+  {
+    for (int x = 4; x <= 16; ++x)
+    {
+      painted.push_back(Cell{x, y});
+    }
+  }
+  const TerrainPaintResult result = paint_terrain(rules, 0, painted.data(), painted.size(), tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  std::array<int, 3> counts = {0, 0, 0};
+  for (int y = 5; y <= 15; ++y)
+  {
+    for (int x = 5; x <= 15; ++x)
+    {
+      counts[0] += (tiles.at(x, y) == slice(1, 1)) ? 1 : 0;
+      counts[1] += (tiles.at(x, y) == TileRef{0, 30}) ? 1 : 0;
+      counts[2] += (tiles.at(x, y) == TileRef{0, 31}) ? 1 : 0;
+    }
+  }
+  EXPECT_EQ(counts[0] + counts[1] + counts[2], 11 * 11);
+  for (const int n : counts)
+  {
+    EXPECT_GT(n, 0) << "every middle should appear somewhere in a 11x11 area";
+  }
+  // Painting the area again leaves every cell exactly as it was
+  Grid<TileRef> before{doc};
+  before.assign(tiles.extents, kEmptyTile);
+  before.values.assign(tiles.values.begin(), tiles.values.end());
+  const TerrainPaintResult again = paint_terrain(rules, 0, painted.data(), painted.size(), tiles, scratch);
+  EXPECT_EQ(again.changed, 0U);
+  EXPECT_EQ(before.values, tiles.values);
 }
