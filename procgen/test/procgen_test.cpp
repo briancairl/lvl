@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 // LVL
+#include "lvl/level/auto_tile_rules.hpp"
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/noise.hpp"
@@ -605,4 +606,183 @@ TEST_F(Procgen, AutoTileDoesNothingWithoutRulesOrPaintedCells)
   {
     EXPECT_EQ(tile, tile_of(kGrass));
   }
+}
+
+namespace
+{
+
+enum : TileIndex
+{
+  /// The nine-slice occupies tiles 0..8 (reading across), the inner corners 9..12
+  kNineSlice = 0,
+  kInnerCorners = 9,
+  /// What the map holds where the terrain is not
+  kBackground = 20,
+};
+
+/// A terrain whose tiles are a nine-slice, optionally with the four inner corners
+AutoTileRules terrain_rules(memory::Arena& arena, bool inner_corners, int expand)
+{
+  AutoTileRules rules{arena};
+  AutoTerrain& terrain = rules.terrains[add_terrain(rules, arena, "path")];
+  terrain.expand = expand;
+  Grid<TileRef> layout{arena};
+  layout.assign(Extents{3, 3}, kEmptyTile);
+  for (int i = 0; i < 9; ++i)
+  {
+    layout.values[i] = TileRef{0, static_cast<TileIndex>(kNineSlice + i)};
+  }
+  learn_from_layout(terrain, layout);
+  if (inner_corners)
+  {
+    Grid<TileRef> inner{arena};
+    inner.assign(Extents{2, 2}, kEmptyTile);
+    for (int i = 0; i < 4; ++i)
+    {
+      inner.values[i] = TileRef{0, static_cast<TileIndex>(kInnerCorners + i)};
+    }
+    learn_from_layout(terrain, inner);
+  }
+  return rules;
+}
+
+/// Tile of the nine-slice at (x, y) of its block
+constexpr TileRef slice(int x, int y) { return TileRef{0, static_cast<TileIndex>(kNineSlice + y * 3 + x)}; }
+
+Grid<TileRef> background(memory::Arena& arena, Extents extents)
+{
+  Grid<TileRef> tiles{arena};
+  tiles.assign(extents, TileRef{0, kBackground});
+  return tiles;
+}
+
+}  // namespace
+
+TEST_F(Procgen, PaintTerrainLaysDownTheWholeNineSlice)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 1);
+  Grid<TileRef> tiles = background(doc, Extents{11, 11});
+  const Cell painted{5, 5};
+
+  const TerrainPaintResult result = paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  EXPECT_EQ(result.covered, 9U);
+  EXPECT_EQ(result.changed, 9U);
+  // One painted cell becomes the middle, and the ring around it the edges and outer corners
+  for (int y = 0; y < 3; ++y)
+  {
+    for (int x = 0; x < 3; ++x)
+    {
+      EXPECT_EQ(tiles.at(4 + x, 4 + y), slice(x, y)) << "at (" << x << ", " << y << ")";
+    }
+  }
+  // Nothing beyond the border is touched
+  EXPECT_EQ(tiles.at(3, 5), (TileRef{0, kBackground}));
+  EXPECT_EQ(tiles.at(7, 5), (TileRef{0, kBackground}));
+  EXPECT_EQ(tiles.at(0, 0), (TileRef{0, kBackground}));
+}
+
+TEST_F(Procgen, PaintTerrainRetilesTheBorderAsTheShapeGrows)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 1);
+  Grid<TileRef> tiles = background(doc, Extents{14, 9});
+  const Cell first{5, 4};
+  paint_terrain(rules, 0, &first, 1, tiles, scratch);
+  ASSERT_EQ(tiles.at(6, 3), slice(2, 0));
+
+  // Painting the next cell of the path turns the old corner into a straight edge
+  const Cell second{6, 4};
+  const TerrainPaintResult result = paint_terrain(rules, 0, &second, 1, tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  EXPECT_EQ(tiles.at(6, 3), slice(1, 0));
+  EXPECT_EQ(tiles.at(7, 3), slice(2, 0));
+  EXPECT_EQ(tiles.at(5, 4), slice(1, 1));
+  EXPECT_EQ(tiles.at(6, 4), slice(1, 1));
+  EXPECT_EQ(tiles.at(4, 4), slice(0, 1));
+  EXPECT_EQ(tiles.at(7, 4), slice(2, 1));
+  EXPECT_EQ(tiles.at(6, 5), slice(1, 2));
+
+  // Painting over what is already the middle changes nothing
+  const TerrainPaintResult again = paint_terrain(rules, 0, &second, 1, tiles, scratch);
+  EXPECT_EQ(again.changed, 0U);
+}
+
+TEST_F(Procgen, PaintTerrainDrawsInnerCornersWhereTheTerrainWraps)
+{
+  // No border to grow: the painted cells themselves take the edge tiles
+  const AutoTileRules rules = terrain_rules(doc, true, 0);
+  Grid<TileRef> tiles = background(doc, Extents{11, 11});
+  // A 5x5 patch with one corner cell missing, so the cell inside that corner wraps around it
+  auto painted = memory::make_vector<Cell>(doc);
+  for (int y = 3; y <= 7; ++y)
+  {
+    for (int x = 3; x <= 7; ++x)
+    {
+      if (x != 3 or y != 3)
+      {
+        painted.push_back(Cell{x, y});
+      }
+    }
+  }
+  const TerrainPaintResult result = paint_terrain(rules, 0, painted.data(), painted.size(), tiles, scratch);
+  EXPECT_EQ(result.missing, 0U);
+  // Surrounded on every side but the north-west corner: the first of the inner-corner tiles
+  EXPECT_EQ(tiles.at(4, 4), (TileRef{0, kInnerCorners}));
+  // The middle of the patch is fully surrounded, and the hole was left alone
+  EXPECT_EQ(tiles.at(5, 5), slice(1, 1));
+  EXPECT_EQ(tiles.at(3, 3), (TileRef{0, kBackground}));
+}
+
+TEST_F(Procgen, PaintTerrainWithoutABorderLeavesNeighborsAlone)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 0);
+  Grid<TileRef> tiles = background(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+
+  const TerrainPaintResult result = paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  EXPECT_EQ(result.covered, 1U);
+  EXPECT_EQ(result.missing, 0U);
+  // Only the painted cell is the terrain's, and with no like neighbors it takes the pattern for none
+  EXPECT_NE(tiles.at(painted), (TileRef{0, kBackground}));
+  for (const Direction d : kNeighbors)
+  {
+    EXPECT_EQ(tiles.at(step(painted, d)), (TileRef{0, kBackground})) << "direction " << static_cast<int>(d);
+  }
+}
+
+TEST_F(Procgen, PaintTerrainTreatsTheMapEdgeAsTerrain)
+{
+  const AutoTileRules rules = terrain_rules(doc, false, 1);
+  Grid<TileRef> tiles = background(doc, Extents{9, 9});
+  const Cell painted{0, 0};
+
+  paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  // Nothing off the map to draw a border against, so the painted corner cell is fully surrounded
+  // and the border only appears on the inward sides
+  EXPECT_EQ(tiles.at(0, 0), slice(1, 1));
+  EXPECT_EQ(tiles.at(1, 0), slice(2, 1));
+  EXPECT_EQ(tiles.at(0, 1), slice(1, 2));
+  EXPECT_EQ(tiles.at(1, 1), slice(2, 2));
+  EXPECT_EQ(tiles.at(2, 0), (TileRef{0, kBackground}));
+  EXPECT_EQ(tiles.at(0, 2), (TileRef{0, kBackground}));
+}
+
+TEST_F(Procgen, PaintTerrainReportsATerrainWithNoTiles)
+{
+  AutoTileRules rules{doc};
+  add_terrain(rules, doc, "empty");
+  Grid<TileRef> tiles = background(doc, Extents{7, 7});
+  const Cell painted{3, 3};
+
+  const TerrainPaintResult result = paint_terrain(rules, 0, &painted, 1, tiles, scratch);
+  EXPECT_EQ(result.covered, 0U);
+  EXPECT_EQ(result.changed, 0U);
+  EXPECT_GT(result.missing, 0U);
+  for (const TileRef& tile : tiles.values)
+  {
+    EXPECT_EQ(tile, (TileRef{0, kBackground}));
+  }
+  // An unknown terrain, or nothing painted, does nothing at all
+  EXPECT_EQ(paint_terrain(rules, kNoTerrain, &painted, 1, tiles, scratch).missing, 0U);
+  EXPECT_EQ(paint_terrain(rules, 0, nullptr, 0, tiles, scratch).missing, 0U);
 }

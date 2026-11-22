@@ -20,9 +20,11 @@ namespace lvl::procgen
 namespace
 {
 
+using level::AutoTerrain;
 using level::Cell;
 using level::Direction;
 using level::Extents;
+using level::NeighborMask;
 using level::TileRef;
 using level::WfcRules;
 using level::WfcTileId;
@@ -291,7 +293,149 @@ private:
   std::array<Constraint, 8> buffer_ = {};
 };
 
+/// Rectangle of cells a stroke can affect, clipped to the grid
+struct Window
+{
+  Cell corner;
+  Extents extents;
+
+  [[nodiscard]] bool holds(Cell c) const
+  {
+    return c.x >= corner.x and c.y >= corner.y and c.x < corner.x + extents.width and c.y < corner.y + extents.height;
+  }
+  [[nodiscard]] std::size_t index(Cell c) const { return extents.index(c.x - corner.x, c.y - corner.y); }
+  [[nodiscard]] Cell cell(std::size_t i) const
+  {
+    const Cell c = extents.cell(i);
+    return Cell{c.x + corner.x, c.y + corner.y};
+  }
+};
+
+/// The cells within <code>radius</code> of any painted cell, clipped to the grid (empty if none are on it)
+Window window_around(const Cell* painted, std::size_t count, Extents grid, int radius)
+{
+  Cell lo{grid.width, grid.height};
+  Cell hi{-1, -1};
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    if (grid.contains(painted[i]))
+    {
+      lo = Cell{std::min(lo.x, painted[i].x), std::min(lo.y, painted[i].y)};
+      hi = Cell{std::max(hi.x, painted[i].x), std::max(hi.y, painted[i].y)};
+    }
+  }
+  if (hi.x < 0)
+  {
+    return Window{Cell{0, 0}, Extents{0, 0}};
+  }
+  const Cell corner{std::max(0, lo.x - radius), std::max(0, lo.y - radius)};
+  const Cell far{std::min(grid.width - 1, hi.x + radius), std::min(grid.height - 1, hi.y + radius)};
+  return Window{corner, Extents{far.x - corner.x + 1, far.y - corner.y + 1}};
+}
+
 }  // namespace
+
+TerrainPaintResult paint_terrain(
+  const level::AutoTileRules& rules,
+  level::TerrainId terrain,
+  const Cell* painted,
+  std::size_t count,
+  level::Grid<TileRef>& tiles,
+  memory::Arena& scratch)
+{
+  TerrainPaintResult result;
+  const Extents grid = tiles.extents;
+  if (count == 0 or terrain >= rules.terrains.size() or grid.count() == 0)
+  {
+    return result;
+  }
+  const AutoTerrain& t = rules.terrains[terrain];
+  const int expand = std::clamp(t.expand, 0, 4);
+  // Cells whose tile may change, and the cells whose membership those depend on
+  const int reach = std::max(1, 2 * expand);
+  const Window window = window_around(painted, count, grid, 3 * expand + 2);
+  if (window.extents.count() == 0)
+  {
+    return result;
+  }
+  // A cell is core where the user painted, or where it already holds the terrain's middle; with no
+  // border to grow, every one of the terrain's tiles is core
+  const TileRef middle = resolve(t, level::kAllNeighbors);
+  memory::Scope scope{scratch};
+  auto core = memory::make_vector<std::uint8_t>(scratch, window.extents.count(), std::uint8_t{0});
+  for (std::size_t i = 0; i < window.extents.count(); ++i)
+  {
+    const TileRef tile = tiles.at(window.cell(i));
+    const bool mine = (expand > 0) ? (!middle.empty() and tile == middle) : (terrain_of(rules, tile) == terrain);
+    core[i] = mine ? 1U : 0U;
+  }
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    if (window.holds(painted[i]))
+    {
+      core[window.index(painted[i])] = 1U;
+    }
+  }
+  // The terrain covers the core grown by expand
+  auto covered = memory::make_vector<std::uint8_t>(scratch, window.extents.count(), std::uint8_t{0});
+  for (std::size_t i = 0; i < window.extents.count(); ++i)
+  {
+    const Cell c = window.cell(i);
+    bool near_core = false;
+    for (int y = c.y - expand; y <= c.y + expand and !near_core; ++y)
+    {
+      for (int x = c.x - expand; x <= c.x + expand and !near_core; ++x)
+      {
+        near_core = window.holds(Cell{x, y}) and core[window.index(Cell{x, y})] != 0U;
+      }
+    }
+    covered[i] = near_core ? 1U : 0U;
+  }
+  // Off the grid counts as covered, so a terrain running off the map has no border along its edge
+  const auto covers = [&](Cell c) { return !grid.contains(c) or (window.holds(c) and covered[window.index(c)] != 0U); };
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    if (!grid.contains(painted[i]))
+    {
+      continue;
+    }
+    for (int y = painted[i].y - reach; y <= painted[i].y + reach; ++y)
+    {
+      for (int x = painted[i].x - reach; x <= painted[i].x + reach; ++x)
+      {
+        const Cell c{x, y};
+        if (!grid.contains(c) or !window.holds(c) or covered[window.index(c)] == 0U)
+        {
+          continue;
+        }
+        // Already given a tile by an earlier painted cell of this stroke
+        if (covered[window.index(c)] == 2U)
+        {
+          continue;
+        }
+        covered[window.index(c)] = 2U;
+        NeighborMask mask = level::kNoNeighbors;
+        for (const Direction d : level::kNeighbors)
+        {
+          if (covers(level::step(c, d)))
+          {
+            mask = static_cast<NeighborMask>(mask | level::mask_of(d));
+          }
+        }
+        const TileRef tile = resolve(t, mask);
+        if (tile.empty())
+        {
+          ++result.missing;
+          continue;
+        }
+        ++result.covered;
+        result.changed += (tiles.at(c) == tile) ? 0U : 1U;
+        tiles.at(c) = tile;
+      }
+    }
+  }
+  return result;
+}
 
 AutoTileResult autotile(
   const WfcRules& rules,
