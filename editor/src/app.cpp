@@ -641,7 +641,8 @@ void main_menu(App& app)
       ImGui::MenuItem("Tile metadata", nullptr, &app.panels.tile_meta);
       ImGui::MenuItem("Catalogs & seasons", nullptr, &app.panels.catalogs);
       ImGui::MenuItem("Generate", nullptr, &app.panels.generate);
-      ImGui::MenuItem("WFC neighbors", nullptr, &app.panels.wfc_neighbors);
+      ImGui::MenuItem("Tile adjacency rules", nullptr, &app.panels.adjacency);
+      ImGui::MenuItem("Tile neighbors", nullptr, &app.panels.neighbors);
       ImGui::MenuItem("Objects & paths", nullptr, &app.panels.objects);
       ImGui::MenuItem("Mini-preview", nullptr, &app.panels.minimap);
       ImGui::MenuItem("Log", nullptr, &app.panels.log);
@@ -780,8 +781,10 @@ void smoke(App& app)
     close_file_dialog(app);
     break;
   case 17:
-    // The WFC neighbor editor draws for a frame; corner rules are derived from the sides
-    app.panels.wfc_neighbors = true;
+    // The adjacency rules window and the neighbor editor draw for a frame; corner rules are
+    // derived from the sides
+    app.panels.adjacency = true;
+    app.panels.neighbors = true;
     app.level->wfc.diagonals = true;
     level::derive_diagonals(app.level->wfc, app.memory.frame);
     if (level::diagonal_count(app.level->wfc) == 0)
@@ -1163,9 +1166,13 @@ void frame(App& app)
   {
     generate_panel(app);
   }
-  if (app.panels.wfc_neighbors)
+  if (app.panels.adjacency)
   {
-    wfc_neighbors_window(app);
+    adjacency_window(app);
+  }
+  if (app.panels.neighbors)
+  {
+    neighbors_window(app);
   }
   if (app.panels.objects)
   {
