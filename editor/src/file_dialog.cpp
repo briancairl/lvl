@@ -52,9 +52,37 @@ struct Setup
   const char* title = "Open";
   const char* filters = "All files{.*}";
   bool save = false;
+  /// Import or export of the open level's data: the dialog opens in the project folder
+  bool project = false;
   /// Suggested file name (saves)
   FixedString<160> name;
 };
+
+/**
+ * @brief The current project folder: the folder the open level lives in, or the working directory
+ *        while it has no path yet
+ */
+Path project_directory(const App& app)
+{
+  std::error_code ec;
+  if (!app.path.empty())
+  {
+    const auto dir = std::filesystem::absolute(std::filesystem::path{app.path.c_str()}, ec).parent_path();
+    if (!ec and !dir.empty())
+    {
+      return Path{dir.string()};
+    }
+  }
+  if constexpr (web::kAvailable)
+  {
+    return Path{web::kWorkDirectory};
+  }
+  else if (const auto cwd = std::filesystem::current_path(ec); !ec)
+  {
+    return Path{cwd.string()};
+  }
+  return Path{"."};
+}
 
 Setup setup(const App& app, FileAction action)
 {
@@ -73,37 +101,42 @@ Setup setup(const App& app, FileAction action)
       .name = app.path.empty() ? FixedString<160>{format<160>("%s.json", lv.settings.name.c_str())}
                                : FixedString<160>{std::filesystem::path{app.path.c_str()}.filename().string()}};
   case FileAction::kLoadTileSet:
-    return Setup{.title = "Import tileset", .filters = kDataFilters};
+    return Setup{.title = "Import tileset", .filters = kDataFilters, .project = true};
   case FileAction::kSaveTileSet:
     return Setup{
       .title = "Export tileset",
       .filters = kDataFilters,
       .save = true,
+      .project = true,
       .name = format<160>(
         "%s.tileset.json", app.tileset < lv.tilesets.size() ? lv.tilesets[app.tileset].name.c_str() : "tileset")};
   case FileAction::kAtlasImage:
-    return Setup{.title = "Choose atlas image", .filters = kImageFilters};
+    return Setup{.title = "Choose atlas image", .filters = kImageFilters, .project = true};
   case FileAction::kSeedImage:
-    return Setup{.title = "Choose seed image", .filters = kImageFilters};
+    return Setup{.title = "Choose seed image", .filters = kImageFilters, .project = true};
   case FileAction::kLoadWfc:
-    return Setup{.title = "Import WFC rules", .filters = kDataFilters};
+    return Setup{.title = "Import WFC rules", .filters = kDataFilters, .project = true};
   case FileAction::kSaveWfc:
-    return Setup{.title = "Export WFC rules", .filters = kDataFilters, .save = true, .name = "rules.wfc.json"};
+    return Setup{
+      .title = "Export WFC rules", .filters = kDataFilters, .save = true, .project = true, .name = "rules.wfc.json"};
   case FileAction::kLoadPaths:
-    return Setup{.title = "Import path graphs", .filters = kDataFilters};
+    return Setup{.title = "Import path graphs", .filters = kDataFilters, .project = true};
   case FileAction::kSavePaths:
-    return Setup{.title = "Export path graphs", .filters = kDataFilters, .save = true, .name = "paths.json"};
+    return Setup{
+      .title = "Export path graphs", .filters = kDataFilters, .save = true, .project = true, .name = "paths.json"};
   case FileAction::kExportPng:
     return Setup{
       .title = "Export map as PNG",
       .filters = kPngFilters,
       .save = true,
+      .project = true,
       .name = format<160>("%s.png", lv.settings.name.c_str())};
   case FileAction::kExportMinimap:
     return Setup{
       .title = "Export mini-preview as PNG",
       .filters = kPngFilters,
       .save = true,
+      .project = true,
       .name = format<160>("%s.preview.png", lv.settings.name.c_str())};
   case FileAction::kSaveStyle:
     return Setup{.title = "Save style profile", .filters = kStyleFilters, .save = true, .name = "style.json"};
@@ -178,8 +211,11 @@ void open_file_dialog(App& app, FileAction action)
   refresh_places(app);
   const Setup s = setup(app, action);
   app.dialog.action = action;
+  // Imports and exports of the open level's data start in the project folder; everything else in
+  // the folder the dialog was last used in
+  const Path directory = s.project ? project_directory(app) : app.dialog.directory;
   IGFD::FileDialogConfig config;
-  config.path = app.dialog.directory.c_str();
+  config.path = directory.c_str();
   config.fileName = s.name.c_str();
   config.flags = ImGuiFileDialogFlags_Modal | ImGuiFileDialogFlags_CaseInsensitiveExtentionFiltering |
     ImGuiFileDialogFlags_ShowDevicesButton | ImGuiFileDialogFlags_NaturalSorting |
@@ -200,7 +236,11 @@ void file_dialog(App& app)
   if (dialog().IsOk())
   {
     const std::string path = dialog().GetFilePathName(IGFD_ResultMode_AddIfNoFileExt);
-    app.dialog.directory.assign(dialog().GetCurrentPath());
+    // An import or export elsewhere does not move the folder the other dialogs remember
+    if (!setup(app, action).project)
+    {
+      app.dialog.directory.assign(dialog().GetCurrentPath());
+    }
     dialog().Close();
     save_file_dialog_places(app);
     file_action(app, action, path.c_str());

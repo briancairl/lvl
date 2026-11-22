@@ -163,7 +163,11 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 - **Bookmarks**: user-editable, serialized to `config_path("file_dialog_places.txt")`.
 - **Devices**.
 
-The dialog remembers the last folder it was used in.
+Imports and exports of the open level's data (tilesets, WFC rules, path graphs, atlas and seed
+images, the PNG exports) open in the **current project folder**: the folder the open level lives in,
+or the working directory while it has no path yet. Choosing a file elsewhere in one of them does not
+move the remembered folder. Level open/save and style profiles keep using the last folder the dialog
+was used in.
 
 ### Recent levels
 
