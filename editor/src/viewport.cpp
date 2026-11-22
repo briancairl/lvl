@@ -1170,21 +1170,22 @@ void viewport_window(App& app)
       ImGui::SameLine();
     }
     ImGui::Text("layer '%s' (%s)%s", layer.name.c_str(), enum_name(layer.kind).data(), layer.locked ? " [locked]" : "");
-    if (app.tool == Tool::kAutoTile and auto_tile_status.considered > 0)
+    const AutoTileStatus& status = app.auto_tile_status;
+    if (app.tool == Tool::kAutoTile and (status.cells > 0 or status.trouble > 0))
     {
       ImGui::SameLine();
-      if (auto_tile_status.unresolved > 0)
+      if (status.trouble > 0)
       {
         ImGui::TextDisabled(
-          "| auto-tile: %zu of %zu cells re-filled, %zu the rules cannot fill",
-          auto_tile_status.changed,
-          auto_tile_status.considered,
-          auto_tile_status.unresolved);
+          "| %s: %zu of %zu cells tiled, %zu the rules cannot fill",
+          status.name.c_str(),
+          status.changed,
+          status.cells,
+          status.trouble);
       }
       else
       {
-        ImGui::TextDisabled(
-          "| auto-tile: %zu of %zu cells re-filled", auto_tile_status.changed, auto_tile_status.considered);
+        ImGui::TextDisabled("| %s: %zu of %zu cells tiled", status.name.c_str(), status.changed, status.cells);
       }
     }
   }

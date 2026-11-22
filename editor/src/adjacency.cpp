@@ -3,10 +3,17 @@
  *
  * @file adjacency.cpp
  *
- * The tile adjacency rules window: the rule tiles, each tile's constraints, and which tiles may sit
- * on each of its eight sides. The rules are a level's one set of tile adjacencies (level::WfcRules),
- * read by the WFC generator and by any other auto-tiling that wants to know what fits next to what,
- * so the window stands on its own rather than living in the Generate panel.
+ * The tile adjacency rules window, which has a tab per kind of rule a level holds:
+ *
+ * - WFC (level::WfcRules): the rule tiles, each tile's constraints, and which tiles may sit on each
+ *   of its eight sides. A permission relation on pairs, per direction, which the WFC generator
+ *   solves over a whole region.
+ * - Auto-tiling (level::AutoTileRules): terrains, each keying its tiles on the pattern of like
+ *   neighbors around a cell. That is what can prescribe an edge or an inner/outer corner, so it is
+ *   what the Auto tool paints with.
+ *
+ * The rules are the level's own, read by the generators and the painting tools, so the window stands
+ * on its own rather than living in the Generate panel.
  *
  * Neighbors are picked by clicking a tile, or by dragging the left button across several of them;
  * the pop-out drag-and-drop editor (neighbors.cpp) is the other way to edit the same rules.
@@ -14,6 +21,7 @@
 
 // C++ Standard Library
 #include <algorithm>
+#include <cstring>
 
 // Dear ImGui
 #include <imgui.h>
@@ -173,12 +181,10 @@ void batch_constraints_section(App& app)
 }
 
 /// The rule set's name, its import/export, and what adds or removes rule tiles
-bool toolbar(App& app)
+/// The rule set's name and its file, which carries both kinds of rules
+void rules_header(App& app)
 {
-  Level& lv = *app.level;
-  WfcRules& rules = lv.wfc;
-  bool changed = false;
-  input_text("Rule set", rules.name);
+  input_text("Rule set", app.level->wfc.name);
   if (ImGui::SmallButton("Import..."))
   {
     open_file_dialog(app, FileAction::kLoadWfc);
@@ -188,7 +194,17 @@ bool toolbar(App& app)
   {
     open_file_dialog(app, FileAction::kSaveWfc);
   }
-  ImGui::SameLine();
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("One file holds both the WFC adjacencies and the auto-tiling terrains");
+  }
+}
+
+bool toolbar(App& app)
+{
+  Level& lv = *app.level;
+  WfcRules& rules = lv.wfc;
+  bool changed = false;
   const std::size_t selected = selection_size(app);
   ImGui::BeginDisabled(selected == 0 and (app.paint.tile.empty() or app.paint.tile.tileset >= lv.tilesets.size()));
   if (ImGui::SmallButton("Add palette tile(s)"))
@@ -365,6 +381,267 @@ bool neighbor_row(App& app, WfcTileId a, Direction d)
 }
 
 /// The window's body (the rules of the level's one adjacency set)
+// -------------------------------------------------------------------------------------------------
+// Auto-tiling rules: terrains whose tiles are keyed on the pattern of like neighbors
+// -------------------------------------------------------------------------------------------------
+
+/// Side of a slot the terrain does *not* continue through, as a line; a missing corner as a notch
+void draw_pattern(ImDrawList* draw, ImVec2 lo, ImVec2 hi, NeighborMask mask, Neighborhood neighborhood)
+{
+  constexpr ImU32 kEdge = IM_COL32(255, 170, 60, 255);
+  constexpr float kThick = 2.5F;
+  const float notch = (hi.x - lo.x) * 0.22F;
+  if (!has(mask, Direction::kNorth))
+  {
+    draw->AddLine(ImVec2{lo.x, lo.y + 1}, ImVec2{hi.x, lo.y + 1}, kEdge, kThick);
+  }
+  if (!has(mask, Direction::kSouth))
+  {
+    draw->AddLine(ImVec2{lo.x, hi.y - 1}, ImVec2{hi.x, hi.y - 1}, kEdge, kThick);
+  }
+  if (!has(mask, Direction::kWest))
+  {
+    draw->AddLine(ImVec2{lo.x + 1, lo.y}, ImVec2{lo.x + 1, hi.y}, kEdge, kThick);
+  }
+  if (!has(mask, Direction::kEast))
+  {
+    draw->AddLine(ImVec2{hi.x - 1, lo.y}, ImVec2{hi.x - 1, hi.y}, kEdge, kThick);
+  }
+  if (neighborhood == Neighborhood::kSides)
+  {
+    return;
+  }
+  // A corner only shows where the terrain reaches both of its sides but not the corner itself
+  for (const Direction corner : kDiagonals)
+  {
+    const auto [a, b] = corner_sides(corner);
+    if (has(mask, corner) or !has(mask, a) or !has(mask, b))
+    {
+      continue;
+    }
+    const ImVec2 at{
+      (corner == Direction::kNorthEast or corner == Direction::kSouthEast) ? hi.x - notch : lo.x,
+      (corner == Direction::kSouthEast or corner == Direction::kSouthWest) ? hi.y - notch : lo.y};
+    draw->AddRectFilled(at, ImVec2{at.x + notch, at.y + notch}, kEdge);
+  }
+}
+
+/// One pattern's slot: the tile it holds, outlined where the terrain ends
+bool pattern_slot(App& app, AutoTerrain& terrain, NeighborMask mask, float size)
+{
+  bool changed = false;
+  ImGui::PushID(static_cast<int>(mask));
+  const AutoVariant* variant = find_variant(terrain, mask);
+  ImGui::InvisibleButton("##slot", ImVec2{size, size});
+  const ImVec2 lo = ImGui::GetItemRectMin();
+  const ImVec2 hi = ImGui::GetItemRectMax();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  ImTextureID texture{};
+  ImVec2 uv0;
+  ImVec2 uv1;
+  if (variant != nullptr and tile_uv(app, variant->tile, texture, uv0, uv1))
+  {
+    draw->AddImage(texture, lo, hi, uv0, uv1);
+  }
+  else
+  {
+    draw->AddRectFilled(lo, hi, (variant == nullptr) ? IM_COL32(40, 40, 40, 255) : IM_COL32(90, 90, 90, 255));
+  }
+  draw_pattern(draw, lo, hi, mask, terrain.neighborhood);
+  const bool can_set = !app.paint.tile.empty() and app.paint.tile.tileset < app.level->tilesets.size();
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Left) and can_set)
+  {
+    set_variant(terrain, mask, app.paint.tile);
+    changed = true;
+  }
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+  {
+    set_variant(terrain, mask, kEmptyTile);
+    changed = true;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    // The directions the pattern says the terrain continues in, as one line
+    FixedString<128> where;
+    std::size_t at = 0;
+    for (const Direction d : kNeighbors)
+    {
+      const std::string_view name = enum_name(d);
+      if (!has(mask, d) or at + name.size() + 3 >= FixedString<128>::kMaxLength)
+      {
+        continue;
+      }
+      if (at > 0)
+      {
+        where.data[at++] = ',';
+        where.data[at++] = ' ';
+      }
+      std::memcpy(where.data + at, name.data(), name.size());
+      at += name.size();
+    }
+    where.data[at] = '\0';
+    ImGui::SetTooltip(
+      "Terrain continues: %s\n%s\nClick to use the palette tile, right-click to clear",
+      where.empty() ? "nowhere (a lone cell)" : where.c_str(),
+      (variant == nullptr) ? "No tile: the nearest pattern's tile is used" : "");
+  }
+  ImGui::PopID();
+  return changed;
+}
+
+/// The terrain list, and the one being edited
+bool terrain_list(App& app)
+{
+  Level& lv = *app.level;
+  AutoTileRules& rules = lv.auto_tiles;
+  bool changed = false;
+  if (ImGui::SmallButton("Add terrain"))
+  {
+    app.terrain = add_terrain(rules, *lv.arena, format<32>("terrain_%zu", rules.terrains.size() + 1));
+    changed = true;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("A named set of tiles (water, a path, grass) the Auto tool paints and borders");
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu terrain(s)", rules.terrains.size());
+  if (rules.terrains.empty())
+  {
+    return changed;
+  }
+  app.terrain = std::min<TerrainId>(app.terrain, static_cast<TerrainId>(rules.terrains.size() - 1));
+  ImGui::BeginChild("terrains", ImVec2{0, 4 * ImGui::GetTextLineHeightWithSpacing()}, ImGuiChildFlags_Borders);
+  for (std::size_t i = 0; i < rules.terrains.size(); ++i)
+  {
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Delete this terrain"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kTerrain,
+          .index = i,
+          .what = format<128>("terrain '%s'", rules.terrains[i].name.c_str()),
+          .detail = "The tiles it holds stay in their tilesets."});
+    }
+    ImGui::SameLine();
+    if (ImGui::Selectable(
+          format<96>("%s (%zu tile(s))", rules.terrains[i].name.c_str(), rules.terrains[i].variants.size()),
+          i == app.terrain))
+    {
+      app.terrain = static_cast<TerrainId>(i);
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  return changed;
+}
+
+/// A terrain's tiles taken from the palette selection (a nine-slice, inner corners, or one tile)
+bool terrain_layout_section(App& app, AutoTerrain& terrain)
+{
+  ImGui::SeparatorText("From the palette layout");
+  ImGui::TextDisabled("Select a 3x3 block (edges and outer corners), a 2x2 block (inner corners) or one tile");
+  if (selection_size(app) < 2)
+  {
+    if (selection_size(app) == 1)
+    {
+      deselect_all_button(app);
+    }
+    return false;
+  }
+  SelectionBounds bounds;
+  selection_bounds(app, bounds);
+  selection_preview(app, 24.0F, 4);
+  const bool nine = (bounds.width == 3 and bounds.height == 3);
+  const bool inner = (bounds.width == 2 and bounds.height == 2);
+  const bool blob_needed = inner and terrain.neighborhood == Neighborhood::kSides;
+  bool changed = false;
+  ImGui::BeginDisabled((!nine and !inner) or blob_needed);
+  if (ImGui::Button(format<64>("Take the %d x %d block", bounds.width, bounds.height)))
+  {
+    Grid<TileRef> layout{app.memory.frame};
+    if (palette_layout(app, layout))
+    {
+      const std::size_t written = learn_from_layout(terrain, layout);
+      LVL_LOG_INFO_FMT("Terrain '%s': %zu tile(s) from a palette block", terrain.name.c_str(), written);
+      changed = written > 0;
+    }
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (blob_needed)
+  {
+    ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "inner corners need the blob neighborhood");
+  }
+  else if (!nine and !inner)
+  {
+    ImGui::TextDisabled("a 3x3 or 2x2 block, please");
+  }
+  ImGui::SameLine();
+  if (deselect_all_button(app))
+  {
+    return changed;
+  }
+  return changed;
+}
+
+void auto_tile_body(App& app)
+{
+  Level& lv = *app.level;
+  bool changed = terrain_list(app);
+  if (lv.auto_tiles.terrains.empty())
+  {
+    ImGui::TextDisabled("No terrains yet. Add one, then give it the tiles of its edges and corners -- the usual\n"
+                        "way is to select the 3x3 block of a tileset's nine-slice and take it below.");
+    app.modified |= changed;
+    return;
+  }
+  AutoTerrain& terrain = lv.auto_tiles.terrains[app.terrain];
+  ImGui::SeparatorText("Terrain");
+  changed |= input_text("Name", terrain.name);
+  changed |= enum_combo("Neighborhood", terrain.neighborhood);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("'sides' keys the tiles on the four sides (16 patterns, a nine-slice covers them);\n"
+                      "'blob' also keys on the corners, which is what tells inner from outer corners (47)");
+  }
+  changed |= ImGui::SliderInt("Border", &terrain.expand, 0, 2);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("How far past what you paint the terrain reaches.\n"
+                      "1: painting one cell lays its middle tile and borders the ring around it.\n"
+                      "0: the cells you paint take the edge tiles themselves.");
+  }
+  changed |= terrain_layout_section(app, terrain);
+
+  memory::Scope scope{app.memory.frame};
+  const auto masks = patterns(terrain.neighborhood, app.memory.frame);
+  std::size_t filled = 0;
+  for (const NeighborMask mask : masks)
+  {
+    filled += (find_variant(terrain, mask) == nullptr) ? 0U : 1U;
+  }
+  ImGui::SeparatorText(format<96>("Tiles per pattern (%zu of %zu)", filled, masks.size()));
+  ImGui::TextDisabled("The lines show where the terrain ends. Click a slot to use the palette tile.");
+  constexpr float kSlot = 40.0F;
+  ImGui::BeginChild("patterns", ImVec2{0, 0}, ImGuiChildFlags_Borders);
+  const float width = ImGui::GetContentRegionAvail().x;
+  const float step = kSlot + ImGui::GetStyle().ItemSpacing.x;
+  const int columns = std::max(1, static_cast<int>(width / step));
+  for (std::size_t i = 0; i < masks.size(); ++i)
+  {
+    if (i > 0 and static_cast<int>(i) % columns != 0)
+    {
+      ImGui::SameLine();
+    }
+    changed |= pattern_slot(app, terrain, masks[i], kSlot);
+  }
+  ImGui::EndChild();
+  app.modified |= changed;
+}
+
 void adjacency_body(App& app)
 {
   Level& lv = *app.level;
@@ -453,7 +730,47 @@ void adjacency_window(App& app)
   {
     g_drag.active = false;
   }
-  adjacency_body(app);
+  rules_header(app);
+  // The two kinds of rules answer different questions: WFC adjacency says what *may* sit next to
+  // what (a permission relation, per direction), while a terrain says which tile goes where its
+  // like neighbors form a given pattern, which is what prescribes edges and inner/outer corners
+  if (ImGui::BeginTabBar("rules"))
+  {
+    // App::rules_mode is the source of truth: when something else changes it the tab follows (which
+    // takes a frame, as ImGui applies the request when the tab is submitted), and otherwise the
+    // tab the user clicks sets it
+    static RulesMode shown = RulesMode::kWfc;
+    const bool follow = (shown != app.rules_mode);
+    const auto flags = [&app, follow](RulesMode mode) {
+      return (follow and app.rules_mode == mode) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+    };
+    if (ImGui::BeginTabItem("WFC", nullptr, flags(RulesMode::kWfc)))
+    {
+      shown = RulesMode::kWfc;
+      adjacency_body(app);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("What may sit next to what, per direction: the constraints the WFC generator solves");
+    }
+    if (ImGui::BeginTabItem("Auto-tiling", nullptr, flags(RulesMode::kAutoTile)))
+    {
+      shown = RulesMode::kAutoTile;
+      auto_tile_body(app);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Terrains: which tile to use for each pattern of like neighbors, which is what the Auto "
+                        "tool paints with");
+    }
+    ImGui::EndTabBar();
+    if (!follow)
+    {
+      app.rules_mode = shown;
+    }
+  }
   ImGui::End();
 }
 

@@ -98,8 +98,8 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
-| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (local re-fill from the adjacency rules) |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/rules/path files in JSON and binary |
+| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
 | `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
@@ -215,36 +215,78 @@ key/value property to set or a key to remove) is behind a checkbox saying whethe
 "Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
 tiles, count)` does the writing; like the single-tile fields, it is not undoable.
 
+### Two kinds of tile adjacency rules
+
+A level holds two, and the "Tile adjacency rules" window has a tab for each:
+
+- **WFC** (`level::WfcRules`): a permission relation on pairs, per direction -- what *may* sit next
+  to what. The WFC generator solves it over a region.
+- **Auto-tiling** (`level::AutoTileRules`, `level/auto_tile_rules.hpp`): terrains, each keying its
+  tiles on the pattern of like neighbors around a cell.
+
+They are not interchangeable, and the second exists because the first cannot prescribe inner and
+outer corners. A WFC cell's legal tiles are the conjunction of independent per-direction
+constraints, while picking a corner needs a predicate over the *joint* pattern of the eight
+neighbors; in a real tileset the north-east and north-west outer corners and the north edge permit
+the same tiles on every side, so no set of `allowed(a, b, d)` facts separates them. WFC is also
+permissive and weight-random, while auto-tiling must be a function: one pattern, one tile.
+
+A terrain's `NeighborMask` has one bit per `Direction`, set where the neighbor holds the same
+terrain (Wang/blob tiling). `Neighborhood::kSides` counts the four sides (16 patterns, which a
+nine-slice covers); `kBlob` also counts a corner wherever both of its sides are terrain (47
+patterns), which is what tells inner from outer corners. `resolve` falls back to the nearest
+pattern, so a partial set of tiles still fills every cell, and `learn_from_layout` takes a terrain's
+tiles straight from a 3x3 nine-slice, a 2x2 inner-corner block or a single tile -- the window's
+"From the palette layout" button, over the palette selection. `expand` is how far past what the user
+paints the terrain reaches: 1 (the default) means painting a cell lays its middle tile and borders
+the ring around it; 0 means the painted cells take the edge tiles themselves.
+
+Terrains follow tileset removal, and travel in the level files and in the standalone rules file
+(which carries both kinds), remapped by tileset name.
+
 ### Auto-tiled painting
 
-The Auto tool (toolbar, or T) paints a tile as the *centers* of a shape and then re-fills the band
-of cells around them from the level's tile adjacency rules, so a path gets its sides and corners and
-water its shore. `procgen::autotile` does the work: the painted cells, and every cell holding a tile
-they hold, are locked (so painting more centers re-fills around the larger shape and earlier strokes
-keep theirs); of the remaining cells within `App::auto_tile.radius` (the "Refill" slider) each takes
-the rule tile satisfying the most of its neighbors' adjacencies, counting a locked neighbor
-`locked_weight` times an ordinary one and keeping what is there on a tie, over at most `iterations`
-nearest-first sweeps. Corner adjacencies count only when `WfcRules::diagonals` is set, and a cell
-holding a tile the rules do not know is left alone, so hand-placed decoration survives.
+The Auto tool (toolbar, or T) paints a tile as the middle of a shape and tiles the border around it.
+Which rules it uses depends on the tile being painted, and the toolbar says which:
 
-It is a local, greedy, deterministic repair, not a solver: it never fails and runs on every
-mouse-move of a stroke, and where the rules cannot express the shape drawn it reports the cells it
-could not satisfy (`AutoTileResult::unresolved`, shown in the viewport's status line) rather than
-backtracking. Whole regions are still generated with `procgen::solve` from the Generate panel. The
-toolbar says when the tile being painted is not in the rules at all, since then there is nothing to
-fill in around it.
+- the tile belongs to a **terrain** (`terrain_of`): `procgen::paint_terrain`. The painted cells,
+  plus the cells already holding the terrain's fully-surrounded tile (its every tile when `expand`
+  is 0), are the *core*; the terrain covers the core grown by `expand`, and every covered cell near
+  the stroke takes the tile for the pattern of covered neighbors around it. So one painted cell lays
+  down a whole nine-slice, and painting the next cell of a path turns the old corner into a straight
+  edge -- the covered area follows from the core alone, so a stroke never has to remember what the
+  last one did. Cells off the grid count as covered, so a terrain running off the map gets no border
+  along the map's edge.
+- **no terrain**: `procgen::autotile`, the fallback. It scores each WFC rule tile against its
+  neighbors' adjacencies over a band of `App::auto_tile.radius` cells (the "Refill" slider), locking
+  the painted cells and every cell holding a tile they hold, counting a locked neighbor
+  `locked_weight` times an ordinary one and keeping what is there on a tie, over at most
+  `iterations` nearest-first sweeps. It tidies a band against hard constraints but cannot prescribe
+  corners, so the toolbar points at the Auto-tiling tab.
+
+Both are local, greedy and deterministic rather than solvers: they never fail and are cheap enough
+to run on every mouse-move of a stroke. Where the rules cannot fill a cell they say so (the status
+line) rather than backtracking. Whole regions are still generated with `procgen::solve`.
 
 ### Tile adjacency rules
 
-The level's one set of tile adjacencies (`level::WfcRules`: what may sit next to what, plus each
-tile's weight, height band, water rule and semantic type) has a window of its own,
-`adjacency_window` (View > Tile adjacency rules, `editor/src/adjacency.cpp`). WFC reads it, and so
-can any other auto-tiling, so it is not a tab of the Generate panel; the WFC tab shows how many
-tiles and adjacencies it holds and has an "Edit rules..." button that opens and focuses it. The
-window holds the rule set's name and import/export, "Add palette tile(s)", the rules from the
-palette layout, the rule-tile strip, the selected tile's constraints, the batch constraints and the
-allowed neighbors per direction. The rules themselves, their file formats and `WfcTile` are
-unchanged: only the UI moved out of `generate.cpp`.
+Both kinds of rules live in one window, `adjacency_window` (View > Tile adjacency rules,
+`editor/src/adjacency.cpp`), above a tab bar; the rule set's name and the import/export of the file
+that carries both are shared, and `App::rules_mode` is the tab (it is the source of truth, so
+another panel or the scripted test can switch tabs).
+
+The **WFC** tab holds "Add palette tile(s)", the rules from the palette layout, the rule-tile strip,
+the selected tile's constraints, the batch constraints and the allowed neighbors per direction. The
+generators read `level::WfcRules`, so this is not a tab of the Generate panel; the Generate panel's
+WFC tab shows how many tiles and adjacencies it holds and has an "Edit rules..." button that opens
+and focuses the window.
+
+The **Auto-tiling** tab holds the terrain list (each row with a `delete_button`), the selected
+terrain's name, neighborhood and border, "From the palette layout", and a slot per pattern the
+neighborhood distinguishes. A slot draws the tile it holds with a line along every side the terrain
+does *not* continue through and a notch at every corner it does not reach, so the slot looks like
+the situation it covers; clicking one puts the palette tile in it, right-clicking clears it, and a
+slot with no tile is dark (`resolve` will use the nearest pattern's tile).
 
 Under "Allowed neighbors", clicking a thumbnail toggles that neighbor; pressing the left button and
 dragging across several sets all of them to what the first one became (allowed if it was forbidden,
@@ -335,16 +377,19 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
-  rule learning, rules from a palette layout, batch tile and constraint edits); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
+  rule learning, rules from a palette layout, batch tile and constraint edits, terrains from a
+  nine-slice or an inner-corner block, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files, a level whose layers
   and file are bigger than one worker's share, saves split across waves and saves streamed layer by
   layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
   layer, headers at their widest.
 - `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
-  constraints; auto-tiling (edges around painted centers, a path drawn one cell at a time, stability
-  once the rules hold, corner fills with `diagonals`, tiles the rules do not know, rules that cannot
-  express the shape).
+  constraints; terrain painting (a nine-slice from one painted cell, the border re-tiling as the
+  shape grows, inner corners, no border, the map edge, a terrain with no tiles); the WFC-scored
+  fallback (edges around painted centers, a path drawn one cell at a time, stability once the rules
+  hold, corner fills with `diagonals`, tiles the rules do not know, rules that cannot express the
+  shape).
 - `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export.
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
@@ -354,7 +399,8 @@ one check to mark required:
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
-  multi-tile paint stamp, auto-tiled painting, and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
+  multi-tile paint stamp, a terrain taken from a palette block and painted (the auto-tiling tab),
+  and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
 

@@ -961,10 +961,12 @@ void smoke(App& app)
     break;
   }
   case 23: {
-    // Auto-tiled painting: a hand-placed center forces edge tiles around it, and the field beyond
-    // those is left as it was
+    // Auto-tiled painting from a terrain: the adjacency rules window's auto-tiling tab, a terrain
+    // taken from a 3x3 palette block, and one painted cell laying down the whole nine-slice
     level::Level& lv = *app.level;
     app.tool = Tool::kAutoTile;
+    app.panels.adjacency = true;
+    app.rules_mode = RulesMode::kAutoTile;
     const std::size_t layer = 1;
     if (layer >= lv.layers.size() or lv.layers[layer].kind != level::LayerKind::kTiles)
     {
@@ -972,53 +974,71 @@ void smoke(App& app)
       break;
     }
     app.layer = layer;
-    // Grass, an edge and a center, where grass may never touch a center
-    const auto tileset = static_cast<level::TileSetId>(app.tileset);
-    level::WfcRules& rules = lv.wfc;
-    rules.tiles.clear();
-    rules.adjacency.clear();
-    rules.diagonals = false;
-    for (const level::TileIndex tile : {level::TileIndex{0}, level::TileIndex{1}, level::TileIndex{2}})
+    const level::Extents palette = palette_grid(app, app.tileset);
+    if (palette.width < 3 or palette.height < 3)
     {
-      level::add_tile(rules, level::TileRef{tileset, tile});
-    }
-    for (const auto& pair : {std::pair{0, 0}, std::pair{0, 1}, std::pair{1, 1}, std::pair{1, 2}, std::pair{2, 2}})
-    {
-      for (const level::Direction d : level::kDirections)
-      {
-        level::set_allowed(
-          rules, static_cast<level::WfcTileId>(pair.first), static_cast<level::WfcTileId>(pair.second), d, true);
-        level::set_allowed(
-          rules, static_cast<level::WfcTileId>(pair.second), static_cast<level::WfcTileId>(pair.first), d, true);
-      }
-    }
-    auto& grid = level::plane<level::TileGrid>(lv.layers[layer]);
-    grid.fill(level::TileRef{tileset, 0});
-    const level::Cell painted{grid.width() / 2, grid.height() / 2};
-    grid.at(painted) = level::TileRef{tileset, 2};
-    const procgen::AutoTileResult result = procgen::autotile(
-      rules,
-      &painted,
-      1,
-      procgen::AutoTileParams{.radius = app.auto_tile.radius, .iterations = app.auto_tile.iterations},
-      grid,
-      app.memory.frame);
-    invalidate_layer(app, layer);
-    if (result.unresolved != 0 or result.changed != 4)
-    {
-      report(app, Status::error("auto-tiling did not fill the four cells around the painted center"));
+      report(app, Status::error("the demo palette is too small for a nine-slice"));
       break;
     }
-    if (grid.at(painted) != level::TileRef{tileset, 2})
+    // The 3x3 block at the palette's top-left corner, as the palette lays it out
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (int y = 0; y < 3; ++y)
     {
-      report(app, Status::error("auto-tiling overwrote the painted center"));
-    }
-    for (const level::Direction d : level::kDirections)
-    {
-      if (grid.at(level::step(painted, d)) != level::TileRef{tileset, 1})
+      for (int x = 0; x < 3; ++x)
       {
-        report(app, Status::error("auto-tiling did not put an edge tile next to the painted center"));
+        app.selection.set(static_cast<level::TileIndex>(y * palette.width + x), true);
       }
+    }
+    level::Grid<level::TileRef> layout{app.memory.frame};
+    if (!palette_layout(app, layout) or layout.extents != level::Extents{3, 3})
+    {
+      report(app, Status::error("the palette selection is not a 3x3 block"));
+      break;
+    }
+    level::AutoTerrain& terrain = lv.auto_tiles.terrains[add_terrain(lv.auto_tiles, *lv.arena, "demo_path")];
+    app.terrain = level::find_terrain(lv.auto_tiles, "demo_path");
+    if (level::learn_from_layout(terrain, layout) != 9)
+    {
+      report(app, Status::error("the terrain did not take all nine tiles of the palette block"));
+      break;
+    }
+    app.selection.clear();
+
+    auto& grid = level::plane<level::TileGrid>(lv.layers[layer]);
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    const auto background =
+      level::TileRef{tileset, static_cast<level::TileIndex>(lv.tilesets[app.tileset].tiles.size() - 1)};
+    grid.fill(background);
+    app.paint.tile = level::resolve(terrain, level::kAllNeighbors);
+    if (level::terrain_of(lv.auto_tiles, app.paint.tile) != app.terrain)
+    {
+      report(app, Status::error("the terrain's middle tile does not belong to it"));
+      break;
+    }
+    const level::Cell painted{grid.width() / 2, grid.height() / 2};
+    const procgen::TerrainPaintResult result =
+      procgen::paint_terrain(lv.auto_tiles, app.terrain, &painted, 1, grid, app.memory.frame);
+    invalidate_layer(app, layer);
+    if (result.missing != 0 or result.covered != 9)
+    {
+      report(app, Status::error("painting one cell of the terrain did not tile the ring around it"));
+      break;
+    }
+    for (int y = 0; y < 3; ++y)
+    {
+      for (int x = 0; x < 3; ++x)
+      {
+        if (grid.at(painted.x - 1 + x, painted.y - 1 + y) != layout.at(x, y))
+        {
+          report(app, Status::error("the terrain's border does not match the palette block it came from"));
+        }
+      }
+    }
+    // A tile of no terrain leaves the Auto tool with only the WFC fallback
+    if (level::terrain_of(lv.auto_tiles, background) != level::kNoTerrain)
+    {
+      report(app, Status::error("the background tile should belong to no terrain"));
     }
     break;
   }

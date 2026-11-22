@@ -83,6 +83,14 @@ void apply(App& app, const PendingDelete& d)
     remove_season(lv, static_cast<SeasonId>(d.index));
     app.view.season = 0;
     break;
+  case DeleteKind::kTerrain:
+    if (d.index >= lv.auto_tiles.terrains.size())
+    {
+      return;
+    }
+    remove_terrain(lv.auto_tiles, static_cast<TerrainId>(d.index));
+    app.terrain = 0;
+    break;
   case DeleteKind::kGraph:
     if (d.index >= lv.graphs.size())
     {
