@@ -42,6 +42,7 @@ template <typename S> void serialize(S& s, TileInfo& v)
   s.value2b(v.material);
   s.value1b(v.collision);
   s.value1b(v.hidden);
+  s.value4b(v.scatter_weight);
 }
 
 template <typename S> void serialize(S& s, TileProperty& v)

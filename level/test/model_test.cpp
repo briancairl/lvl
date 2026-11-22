@@ -103,6 +103,7 @@ TEST_F(LevelModel, BatchTileEditWritesOnlyTheFieldsItIsGiven)
   const SemanticId grass = intern_semantic(level, "grass");
   ts.tiles[0].material = intern_material(level, "dirt");
   ts.tiles[0].hidden = true;
+  ts.tiles[0].scatter_weight = 3.0F;
   set_property(ts, 0, "sound", "step");
 
   // Two of the four tiles, plus an index past the end, which is skipped
@@ -124,12 +125,21 @@ TEST_F(LevelModel, BatchTileEditWritesOnlyTheFieldsItIsGiven)
   EXPECT_EQ(ts.tiles[0].material, intern_material(level, "dirt"));
   EXPECT_TRUE(ts.tiles[0].hidden);
   EXPECT_FALSE(ts.tiles[2].hidden);
+  EXPECT_FLOAT_EQ(ts.tiles[0].scatter_weight, 3.0F);
+  EXPECT_FLOAT_EQ(ts.tiles[2].scatter_weight, 1.0F);
   ASSERT_NE(find_property(ts, 0, "sound"), nullptr);
   EXPECT_EQ(*find_property(ts, 0, "sound"), std::string_view{"grass"});
   ASSERT_NE(find_property(ts, 2, "sound"), nullptr);
   EXPECT_EQ(ts.properties.size(), 2UL);
 
   // Removing by key, and an edit that writes nothing
+  // The scatter weight is written only when the edit carries it
+  const TileEdit reweigh{.set_scatter_weight = true, .scatter_weight = 0.25F};
+  EXPECT_EQ(apply_edit(ts, reweigh, tiles, 3), 2UL);
+  EXPECT_FLOAT_EQ(ts.tiles[0].scatter_weight, 0.25F);
+  EXPECT_FLOAT_EQ(ts.tiles[2].scatter_weight, 0.25F);
+  EXPECT_FLOAT_EQ(ts.tiles[1].scatter_weight, 1.0F);
+
   const TileEdit remove{.clear_property = true, .property_key = "sound"};
   EXPECT_EQ(apply_edit(ts, remove, tiles, 3), 2UL);
   EXPECT_TRUE(ts.properties.empty());

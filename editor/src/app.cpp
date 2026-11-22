@@ -1074,7 +1074,152 @@ void smoke(App& app)
     }
     break;
   }
-  case 24:
+  case 24: {
+    // A masked fill: the selected tiles scattered over the cells a height band lets through
+    level::Level& lv = *app.level;
+    const std::size_t tiles_layer = level::find_layer(lv, level::LayerKind::kTiles);
+    const std::size_t height_layer = level::find_layer(lv, level::LayerKind::kHeight);
+    if (tiles_layer == lv.layers.size() or height_layer == lv.layers.size())
+    {
+      report(app, Status::error("the smoke level has no tile or height layer to fill"));
+      break;
+    }
+    const auto& height = level::plane<level::ScalarGrid>(lv.layers[height_layer]);
+    auto& grid = level::plane<level::TileGrid>(lv.layers[tiles_layer]);
+    float lo = height.values[0];
+    float hi = height.values[0];
+    for (const float v : height.values)
+    {
+      lo = std::min(lo, v);
+      hi = std::max(hi, v);
+    }
+    if (!(hi > lo))
+    {
+      report(app, Status::error("the smoke level's heightmap is flat, so a band cannot be tested"));
+      break;
+    }
+    // The lower half of the range, so some cells are inside the band and some are not
+    Generators& g = app.generators;
+    g.fill_use_band = true;
+    g.fill_use_id = false;
+    g.fill_only_empty = false;
+    g.fill_scatter = true;
+    g.fill_region = false;
+    g.fill_band_layer = height_layer;
+    g.fill_lo = lo;
+    g.fill_hi = lo + (hi - lo) * 0.5F;
+
+    // Three tiles of the palette, as a ctrl+click selection
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (const level::TileIndex tile : {level::TileIndex{0}, level::TileIndex{1}, level::TileIndex{2}})
+    {
+      app.selection.set(tile, true);
+    }
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    memory::Scope fill_scope{app.memory.frame};
+    auto before = memory::make_vector<level::TileRef>(app.memory.frame);
+    before.assign(grid.values.begin(), grid.values.end());
+    const level::TileRef chosen[3] = {
+      level::TileRef{tileset, 0}, level::TileRef{tileset, 1}, level::TileRef{tileset, 2}};
+    apply_fill(app, tiles_layer, chosen, nullptr, 3);
+    const procgen::FillResult result = g.fill_result;
+    if (result.matched == 0 or result.matched == grid.values.size())
+    {
+      report(app, Status::error("the height band matched every cell or none, so it masked nothing"));
+      break;
+    }
+    // Every cell in the band holds one of the three, and every cell outside it is untouched
+    std::size_t seen[3] = {0, 0, 0};
+    for (std::size_t i = 0; i < grid.values.size(); ++i)
+    {
+      const bool inside = (height.values[i] >= g.fill_lo and height.values[i] <= g.fill_hi);
+      if (!inside)
+      {
+        if (grid.values[i] != before[i])
+        {
+          report(app, Status::error("the fill wrote outside its height band"));
+          break;
+        }
+        continue;
+      }
+      std::size_t which = 3;
+      for (std::size_t t = 0; t < 3; ++t)
+      {
+        which = (grid.values[i] == chosen[t]) ? t : which;
+      }
+      if (which == 3)
+      {
+        report(app, Status::error("a cell inside the height band did not take one of the selected tiles"));
+        break;
+      }
+      ++seen[which];
+    }
+    if (seen[0] == 0 or seen[1] == 0 or seen[2] == 0)
+    {
+      report(app, Status::error("the fill did not scatter all three of the selected tiles"));
+      break;
+    }
+    // Running it again writes the same tiles, so the scatter stays put
+    apply_fill(app, tiles_layer, chosen, nullptr, 3);
+    if (g.fill_result.changed != 0)
+    {
+      report(app, Status::error("filling again moved the scattered tiles"));
+    }
+    // Weights change the shares: the first tile is asked for four times as much as the others
+    const float weights[3] = {4.0F, 1.0F, 1.0F};
+    apply_fill(app, tiles_layer, chosen, weights, 3);
+    std::size_t weighted[3] = {0, 0, 0};
+    for (std::size_t i = 0; i < grid.values.size(); ++i)
+    {
+      if (height.values[i] < g.fill_lo or height.values[i] > g.fill_hi)
+      {
+        continue;
+      }
+      for (std::size_t t = 0; t < 3; ++t)
+      {
+        weighted[t] += (grid.values[i] == chosen[t]) ? 1U : 0U;
+      }
+    }
+    if (weighted[0] + weighted[1] + weighted[2] != result.matched)
+    {
+      report(app, Status::error("a weighted fill left cells of the band without one of the selected tiles"));
+      break;
+    }
+    if (weighted[0] <= weighted[1] + weighted[2] or weighted[1] == 0 or weighted[2] == 0)
+    {
+      report(app, Status::error("the scatter weights did not change the shares"));
+      break;
+    }
+    // A weight of zero keeps a tile out altogether
+    const float without[3] = {1.0F, 0.0F, 1.0F};
+    apply_fill(app, tiles_layer, chosen, without, 3);
+    for (std::size_t i = 0; i < grid.values.size(); ++i)
+    {
+      const bool inside = (height.values[i] >= g.fill_lo and height.values[i] <= g.fill_hi);
+      if (inside and grid.values[i] == chosen[1])
+      {
+        report(app, Status::error("a tile of weight zero was still scattered"));
+        break;
+      }
+    }
+
+    // With the scatter off, one tile covers the band instead
+    g.fill_scatter = false;
+    apply_fill(app, tiles_layer, chosen, nullptr, 1);
+    for (std::size_t i = 0; i < grid.values.size(); ++i)
+    {
+      const bool inside = (height.values[i] >= g.fill_lo and height.values[i] <= g.fill_hi);
+      if (inside and grid.values[i] != chosen[0])
+      {
+        report(app, Status::error("an unscattered fill did not use the first selected tile"));
+        break;
+      }
+    }
+    app.selection.clear();
+    break;
+  }
+  case 25:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -1083,7 +1228,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 25:
+  case 26:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

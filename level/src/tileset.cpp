@@ -169,6 +169,7 @@ std::size_t apply_edit(TileSet& tileset, const TileEdit& edit, const TileIndex* 
     info.material = edit.set_material ? edit.material : info.material;
     info.collision = edit.set_collision ? edit.collision : info.collision;
     info.hidden = edit.set_hidden ? edit.hidden : info.hidden;
+    info.scatter_weight = edit.set_scatter_weight ? edit.scatter_weight : info.scatter_weight;
     if (edit.set_property and !edit.property_key.empty())
     {
       set_property(tileset, tile, edit.property_key.view(), edit.property_value.view());

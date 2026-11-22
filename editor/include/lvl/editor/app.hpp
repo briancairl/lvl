@@ -28,6 +28,7 @@
 #include "lvl/editor/style.hpp"
 #include "lvl/editor/undo.hpp"
 #include "lvl/level/level.hpp"
+#include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/render/compose.hpp"
@@ -254,6 +255,23 @@ struct Generators
   int region_y = 0;
   int region_w = 0;
   int region_h = 0;
+
+  /// Masked fill (Generate > Fill): the tile layer written, and the layers that mask it
+  std::size_t fill_layer = 0;
+  std::size_t fill_band_layer = 0;
+  std::size_t fill_id_layer = 0;
+  bool fill_use_band = true;
+  bool fill_use_id = false;
+  float fill_lo = 0.0F;
+  float fill_hi = 1.0F;
+  int fill_id = 0;
+  bool fill_only_empty = false;
+  /// With two or more tiles selected, scatter them rather than filling with the first
+  bool fill_scatter = true;
+  /// Whether the fill honours the select tool's region, as WFC does
+  bool fill_region = true;
+  /// What the last fill did, so the panel can report it
+  procgen::FillResult fill_result;
 };
 
 /// What a delete button removes

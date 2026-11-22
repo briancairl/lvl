@@ -10,12 +10,14 @@ cc_library(
     name = "procgen",
     srcs = [
         "src/autotile.cpp",
+        "src/fill.cpp",
         "src/noise.cpp",
         "src/watershed.cpp",
         "src/wfc.cpp",
     ],
     hdrs = [
         "include/lvl/procgen/autotile.hpp",
+        "include/lvl/procgen/fill.hpp",
         "include/lvl/procgen/noise.hpp",
         "include/lvl/procgen/watershed.hpp",
         "include/lvl/procgen/wfc.hpp",

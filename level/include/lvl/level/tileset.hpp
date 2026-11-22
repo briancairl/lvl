@@ -56,6 +56,9 @@ struct TileInfo
   std::uint8_t collision = collision::kNone;
   /// Excluded from palettes/procedural generation
   bool hidden = false;
+  /// How often a scattered fill picks this tile, relative to the others it is scattered with
+  /// (see procgen::fill_masked); 0 keeps it out of a scatter without hiding it
+  float scatter_weight = 1.0F;
 };
 
 /// A free-form key/value property of a tile ("damage" = "5", "animated" = "water", ...)
@@ -92,6 +95,8 @@ struct TileEdit
   std::uint8_t collision = collision::kNone;
   bool set_hidden = false;
   bool hidden = false;
+  bool set_scatter_weight = false;
+  float scatter_weight = 1.0F;
   /// Sets property <code>property_key</code> to <code>property_value</code>
   bool set_property = false;
   /// Removes property <code>property_key</code>

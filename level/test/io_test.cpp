@@ -64,6 +64,7 @@ protected:
     ts.tiles[3] = TileInfo{
       .name = "rock", .semantic = road, .material = grass, .collision = collision::kSolid | collision::kSightBlocker};
     ts.tiles[4].hidden = true;
+    ts.tiles[4].scatter_weight = 0.25F;
     ts.properties.push_back(TileProperty{.tile = 3, .key = "damage", .value = "2"});
     set_seasonal_variant(ts, SeasonalVariant{.tile = 3, .season = "winter", .alternate = 11, .material = snow});
 
@@ -215,6 +216,8 @@ protected:
     EXPECT_EQ(tb.tiles[3].material, ta.tiles[3].material);
     EXPECT_EQ(tb.tiles[3].collision, ta.tiles[3].collision);
     EXPECT_TRUE(tb.tiles[4].hidden);
+    EXPECT_FLOAT_EQ(tb.tiles[4].scatter_weight, 0.25F);
+    EXPECT_FLOAT_EQ(tb.tiles[3].scatter_weight, 1.0F);
     ASSERT_EQ(tb.properties.size(), 1UL);
     EXPECT_EQ(tb.properties[0].value, ta.properties[0].value);
     EXPECT_EQ(seasonal_tile(tb, 3, "winter"), 11);
