@@ -6,9 +6,12 @@
 
 // C++ Standard Library
 #include <cstdlib>
+#include <filesystem>
+#include <system_error>
 
 // LVL
 #include "lvl/core/build.hpp"
+#include "lvl/core/file.hpp"
 #include "lvl/core/format.hpp"
 #include "lvl/editor/config.hpp"
 
@@ -29,6 +32,17 @@ Path config_path(std::string_view name)
     return Path{format<Path::capacity()>("%s/.config/lvl/%.*s", home, n, name.data())};
   }
   return Path{format<Path::capacity()>("lvl_%.*s", n, name.data())};
+}
+
+Status write_config(std::string_view name, const void* data, std::size_t size)
+{
+  const Path path = config_path(name);
+  std::error_code ec;
+  if (const auto dir = std::filesystem::path{path.c_str()}.parent_path(); !dir.empty())
+  {
+    std::filesystem::create_directories(dir, ec);
+  }
+  return file::write(path.c_str(), data, size);
 }
 
 }  // namespace lvl::editor

@@ -292,6 +292,17 @@ enum class FileAction : std::uint8_t
   kLoadStyle,
 };
 
+/// The most recently opened or saved levels (File > Open recent), newest first
+struct RecentFiles
+{
+  /// How many paths are kept; the oldest falls off the list
+  static constexpr std::size_t kCapacity = 10;
+  Path paths[kCapacity];
+  std::size_t count = 0;
+  /// The list has been read from the user's config
+  bool loaded = false;
+};
+
 /// State of the file dialog (ImGuiFileDialog; see editor/src/file_dialog.cpp)
 struct FileDialog
 {
@@ -359,6 +370,7 @@ struct App
   /// The style as last loaded/saved/applied from a preset ("Revert" in the style editor)
   style::Profile style_reference;
   FileDialog dialog;
+  RecentFiles recent;
   JobSlot job;
   JobMemory job_memory;
   PendingDelete pending_delete;
