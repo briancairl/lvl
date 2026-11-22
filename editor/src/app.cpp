@@ -99,6 +99,7 @@ void finish_job(App& app)
         {
           app.path = job.path;
           app.modified = false;
+          remember_recent_file(app, job.path.view());
           web::offer_download(job.path.c_str());
           // Quitting was waiting on this save
           app.exit = app.exit or app.exit_after_save;
@@ -115,6 +116,7 @@ void finish_job(App& app)
           apply_atlases(app, job.atlases, 1 - app.assets.current);
           app.path = job.path;
           app.modified = false;
+          remember_recent_file(app, job.path.view());
           app.undo.clear();
           app.layer = std::min<std::size_t>(app.layer, app.level->layers.empty() ? 0 : app.level->layers.size() - 1);
           app.tileset = 0;
@@ -125,6 +127,8 @@ void finish_job(App& app)
         else
         {
           level::reset(*app.spare);
+          // A level that could not be loaded does not belong in the recent list
+          forget_recent_file(app, job.path.view());
           report(app, job.result);
         }
       },
@@ -507,6 +511,7 @@ void main_menu(App& app)
       {
         open_file_dialog(app, FileAction::kOpenLevel);
       }
+      recent_files_menu(app);
       if (ImGui::MenuItem("Save", "Ctrl+S"))
       {
         save(app);
@@ -905,7 +910,20 @@ void smoke(App& app)
     }
     break;
   }
-  case 21:
+  case 21: {
+    // The recent levels: the saves and the load above left their paths in the list, newest first,
+    // and the newest one opens again from it (as File > Open recent does)
+    load_recent_files(app);
+    if (app.recent.count < 2 or app.recent.paths[0] != std::string_view{"smoke.lvlb"})
+    {
+      report(app, Status::error("the recent levels did not record the smoke test's files"));
+      break;
+    }
+    const Path newest = app.recent.paths[0];
+    file_action(app, FileAction::kOpenLevel, newest.c_str());
+    break;
+  }
+  case 22:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -914,7 +932,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 22:
+  case 23:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

@@ -67,6 +67,21 @@ void close_file_dialog(App& app);
 /// Writes the file dialog's bookmarks to the user's config
 void save_file_dialog_places(App& app);
 
+/// Reads the recent levels from the user's config (once; later calls do nothing)
+void load_recent_files(App& app);
+
+/// Puts <code>path</code> at the front of the recent levels and writes the list to the user's config
+void remember_recent_file(App& app, std::string_view path);
+
+/// Drops <code>path</code> from the recent levels (a load of it failed), and writes the list
+void forget_recent_file(App& app, std::string_view path);
+
+/// Empties the recent levels, and writes the list
+void clear_recent_files(App& app);
+
+/// The File > Open recent submenu (opens the level it is given, or clears the list)
+void recent_files_menu(App& app);
+
 /// Runs <code>action</code> on <code>path</code> (after the dialog closes, or from the command line)
 void file_action(App& app, FileAction action, const char* path);
 

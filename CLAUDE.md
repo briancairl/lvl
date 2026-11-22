@@ -101,7 +101,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `wfc_neighbors.cpp` the pop-out drag-and-drop WFC neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `wfc_neighbors.cpp` the pop-out drag-and-drop WFC neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -164,6 +164,16 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 - **Devices**.
 
 The dialog remembers the last folder it was used in.
+
+### Recent levels
+
+File > Open recent lists the last `RecentFiles::kCapacity` (10) levels opened or saved, newest
+first. `editor/src/recent.cpp` keeps the list in `App::recent` (fixed `Path`s, so no heap) and
+writes it to `config_path("recent_files.txt")` as one path per line whenever it changes; it is read
+back the first time the menu is drawn or an entry is recorded. `finish_job` records a path once a
+level load or save succeeds, and drops one whose load failed, so a file that has gone away leaves
+the list when it is next tried; until then the menu shows it disabled. "Clear the list" empties it.
+Choosing an entry replaces the open document just as "Open..." does.
 
 ### Quitting
 
@@ -291,8 +301,8 @@ one check to mark required:
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, WFC rules and batch
-  constraints from a palette selection, the file dialog, and the unsaved-changes
-  prompt (cancelled, then "Save and quit" ends the session). It requires no
+  constraints from a palette selection, the file dialog, reopening the newest recent level, and the
+  unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
 

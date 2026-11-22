@@ -227,13 +227,7 @@ void save_file_dialog_places(App& app)
   }
   // Only the editable groups (bookmarks): the fixed places are rebuilt every time
   const std::string places = dialog().SerializePlaces(false);
-  const Path path = config_path(kPlacesFile);
-  std::error_code ec;
-  if (const auto dir = std::filesystem::path{path.c_str()}.parent_path(); !dir.empty())
-  {
-    std::filesystem::create_directories(dir, ec);
-  }
-  if (const Status s = file::write(path.c_str(), places.data(), places.size()); !s.ok)
+  if (const Status s = write_config(kPlacesFile, places.data(), places.size()); !s.ok)
   {
     LVL_LOG_WARN() << "Could not save file dialog bookmarks: " << s.message;
   }
