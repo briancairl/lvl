@@ -26,6 +26,7 @@
 #include "lvl/editor/app.hpp"
 #include "lvl/editor/web.hpp"
 #include "lvl/level/io.hpp"
+#include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/wfc.hpp"
 
 namespace lvl::editor
@@ -400,6 +401,7 @@ void shortcuts(App& app)
   static constexpr Hotkey kHotkeys[] = {
     {ImGuiKey_H, Tool::kPan},
     {ImGuiKey_B, Tool::kPaint},
+    {ImGuiKey_T, Tool::kAutoTile},
     {ImGuiKey_E, Tool::kErase},
     {ImGuiKey_G, Tool::kFill},
     {ImGuiKey_R, Tool::kRect},
@@ -958,7 +960,69 @@ void smoke(App& app)
     file_action(app, FileAction::kOpenLevel, newest.c_str());
     break;
   }
-  case 23:
+  case 23: {
+    // Auto-tiled painting: a hand-placed center forces edge tiles around it, and the field beyond
+    // those is left as it was
+    level::Level& lv = *app.level;
+    app.tool = Tool::kAutoTile;
+    const std::size_t layer = 1;
+    if (layer >= lv.layers.size() or lv.layers[layer].kind != level::LayerKind::kTiles)
+    {
+      report(app, Status::error("the demo level has no tile layer to auto-tile"));
+      break;
+    }
+    app.layer = layer;
+    // Grass, an edge and a center, where grass may never touch a center
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    level::WfcRules& rules = lv.wfc;
+    rules.tiles.clear();
+    rules.adjacency.clear();
+    rules.diagonals = false;
+    for (const level::TileIndex tile : {level::TileIndex{0}, level::TileIndex{1}, level::TileIndex{2}})
+    {
+      level::add_tile(rules, level::TileRef{tileset, tile});
+    }
+    for (const auto& pair : {std::pair{0, 0}, std::pair{0, 1}, std::pair{1, 1}, std::pair{1, 2}, std::pair{2, 2}})
+    {
+      for (const level::Direction d : level::kDirections)
+      {
+        level::set_allowed(
+          rules, static_cast<level::WfcTileId>(pair.first), static_cast<level::WfcTileId>(pair.second), d, true);
+        level::set_allowed(
+          rules, static_cast<level::WfcTileId>(pair.second), static_cast<level::WfcTileId>(pair.first), d, true);
+      }
+    }
+    auto& grid = level::plane<level::TileGrid>(lv.layers[layer]);
+    grid.fill(level::TileRef{tileset, 0});
+    const level::Cell painted{grid.width() / 2, grid.height() / 2};
+    grid.at(painted) = level::TileRef{tileset, 2};
+    const procgen::AutoTileResult result = procgen::autotile(
+      rules,
+      &painted,
+      1,
+      procgen::AutoTileParams{.radius = app.auto_tile.radius, .iterations = app.auto_tile.iterations},
+      grid,
+      app.memory.frame);
+    invalidate_layer(app, layer);
+    if (result.unresolved != 0 or result.changed != 4)
+    {
+      report(app, Status::error("auto-tiling did not fill the four cells around the painted center"));
+      break;
+    }
+    if (grid.at(painted) != level::TileRef{tileset, 2})
+    {
+      report(app, Status::error("auto-tiling overwrote the painted center"));
+    }
+    for (const level::Direction d : level::kDirections)
+    {
+      if (grid.at(level::step(painted, d)) != level::TileRef{tileset, 1})
+      {
+        report(app, Status::error("auto-tiling did not put an edge tile next to the painted center"));
+      }
+    }
+    break;
+  }
+  case 24:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -967,7 +1031,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 24:
+  case 25:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

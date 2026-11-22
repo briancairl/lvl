@@ -61,6 +61,8 @@ enum class Tool : std::uint8_t
 {
   kPan,
   kPaint,
+  /// Paint centers and let the tile adjacency rules re-fill around them
+  kAutoTile,
   kErase,
   kFill,
   kRect,
@@ -91,6 +93,21 @@ struct Brush
   float strength = 0.05F;
   /// Scalar brushes: value for kSet
   float value = 0.5F;
+};
+
+/**
+ * @brief Settings of auto-tiled painting (the Auto tool)
+ *
+ * The tool paints the palette tile (or stamp) as the "centers" of a shape, then re-chooses the band
+ * of cells around them from the level's tile adjacency rules, which is how a path's edges and
+ * corners or a lake's shore appear by themselves. See lvl::procgen::autotile.
+ */
+struct AutoTile
+{
+  /// Cells around the painted ones the rules may re-fill
+  int radius = 2;
+  /// Relaxation sweeps (each carries the rules one cell further outward)
+  int iterations = 4;
 };
 
 /// What painting writes, per layer kind
@@ -326,6 +343,7 @@ struct App
   Tool tool = Tool::kPaint;
   Brush brush;
   Paint paint;
+  AutoTile auto_tile;
   std::size_t layer = 1;
   std::size_t tileset = 0;
   /// Tile selected in the tileset panel (for metadata editing)

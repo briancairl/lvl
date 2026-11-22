@@ -2,12 +2,14 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <utility>
 
 // GTest
 #include <gtest/gtest.h>
 
 // LVL
 #include "lvl/level/level.hpp"
+#include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
@@ -410,4 +412,197 @@ TEST_F(Procgen, WfcReportsImpossibleConstraints)
 
   WfcRules empty{doc};
   EXPECT_FALSE(solve(empty, WfcConstraints{}, WfcParams{}, out, scratch).status.ok);
+}
+
+namespace
+{
+
+/// Tiles of the auto-tiling rule sets below
+enum : TileIndex
+{
+  kGrass = 0,
+  kEdge = 1,
+  kCenter = 2,
+  /// A tile of another tileset, which the rules know nothing about
+  kDecoration = 7,
+};
+
+constexpr TileRef tile_of(TileIndex tile) { return TileRef{0, tile}; }
+
+/**
+ * @brief Rules for a path (or a lake) in a field: an edge tile has to come between the two
+ *
+ * Grass, edge and center may each sit next to themselves and next to the one beside them, but grass
+ * may never touch a center, so painting centers forces edges around them.
+ */
+WfcRules path_rules(memory::Arena& arena, bool diagonals)
+{
+  WfcRules rules{arena};
+  rules.diagonals = diagonals;
+  for (const TileIndex tile : {kGrass, kEdge, kCenter})
+  {
+    add_tile(rules, tile_of(tile));
+  }
+  // Grass is the most frequent tile, so it is what an empty cell falls back to
+  rules.tiles[kGrass].weight = 10.0F;
+  static constexpr std::pair<TileIndex, TileIndex> kPairs[] = {
+    {kGrass, kGrass}, {kGrass, kEdge}, {kEdge, kEdge}, {kEdge, kCenter}, {kCenter, kCenter}};
+  for (const auto& [a, b] : kPairs)
+  {
+    for (const Direction d : kNeighbors)
+    {
+      if (!diagonal(d) or diagonals)
+      {
+        set_allowed(rules, a, b, d, true);
+        set_allowed(rules, b, a, d, true);
+      }
+    }
+  }
+  return rules;
+}
+
+/// A field of grass with <code>centers</code> painted into it
+Grid<TileRef> field(memory::Arena& arena, Extents extents)
+{
+  Grid<TileRef> tiles{arena};
+  tiles.assign(extents, tile_of(kGrass));
+  return tiles;
+}
+
+}  // namespace
+
+TEST_F(Procgen, AutoTileFillsEdgesAroundPaintedCenters)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(result.unresolved, 0U);
+  EXPECT_EQ(result.changed, 4U);
+  // The painted center stays, an edge comes between it and the grass, and the rest is untouched
+  EXPECT_EQ(tiles.at(painted), tile_of(kCenter));
+  for (const Direction d : kDirections)
+  {
+    EXPECT_EQ(tiles.at(step(painted, d)), tile_of(kEdge)) << "direction " << static_cast<int>(d);
+  }
+  EXPECT_EQ(tiles.at(3, 3), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(2, 4), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(0, 0), tile_of(kGrass));
+}
+
+TEST_F(Procgen, AutoTileRefillsAroundCentersPaintedLater)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{12, 5});
+  // A path drawn one cell at a time: each stroke re-fills the band around the growing shape
+  for (int x = 2; x <= 8; ++x)
+  {
+    const Cell painted{x, 2};
+    tiles.at(painted) = tile_of(kCenter);
+    const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+    EXPECT_EQ(result.unresolved, 0U) << "at x = " << x;
+  }
+  for (int x = 2; x <= 8; ++x)
+  {
+    // Every center painted stayed a center, with edges above and below
+    EXPECT_EQ(tiles.at(x, 2), tile_of(kCenter)) << "at x = " << x;
+    EXPECT_EQ(tiles.at(x, 1), tile_of(kEdge)) << "at x = " << x;
+    EXPECT_EQ(tiles.at(x, 3), tile_of(kEdge)) << "at x = " << x;
+  }
+  // The ends of the path are capped, and the field beyond the edges is untouched
+  EXPECT_EQ(tiles.at(1, 2), tile_of(kEdge));
+  EXPECT_EQ(tiles.at(9, 2), tile_of(kEdge));
+  EXPECT_EQ(tiles.at(0, 2), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(5, 0), tile_of(kGrass));
+  EXPECT_EQ(tiles.at(5, 4), tile_of(kGrass));
+}
+
+TEST_F(Procgen, AutoTileIsStableOnceTheRulesHold)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+  autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+
+  const AutoTileResult again = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(again.changed, 0U);
+  EXPECT_EQ(again.unresolved, 0U);
+  EXPECT_GT(again.considered, 0U);
+}
+
+TEST_F(Procgen, AutoTileFillsCornersWhenDiagonalsAreOn)
+{
+  WfcRules rules = path_rules(doc, true);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(result.unresolved, 0U);
+  // Grass may not touch a center at a corner either, so the whole ring becomes edge
+  for (const Direction d : kNeighbors)
+  {
+    EXPECT_EQ(tiles.at(step(painted, d)), tile_of(kEdge)) << "direction " << static_cast<int>(d);
+  }
+  EXPECT_EQ(tiles.at(2, 2), tile_of(kGrass));
+}
+
+TEST_F(Procgen, AutoTileLeavesTilesTheRulesDoNotKnow)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{9, 9});
+  const Cell painted{4, 4};
+  tiles.at(painted) = tile_of(kCenter);
+  // Hand-placed decoration from another tileset, right where an edge would go
+  const TileRef decoration = TileRef{1, kDecoration};
+  tiles.at(4, 3) = decoration;
+  // An empty cell, which has no tile worth keeping
+  tiles.at(4, 5) = kEmptyTile;
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_EQ(tiles.at(4, 3), decoration);
+  EXPECT_EQ(tiles.at(4, 5), tile_of(kEdge));
+  // The decoration constrains nothing, so the cell beyond it is free to stay grass
+  EXPECT_EQ(tiles.at(4, 2), tile_of(kGrass));
+  EXPECT_EQ(result.unresolved, 0U);
+}
+
+TEST_F(Procgen, AutoTileReportsWhatTheRulesCannotExpress)
+{
+  // No edge tile: grass may not touch a center, and nothing can go between them
+  WfcRules rules{doc};
+  rules.diagonals = false;
+  add_tile(rules, tile_of(kGrass));
+  add_tile(rules, tile_of(kCenter));
+  for (const Direction d : kDirections)
+  {
+    set_allowed(rules, 0, 0, d, true);
+    set_allowed(rules, 1, 1, d, true);
+  }
+  Grid<TileRef> tiles = field(doc, Extents{7, 7});
+  const Cell painted{3, 3};
+  tiles.at(painted) = tile_of(kCenter);
+
+  const AutoTileResult result = autotile(rules, &painted, 1, AutoTileParams{}, tiles, scratch);
+  EXPECT_GT(result.unresolved, 0U);
+  // The painted cell is never rewritten, whatever the rules say
+  EXPECT_EQ(tiles.at(painted), tile_of(kCenter));
+}
+
+TEST_F(Procgen, AutoTileDoesNothingWithoutRulesOrPaintedCells)
+{
+  WfcRules rules = path_rules(doc, false);
+  Grid<TileRef> tiles = field(doc, Extents{5, 5});
+  const Cell painted{2, 2};
+  EXPECT_EQ(autotile(rules, nullptr, 0, AutoTileParams{}, tiles, scratch).considered, 0U);
+  EXPECT_EQ(autotile(rules, &painted, 1, AutoTileParams{.radius = 0}, tiles, scratch).considered, 0U);
+  WfcRules empty{doc};
+  EXPECT_EQ(autotile(empty, &painted, 1, AutoTileParams{}, tiles, scratch).considered, 0U);
+  for (const TileRef& tile : tiles.values)
+  {
+    EXPECT_EQ(tile, tile_of(kGrass));
+  }
 }

@@ -99,7 +99,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
-| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver) |
+| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (local re-fill from the adjacency rules) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
 | `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
@@ -215,6 +215,25 @@ key/value property to set or a key to remove) is behind a checkbox saying whethe
 "Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
 tiles, count)` does the writing; like the single-tile fields, it is not undoable.
 
+### Auto-tiled painting
+
+The Auto tool (toolbar, or T) paints a tile as the *centers* of a shape and then re-fills the band
+of cells around them from the level's tile adjacency rules, so a path gets its sides and corners and
+water its shore. `procgen::autotile` does the work: the painted cells, and every cell holding a tile
+they hold, are locked (so painting more centers re-fills around the larger shape and earlier strokes
+keep theirs); of the remaining cells within `App::auto_tile.radius` (the "Refill" slider) each takes
+the rule tile satisfying the most of its neighbors' adjacencies, counting a locked neighbor
+`locked_weight` times an ordinary one and keeping what is there on a tie, over at most `iterations`
+nearest-first sweeps. Corner adjacencies count only when `WfcRules::diagonals` is set, and a cell
+holding a tile the rules do not know is left alone, so hand-placed decoration survives.
+
+It is a local, greedy, deterministic repair, not a solver: it never fails and runs on every
+mouse-move of a stroke, and where the rules cannot express the shape drawn it reports the cells it
+could not satisfy (`AutoTileResult::unresolved`, shown in the viewport's status line) rather than
+backtracking. Whole regions are still generated with `procgen::solve` from the Generate panel. The
+toolbar says when the tile being painted is not in the rules at all, since then there is nothing to
+fill in around it.
+
 ### Tile adjacency rules
 
 The level's one set of tile adjacencies (`level::WfcRules`: what may sit next to what, plus each
@@ -323,7 +342,9 @@ one check to mark required:
   layer, headers at their widest.
 - `//procgen`: noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
-  constraints.
+  constraints; auto-tiling (edges around painted centers, a path drawn one cell at a time, stability
+  once the rules hold, corner fills with `diagonals`, tiles the rules do not know, rules that cannot
+  express the shape).
 - `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export.
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
@@ -332,8 +353,8 @@ one check to mark required:
   paths: demo level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
-  batch constraints from a palette selection, the file dialog, reopening the newest recent level, and the
-  unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
+  batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
+  multi-tile paint stamp, auto-tiled painting, and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
 
