@@ -505,7 +505,201 @@ void fill_section(App& app)
   }
 }
 
+/**
+ * @brief Generate > Height steps: the heightmap cut into levels, and the cliffs between them drawn
+ *
+ * Two passes, run by two buttons, because the first is the one that matters: the levels are what
+ * the game is given, and the tiles are this editor showing what it will draw from them. Recutting
+ * the levels redraws the tiles too unless that is turned off, since leaving the two out of step is
+ * never what is wanted.
+ */
+void steps_section(App& app)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  if (lv.steps.terrains.empty())
+  {
+    ImGui::TextDisabled("No step terrains yet.");
+    if (ImGui::SmallButton("Edit rules..."))
+    {
+      app.panels.adjacency = true;
+      app.rules_mode = RulesMode::kSteps;
+      ImGui::SetWindowFocus("Tile adjacency rules");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("opens the Height steps tab");
+    return;
+  }
+  ImGui::Text("%zu step terrain(s)", lv.steps.terrains.size());
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Edit rules..."))
+  {
+    app.panels.adjacency = true;
+    app.rules_mode = RulesMode::kSteps;
+    ImGui::SetWindowFocus("Tile adjacency rules");
+  }
+
+  ImGui::SeparatorText("Levels");
+  const bool has_height = layer_combo("Heightmap", lv, LayerKind::kHeight, g.step_height_layer);
+  const bool has_levels = layer_combo("Level layer", lv, LayerKind::kLevel, g.step_level_layer);
+  if (!has_levels)
+  {
+    if (ImGui::Button("Add a level layer", ImVec2{-1, 0}))
+    {
+      g.step_level_layer = add_layer(lv, LayerKind::kLevel, "levels");
+      app.modified = true;
+    }
+    return;
+  }
+  if (!has_height)
+  {
+    ImGui::TextDisabled("Without a heightmap the levels can only be drawn by hand.");
+  }
+  int mode = static_cast<int>(g.terrace.mode);
+  ImGui::SetNextItemWidth(160.0F);
+  if (ImGui::Combo("Cut by", &mode, "Number of levels\0Height per level\0"))
+  {
+    g.terrace.mode = static_cast<procgen::TerraceMode>(mode);
+  }
+  if (g.terrace.mode == procgen::TerraceMode::kCount)
+  {
+    ImGui::SetNextItemWidth(160.0F);
+    ImGui::SliderInt("Levels", &g.terrace.levels, 1, 32);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("The height range is cut into this many bands of equal height");
+    }
+  }
+  else
+  {
+    ImGui::SetNextItemWidth(160.0F);
+    ImGui::DragFloat("Height per level", &g.terrace.rate, 0.002F, 0.001F, 100.0F, "%.3f");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Each band is this tall, so a steeper map simply gets more of them");
+    }
+  }
+  ImGui::SetNextItemWidth(160.0F);
+  ImGui::DragInt("Level ceiling", &g.terrace.max_level, 1.0F, 1, 255);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Levels are held down to this, so one stray peak cannot run the count up");
+  }
+  ImGui::Checkbox("Redraw the tiles too", &g.step_tile_after_terrace);
+  ImGui::BeginDisabled(!has_height);
+  if (ImGui::Button("Cut the heightmap into levels", ImVec2{-1, 0}))
+  {
+    apply_terrace(app);
+  }
+  ImGui::EndDisabled();
+  if (g.terrace_result.rate > 0.0F)
+  {
+    ImGui::TextDisabled(
+      "Last cut: %d level(s), %.4f tall, %zu cell(s) moved",
+      g.terrace_result.top + 1,
+      static_cast<double>(g.terrace_result.rate),
+      g.terrace_result.changed);
+  }
+
+  ImGui::SeparatorText("Tiles and collision");
+  if (app.layer < lv.layers.size() and lv.layers[app.layer].kind == LayerKind::kTiles)
+  {
+    g.step_tile_layer = app.layer;
+  }
+  if (!layer_combo("Target tile layer", lv, LayerKind::kTiles, g.step_tile_layer))
+  {
+    return;
+  }
+  ImGui::Checkbox("Keep tiles at levels no terrain covers", &g.step_keep_untermed);
+  int collision = static_cast<int>(g.step_collision);
+  ImGui::SetNextItemWidth(220.0F);
+  if (ImGui::Combo("Block steps", &collision, "Don't touch collision\0Below the step\0Above the step\0"))
+  {
+    g.step_collision = static_cast<procgen::StepCollision>(collision);
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Marks the cells on one side of every cliff solid, so it cannot be walked through.\n"
+                      "Below: the foot of the cliff, which leaves the ground on top walkable.\n"
+                      "Above: its edge. Either way the mark is cleared again where the cliff has gone.");
+  }
+  bool has_collision = true;
+  if (g.step_collision != procgen::StepCollision::kNone)
+  {
+    has_collision = layer_combo("Collision layer", lv, LayerKind::kCollision, g.step_collision_layer);
+  }
+  ImGui::BeginDisabled(!has_collision);
+  if (ImGui::Button("Draw the steps", ImVec2{-1, 0}))
+  {
+    apply_steps(app);
+  }
+  ImGui::EndDisabled();
+  const procgen::StepFillResult& r = g.step_result;
+  if (r.tiled > 0 or r.untermed > 0 or r.missing > 0)
+  {
+    ImGui::TextDisabled("Last draw: %zu tiled, %zu changed, %zu blocked", r.tiled, r.changed, r.blocked);
+    if (r.untermed > 0)
+    {
+      ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "%zu cell(s) at a level no terrain covers", r.untermed);
+    }
+    if (r.missing > 0)
+    {
+      ImGui::TextColored(
+        ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "%zu cell(s) whose terrain has no tile for the shape", r.missing);
+    }
+  }
+}
+
 }  // namespace
+
+void apply_terrace(App& app)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  if (g.step_height_layer >= lv.layers.size() or g.step_level_layer >= lv.layers.size())
+  {
+    return;
+  }
+  app.undo.snapshot(lv, g.step_level_layer, "Cut levels");
+  g.terrace_result = procgen::terrace(
+    plane<ScalarGrid>(lv.layers[g.step_height_layer]), g.terrace, plane<IdGrid>(lv.layers[g.step_level_layer]));
+  invalidate_layer(app, g.step_level_layer);
+  app.modified = app.modified or (g.terrace_result.changed > 0);
+  LVL_LOG_INFO() << "Terrace: " << (g.terrace_result.top + 1) << " level(s), " << g.terrace_result.changed
+                 << " cell(s) moved";
+  if (g.step_tile_after_terrace)
+  {
+    apply_steps(app);
+  }
+}
+
+void apply_steps(App& app)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  if (g.step_level_layer >= lv.layers.size() or g.step_tile_layer >= lv.layers.size())
+  {
+    return;
+  }
+  const bool block = (g.step_collision != procgen::StepCollision::kNone) and
+    (g.step_collision_layer < lv.layers.size()) and (lv.layers[g.step_collision_layer].kind == LayerKind::kCollision);
+  app.undo.snapshot(lv, g.step_tile_layer, "Draw steps");
+  g.step_result = procgen::tile_steps(
+    lv.steps,
+    plane<IdGrid>(lv.layers[g.step_level_layer]),
+    procgen::StepFillParams{
+      .collision = block ? g.step_collision : procgen::StepCollision::kNone, .keep_untermed = g.step_keep_untermed},
+    plane<TileGrid>(lv.layers[g.step_tile_layer]),
+    block ? &plane<MaskGrid>(lv.layers[g.step_collision_layer]) : nullptr);
+  invalidate_layer(app, g.step_tile_layer);
+  if (block)
+  {
+    invalidate_layer(app, g.step_collision_layer);
+  }
+  app.modified = app.modified or (g.step_result.changed > 0) or (g.step_result.blocked > 0);
+  LVL_LOG_INFO() << "Steps: " << g.step_result.tiled << " tiled, " << g.step_result.changed << " changed, "
+                 << g.step_result.blocked << " blocked";
+}
 
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count)
 {
@@ -694,6 +888,13 @@ void generate_panel(App& app)
     {
       ImGui::BeginChild("tab");
       fill_section(app);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Height steps"))
+    {
+      ImGui::BeginChild("tab");
+      steps_section(app);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }

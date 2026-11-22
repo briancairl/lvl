@@ -126,6 +126,22 @@ void colorize(
     }
     break;
   }
+  case LayerKind::kLevel: {
+    // Terraces read best as a ramp: the higher the level, the lighter the step
+    const auto& g = plane<IdGrid>(layer);
+    std::uint16_t top = 1;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      top = std::max(top, g.values[i]);
+    }
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      const float t = static_cast<float>(g.values[i]) / static_cast<float>(top);
+      const auto v = static_cast<std::uint8_t>(40.0F + 200.0F * t);
+      out.pixels[i] = Rgba{v, v, static_cast<std::uint8_t>(std::min(255, v + 15)), 255};
+    }
+    break;
+  }
   case LayerKind::kSemantic:
   case LayerKind::kMaterial: {
     const auto& g = plane<IdGrid>(layer);

@@ -30,6 +30,7 @@
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
+#include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/render/compose.hpp"
 
@@ -103,6 +104,8 @@ enum class RulesMode : std::uint8_t
   kWfc,
   /// Terrains keyed on the pattern of like neighbors (level::AutoTileRules), for auto-tiled painting
   kAutoTile,
+  /// Terrains keyed on the difference in height level (level::StepRules), for terraced ground
+  kSteps,
 };
 
 /**
@@ -272,6 +275,19 @@ struct Generators
   bool fill_region = true;
   /// What the last fill did, so the panel can report it
   procgen::FillResult fill_result;
+
+  /// Height steps (Generate > Height steps): the layers it reads and writes
+  std::size_t step_height_layer = 0;
+  std::size_t step_level_layer = 0;
+  std::size_t step_tile_layer = 0;
+  std::size_t step_collision_layer = 0;
+  procgen::TerraceParams terrace;
+  procgen::StepCollision step_collision = procgen::StepCollision::kBelow;
+  bool step_keep_untermed = true;
+  /// Whether the tiles are redrawn whenever the levels are recut
+  bool step_tile_after_terrace = true;
+  procgen::TerraceResult terrace_result;
+  procgen::StepFillResult step_result;
 };
 
 /// What a delete button removes
@@ -289,6 +305,8 @@ enum class DeleteKind : std::uint8_t
   kProperty,
   /// An auto-tiling terrain
   kTerrain,
+  /// A height-step terrain
+  kStepTerrain,
 };
 
 /// A delete waiting for confirmation (or, when confirmed, for the end of the frame)
@@ -414,6 +432,8 @@ struct App
   RulesMode rules_mode = RulesMode::kWfc;
   /// Auto-tiling rules: the terrain being edited
   level::TerrainId terrain = 0;
+  /// Height-step rules: the terrain being edited
+  level::StepTerrainId step_terrain = 0;
   /// What the last auto-tiled stroke did
   AutoTileStatus auto_tile_status;
 

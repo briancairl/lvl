@@ -14,6 +14,7 @@
 #include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
+#include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
 
@@ -1050,4 +1051,272 @@ TEST_F(Procgen, FillWeightsDecideTheShares)
   flat.values.assign(f.tiles.values.begin(), f.tiles.values.end());
   EXPECT_EQ(fill_masked(tiles, nullptr, 3, FillMask{}, 11, f.tiles).changed, 0U);
   EXPECT_EQ(flat.values, f.tiles.values);
+}
+
+namespace
+{
+
+/// A code where the listed neighbors (NW, N, NE, W, E, SW, S, SE) are below and the rest level
+StepCode below(std::initializer_list<std::size_t> neighbors)
+{
+  StepCode code = 0;
+  for (const std::size_t n : neighbors)
+  {
+    code = step_code_with(code, n, StepRelation::kBelow);
+  }
+  return code;
+}
+
+/// Levels laid out from a picture, one digit per cell
+Grid<std::uint16_t> levels_of(memory::Arena& arena, std::initializer_list<const char*> rows)
+{
+  Grid<std::uint16_t> g{arena};
+  const auto height = static_cast<int>(rows.size());
+  const auto width = static_cast<int>(std::string_view{*rows.begin()}.size());
+  g.assign(Extents{width, height}, std::uint16_t{0});
+  int y = 0;
+  for (const char* row : rows)
+  {
+    for (int x = 0; x < width; ++x)
+    {
+      g.at(x, y) = static_cast<std::uint16_t>(row[x] - '0');
+    }
+    ++y;
+  }
+  return g;
+}
+
+/// A terrain covering every level, whose tiles are the step type itself
+StepRules all_levels_rules(memory::Arena& arena)
+{
+  StepRules rules{arena};
+  StepTerrain& t = rules.terrains[add_step_terrain(rules, "ground")];
+  t.level_lo = 0;
+  t.level_hi = 9;
+  for (std::size_t i = 0; i < kStepTypeCount; ++i)
+  {
+    t.tiles[i] = TileRef{0, static_cast<TileIndex>(i)};
+  }
+  return rules;
+}
+
+}  // namespace
+
+TEST(Steps, TheTableMatchesGft)
+{
+  // Every case of gft's getSlopeFromBumpCode, by the neighbors it has below it
+  EXPECT_EQ(step_type_of(below({0, 1, 2, 3, 5})), StepType::kOutwardTopRight);
+  EXPECT_EQ(step_type_of(below({0, 1, 2})), StepType::kOutwardTop);
+  EXPECT_EQ(step_type_of(below({0, 1, 2, 4, 7})), StepType::kOutwardTopLeft);
+  EXPECT_EQ(step_type_of(below({7})), StepType::kInwardBottomRight);
+  EXPECT_EQ(step_type_of(below({5, 6})), StepType::kInwardBottom);
+  EXPECT_EQ(step_type_of(below({6, 7})), StepType::kInwardBottom);
+  EXPECT_EQ(step_type_of(below({5})), StepType::kInwardBottomLeft);
+  EXPECT_EQ(step_type_of(below({0, 3, 5})), StepType::kOutwardLeft);
+  EXPECT_EQ(step_type_of(below({2, 4, 7})), StepType::kOutwardRight);
+  EXPECT_EQ(step_type_of(below({2, 4})), StepType::kInwardRight);
+  EXPECT_EQ(step_type_of(below({4, 7})), StepType::kInwardRight);
+  EXPECT_EQ(step_type_of(below({0, 3})), StepType::kInwardLeft);
+  EXPECT_EQ(step_type_of(below({3, 5})), StepType::kInwardLeft);
+  EXPECT_EQ(step_type_of(below({0, 3, 5, 6, 7})), StepType::kOutwardBottomLeft);
+  EXPECT_EQ(step_type_of(below({5, 6, 7})), StepType::kOutwardBottom);
+  EXPECT_EQ(step_type_of(below({2, 4, 5, 6, 7})), StepType::kOutwardBottomRight);
+  EXPECT_EQ(step_type_of(below({2})), StepType::kInwardTopRight);
+  EXPECT_EQ(step_type_of(below({1, 2})), StepType::kInwardTop);
+  EXPECT_EQ(step_type_of(below({0, 1})), StepType::kInwardTop);
+  EXPECT_EQ(step_type_of(below({0})), StepType::kInwardTopLeft);
+  // Level on every side, and anything the table does not name, is flat
+  EXPECT_EQ(step_type_of(below({})), StepType::kFlat);
+  EXPECT_EQ(step_type_of(below({1, 6})), StepType::kFlat);
+  EXPECT_EQ(step_type_of(below({0, 1, 2, 3, 4, 5, 6, 7})), StepType::kFlat);
+  // A neighbor above means this cell is at the foot of a step, which is never drawn
+  for (std::size_t n = 0; n < 8; ++n)
+  {
+    const StepCode code = step_code_with(below({0, 1, 2}), n, StepRelation::kAbove);
+    EXPECT_EQ(step_type_of(code), StepType::kFlat) << "with neighbor " << n << " above";
+  }
+}
+
+TEST_F(Procgen, StepsDrawTheRimOfAPlateau)
+{
+  const StepRules rules = all_levels_rules(doc);
+  // A 3x3 plateau of level 1 in a field of level 0
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01110", "00000"});
+  Grid<TileRef> tiles{doc};
+  tiles.assign(levels.extents, kEmptyTile);
+  const StepFillResult result = tile_steps(rules, levels, StepFillParams{}, tiles, nullptr);
+  EXPECT_EQ(result.missing, 0U);
+  EXPECT_EQ(result.untermed, 0U);
+  EXPECT_EQ(result.tiled, 25U);
+  const auto type_at = [&tiles](int x, int y) { return static_cast<StepType>(tiles.at(x, y).tile); };
+  // The rim: edges along the sides, convex corners at the four corners
+  EXPECT_EQ(type_at(2, 1), StepType::kOutwardTop);
+  EXPECT_EQ(type_at(2, 3), StepType::kOutwardBottom);
+  EXPECT_EQ(type_at(1, 2), StepType::kOutwardLeft);
+  EXPECT_EQ(type_at(3, 2), StepType::kOutwardRight);
+  EXPECT_EQ(type_at(1, 1), StepType::kOutwardTopRight);
+  EXPECT_EQ(type_at(3, 1), StepType::kOutwardTopLeft);
+  EXPECT_EQ(type_at(1, 3), StepType::kOutwardBottomLeft);
+  EXPECT_EQ(type_at(3, 3), StepType::kOutwardBottomRight);
+  // Everything at the foot of the step stays flat: only the higher side is drawn
+  for (int x = 0; x < 5; ++x)
+  {
+    EXPECT_EQ(type_at(x, 0), StepType::kFlat) << "at (" << x << ", 0)";
+    EXPECT_EQ(type_at(x, 4), StepType::kFlat) << "at (" << x << ", 4)";
+  }
+}
+
+TEST_F(Procgen, StepsDrawInwardCornersWhereTheGroundWraps)
+{
+  const StepRules rules = all_levels_rules(doc);
+  // A plateau with one corner cell missing, so the ground wraps around a hole
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01100", "00000"});
+  Grid<TileRef> tiles{doc};
+  tiles.assign(levels.extents, kEmptyTile);
+  tile_steps(rules, levels, StepFillParams{}, tiles, nullptr);
+  // (2, 2) has only its SE neighbor below -- the hole at (3, 3) -- which is the concave corner
+  EXPECT_EQ(static_cast<StepType>(tiles.at(2, 2).tile), StepType::kInwardBottomRight);
+  // Its neighbors along the same rim are ordinary edges
+  EXPECT_EQ(static_cast<StepType>(tiles.at(2, 1).tile), StepType::kOutwardTop);
+}
+
+TEST_F(Procgen, StepsTakeTheMapEdgeAsLevelGround)
+{
+  const StepRules rules = all_levels_rules(doc);
+  // A plateau running off the left edge: no cliff is drawn along the edge itself
+  Grid<std::uint16_t> levels = levels_of(doc, {"11000", "11000", "11000"});
+  Grid<TileRef> tiles{doc};
+  tiles.assign(levels.extents, kEmptyTile);
+  tile_steps(rules, levels, StepFillParams{}, tiles, nullptr);
+  EXPECT_EQ(static_cast<StepType>(tiles.at(0, 1).tile), StepType::kFlat);
+  EXPECT_EQ(static_cast<StepType>(tiles.at(1, 1).tile), StepType::kOutwardRight);
+}
+
+TEST_F(Procgen, StepTerrainsAreChosenByLevel)
+{
+  StepRules rules{doc};
+  StepTerrain& water = rules.terrains[add_step_terrain(rules, "water")];
+  water.level_lo = 0;
+  water.level_hi = 0;
+  water.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 100};
+  StepTerrain& grass = rules.terrains[add_step_terrain(rules, "grass")];
+  grass.level_lo = 1;
+  grass.level_hi = 2;
+  grass.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 200};
+  grass.tiles[static_cast<std::size_t>(StepType::kOutwardTop)] = TileRef{0, 201};
+
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "33330"});
+  Grid<TileRef> tiles{doc};
+  tiles.assign(levels.extents, kEmptyTile);
+  const StepFillResult result = tile_steps(rules, levels, StepFillParams{}, tiles, nullptr);
+  EXPECT_EQ(tiles.at(0, 0), (TileRef{0, 100}));
+  EXPECT_EQ(tiles.at(2, 1), (TileRef{0, 201}));
+  EXPECT_EQ(tiles.at(2, 2), (TileRef{0, 200}));
+  // Level 3 has no terrain, and those cells keep what they had
+  EXPECT_EQ(result.untermed, 4U);
+  EXPECT_EQ(tiles.at(0, 3), kEmptyTile);
+  // A pattern the terrain has no tile for is reported rather than guessed at
+  EXPECT_GT(result.missing, 0U);
+  EXPECT_EQ(find_step_terrain(rules, "grass"), 1);
+  EXPECT_EQ(step_terrain_at(rules, 2), 1);
+  EXPECT_EQ(step_terrain_at(rules, 7), kNoStepTerrain);
+  EXPECT_EQ(step_terrain_of(rules, (TileRef{0, 201})), 1);
+}
+
+TEST_F(Procgen, StepCollisionBlocksOneSideOfTheCliff)
+{
+  const StepRules rules = all_levels_rules(doc);
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01110", "00000"});
+  Grid<TileRef> tiles{doc};
+  tiles.assign(levels.extents, kEmptyTile);
+  Grid<std::uint8_t> mask{doc};
+  mask.assign(levels.extents, std::uint8_t{0});
+  // Below: the foot of the cliff is blocked and the plateau stays walkable
+  tile_steps(rules, levels, StepFillParams{.collision = StepCollision::kBelow}, tiles, &mask);
+  EXPECT_EQ(mask.at(0, 0), level::collision::kSolid);
+  EXPECT_EQ(mask.at(2, 0), level::collision::kSolid);
+  EXPECT_EQ(mask.at(2, 1), 0);
+  EXPECT_EQ(mask.at(2, 2), 0);
+
+  // Above: the rim is blocked instead, and the old marks are cleared rather than left behind
+  tile_steps(rules, levels, StepFillParams{.collision = StepCollision::kAbove}, tiles, &mask);
+  EXPECT_EQ(mask.at(0, 0), 0);
+  EXPECT_EQ(mask.at(2, 1), level::collision::kSolid);
+  EXPECT_EQ(mask.at(2, 2), 0);
+
+  // Other bits of the mask are left alone
+  mask.at(0, 0) = level::collision::kTrigger;
+  tile_steps(rules, levels, StepFillParams{.collision = StepCollision::kBelow}, tiles, &mask);
+  EXPECT_EQ(mask.at(0, 0), level::collision::kTrigger | level::collision::kSolid);
+  // And nothing is touched at all when the collision layer is not asked for
+  tile_steps(rules, levels, StepFillParams{}, tiles, &mask);
+  EXPECT_EQ(mask.at(2, 1), 0);
+}
+
+TEST_F(Procgen, TerraceCutsTheRangeIntoLevels)
+{
+  Grid<float> height{doc};
+  height.assign(Extents{11, 1}, 0.0F);
+  for (int x = 0; x < 11; ++x)
+  {
+    height.at(x, 0) = static_cast<float>(x) / 10.0F;
+  }
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{0});
+
+  // Four bands over a range of 0..1, so each is 0.25 tall
+  const TerraceResult result = terrace(height, TerraceParams{.levels = 4}, levels);
+  EXPECT_EQ(result.top, 3);
+  EXPECT_FLOAT_EQ(result.rate, 0.25F);
+  EXPECT_EQ(result.changed, 8U);
+  const std::array<std::uint16_t, 11> expected = {0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 3};
+  for (int x = 0; x < 11; ++x)
+  {
+    EXPECT_EQ(levels.at(x, 0), expected[static_cast<std::size_t>(x)]) << "at " << x;
+  }
+  // The very top of the range belongs to the last band, not to one of its own
+  EXPECT_EQ(levels.at(10, 0), 3);
+  // Running it again changes nothing
+  EXPECT_EQ(terrace(height, TerraceParams{.levels = 4}, levels).changed, 0U);
+
+  // By rate instead: bands 0.2 tall over the same range
+  const TerraceResult by_rate = terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.2F}, levels);
+  EXPECT_EQ(by_rate.top, 4);
+  EXPECT_EQ(levels.at(0, 0), 0);
+  EXPECT_EQ(levels.at(5, 0), 2);
+  EXPECT_EQ(levels.at(10, 0), 4);
+}
+
+TEST_F(Procgen, TerraceHandlesFlatMapsAndGivenRanges)
+{
+  Grid<float> height{doc};
+  height.assign(Extents{4, 1}, 0.5F);
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{7});
+  // A flat map is one level, whatever was asked for
+  const TerraceResult flat = terrace(height, TerraceParams{.levels = 6}, levels);
+  EXPECT_EQ(flat.top, 0);
+  EXPECT_EQ(flat.changed, 4U);
+  for (const std::uint16_t v : levels.values)
+  {
+    EXPECT_EQ(v, 0);
+  }
+
+  // A range given explicitly is used instead of the data's own, and values outside it are clamped
+  for (int x = 0; x < 4; ++x)
+  {
+    height.at(x, 0) = static_cast<float>(x);
+  }
+  terrace(height, TerraceParams{.levels = 3, .lo = 0.0F, .hi = 3.0F}, levels);
+  EXPECT_EQ(levels.at(0, 0), 0);
+  EXPECT_EQ(levels.at(3, 0), 2);
+  terrace(height, TerraceParams{.levels = 4, .lo = 0.0F, .hi = 2.0F}, levels);
+  EXPECT_EQ(levels.at(3, 0), 3) << "a cell above the range is clamped to the top band";
+
+  // The ceiling holds levels down whatever the rate says
+  terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.1F, .max_level = 5}, levels);
+  for (const std::uint16_t v : levels.values)
+  {
+    EXPECT_LE(v, 5);
+  }
 }

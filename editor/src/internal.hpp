@@ -159,6 +159,12 @@ void selection_preview(const App& app, float thumb, int max_rows);
  * already hold a tile) comes from <code>App::generators</code>, and the scatter from the level's
  * seed. Takes an undo snapshot and records what it did in <code>Generators::fill_result</code>.
  */
+/// Generate > Height steps: cuts the heightmap into whole levels (and redraws the tiles, if asked)
+void apply_terrace(App& app);
+
+/// Generate > Height steps: draws the cliffs between the levels, and blocks them if asked
+void apply_steps(App& app);
+
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count);
 
 /// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked

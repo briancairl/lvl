@@ -91,6 +91,14 @@ void apply(App& app, const PendingDelete& d)
     remove_terrain(lv.auto_tiles, static_cast<TerrainId>(d.index));
     app.terrain = 0;
     break;
+  case DeleteKind::kStepTerrain:
+    if (d.index >= lv.steps.terrains.size())
+    {
+      return;
+    }
+    remove_step_terrain(lv.steps, static_cast<StepTerrainId>(d.index));
+    app.step_terrain = 0;
+    break;
   case DeleteKind::kGraph:
     if (d.index >= lv.graphs.size())
     {

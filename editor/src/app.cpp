@@ -1219,7 +1219,118 @@ void smoke(App& app)
     app.selection.clear();
     break;
   }
-  case 25:
+  case 25: {
+    // Height steps: the heightmap cut into levels, and the cliffs between them drawn
+    level::Level& lv = *app.level;
+    Generators& g = app.generators;
+    const std::size_t height_layer = level::find_layer(lv, level::LayerKind::kHeight);
+    const std::size_t tiles_layer = level::find_layer(lv, level::LayerKind::kTiles);
+    const std::size_t collision_layer = level::find_layer(lv, level::LayerKind::kCollision);
+    if (height_layer == lv.layers.size() or tiles_layer == lv.layers.size() or collision_layer == lv.layers.size())
+    {
+      report(app, Status::error("the smoke level is missing a layer the height steps need"));
+      break;
+    }
+    // A level layer, as the panel's button adds one
+    const std::size_t level_layer = level::add_layer(lv, level::LayerKind::kLevel, "levels");
+
+    // A step terrain per band, whose tiles are the step type itself, so the drawing can be read
+    app.rules_mode = RulesMode::kSteps;
+    lv.steps.terrains.clear();
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    for (int band = 0; band < 3; ++band)
+    {
+      level::StepTerrain& terrain = lv.steps.terrains[level::add_step_terrain(lv.steps, format<32>("band_%d", band))];
+      terrain.level_lo = band;
+      terrain.level_hi = band;
+      for (std::size_t i = 0; i < level::kStepTypeCount; ++i)
+      {
+        terrain.tiles[i] = level::TileRef{tileset, static_cast<level::TileIndex>(i)};
+      }
+    }
+    app.step_terrain = 0;
+
+    g.step_height_layer = height_layer;
+    g.step_level_layer = level_layer;
+    g.step_tile_layer = tiles_layer;
+    g.step_collision_layer = collision_layer;
+    g.terrace = procgen::TerraceParams{.levels = 3};
+    g.step_collision = procgen::StepCollision::kBelow;
+    g.step_tile_after_terrace = true;
+    apply_terrace(app);
+    if (g.terrace_result.top != 2)
+    {
+      report(app, Status::error("cutting the heightmap did not produce the levels asked for"));
+      break;
+    }
+
+    const auto& levels = level::plane<level::IdGrid>(lv.layers[level_layer]);
+    const auto& grid = level::plane<level::TileGrid>(lv.layers[tiles_layer]);
+    const auto& mask = level::plane<level::MaskGrid>(lv.layers[collision_layer]);
+    if (g.step_result.tiled != grid.values.size() or g.step_result.missing != 0)
+    {
+      report(app, Status::error("drawing the steps left cells without a tile"));
+      break;
+    }
+    // Every cell's tile is the step type its own neighborhood calls for, and the cells at the foot
+    // of a cliff are the ones blocked
+    std::size_t cliffs = 0;
+    bool ok = true;
+    for (int y = 0; y < levels.extents.height and ok; ++y)
+    {
+      for (int x = 0; x < levels.extents.width and ok; ++x)
+      {
+        const int here = static_cast<int>(levels.at(x, y));
+        level::StepCode code = 0;
+        bool above = false;
+        for (std::size_t n = 0; n < level::kStepNeighbors.size(); ++n)
+        {
+          const level::Cell c = level::step(level::Cell{x, y}, level::kStepNeighbors[n]);
+          const int there = levels.extents.contains(c) ? static_cast<int>(levels.at(c.x, c.y)) : here;
+          code = level::step_code_with(
+            code,
+            n,
+            (there == here)    ? level::StepRelation::kLevel
+              : (there < here) ? level::StepRelation::kBelow
+                               : level::StepRelation::kAbove);
+          above = above or (there > here);
+        }
+        const auto expected = static_cast<level::TileIndex>(level::step_type_of(code));
+        if (grid.at(x, y) != level::TileRef{tileset, expected})
+        {
+          report(app, Status::error("a cell did not take the tile its height pattern calls for"));
+          ok = false;
+          break;
+        }
+        const bool blocked = (mask.at(x, y) & level::collision::kSolid) != 0;
+        if (blocked != above)
+        {
+          report(app, Status::error("the cells blocked are not the ones at the foot of a step"));
+          ok = false;
+          break;
+        }
+        cliffs += above ? 1U : 0U;
+      }
+    }
+    if (!ok)
+    {
+      break;
+    }
+    if (cliffs == 0)
+    {
+      report(app, Status::error("the terraced heightmap has no steps at all"));
+      break;
+    }
+    // Drawing again changes nothing, and clearing the collision mode leaves the layer alone
+    apply_steps(app);
+    if (g.step_result.changed != 0)
+    {
+      report(app, Status::error("drawing the steps again moved tiles"));
+    }
+    app.rules_mode = RulesMode::kWfc;
+    break;
+  }
+  case 26:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -1228,7 +1339,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 26:
+  case 27:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

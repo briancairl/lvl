@@ -14,6 +14,7 @@
  * | kCollision | uint8 mask    | grid colliders (see lvl::level::collision)      |
  * | kMaterial  | MaterialId    | surface material                                |
  * | kWater     | float         | water depth (rivers/lakes; watershed output)    |
+ * | kLevel     | uint16        | discrete height level (terraces; see step_tiles) |
  */
 #pragma once
 
@@ -39,9 +40,11 @@ enum class LayerKind : std::uint8_t
   kCollision,
   kMaterial,
   kWater,
+  /// Integer height level: the heightmap cut into terraces, which the step tiles are drawn from
+  kLevel,
 };
 
-inline constexpr std::size_t kLayerKindCount = 6;
+inline constexpr std::size_t kLayerKindCount = 7;
 
 /// How a layer is drawn in the editor's viewport
 enum class Preview : std::uint8_t
@@ -77,6 +80,7 @@ constexpr std::size_t plane_index(LayerKind kind)
     return 0;
   case LayerKind::kSemantic:
   case LayerKind::kMaterial:
+  case LayerKind::kLevel:
     return 1;
   case LayerKind::kHeight:
   case LayerKind::kWater:
@@ -140,8 +144,8 @@ template <typename GridT> const GridT& plane(const Layer& layer)
 
 template <> struct lvl::EnumNames<lvl::level::LayerKind>
 {
-  static constexpr std::array<std::string_view, 6> kNames =
-    {"tiles", "semantic", "height", "collision", "material", "water"};
+  static constexpr std::array<std::string_view, 7> kNames =
+    {"tiles", "semantic", "height", "collision", "material", "water", "level"};
 };
 
 template <> struct lvl::EnumNames<lvl::level::Preview>

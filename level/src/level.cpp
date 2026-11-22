@@ -25,6 +25,7 @@ Level::Level(memory::Arena& a) :
     layers{memory::ArenaAllocator<Layer>{a}},
     wfc{a},
     auto_tiles{a},
+    steps{a},
     graphs{memory::ArenaAllocator<PathGraph>{a}},
     registry{memory::ArenaAllocator<Entity>{a}}
 {
@@ -159,6 +160,21 @@ void remove_tileset(Level& level, TileSetId id)
       else
       {
         fix(terrain.variants[i].tile);
+      }
+    }
+  }
+  // And a step terrain's eighteen, which are a fixed set, so a removed one is emptied in place
+  for (auto& terrain : level.steps.terrains)
+  {
+    for (TileRef& tile : terrain.tiles)
+    {
+      if (tile.tileset == id)
+      {
+        tile = kEmptyTile;
+      }
+      else
+      {
+        fix(tile);
       }
     }
   }
