@@ -1040,10 +1040,16 @@ void smoke(App& app)
       break;
     }
     const level::Cell painted{grid.width() / 2, grid.height() / 2};
-    const procgen::TerrainPaintResult result =
-      procgen::paint_terrain(lv.auto_tiles, app.terrain, &painted, 1, grid, app.memory.frame);
-    invalidate_layer(app, layer);
-    if (result.missing != 0 or result.covered != 9)
+    // Through the same entry point the Auto tool's strokes use, so the dispatch is covered too
+    app.tool = Tool::kAutoTile;
+    auto_tile_stroke(app, layer, &painted, 1);
+    const AutoTileStatus& result = app.auto_tile_status;
+    if (!result.terrain or result.name != terrain.name)
+    {
+      report(app, Status::error("the Auto tool did not paint with the tile's terrain"));
+      break;
+    }
+    if (result.trouble != 0 or result.cells != 9)
     {
       report(app, Status::error("painting one cell of the terrain did not tile the ring around it"));
       break;
@@ -1061,7 +1067,8 @@ void smoke(App& app)
       }
     }
     // A tile of no terrain leaves the Auto tool with only the WFC fallback
-    if (level::terrain_of(lv.auto_tiles, background) != level::kNoTerrain)
+    app.paint.tile = background;
+    if (auto_tile_terrain(app) != level::kNoTerrain)
     {
       report(app, Status::error("the background tile should belong to no terrain"));
     }

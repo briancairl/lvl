@@ -68,9 +68,6 @@ struct Stroke
 
 Stroke stroke;
 
-/// What the last auto-tiled stroke did (shown in the viewport's status line)
-procgen::AutoTileResult auto_tile_status;
-
 image::Rgba tint_of(const App& app)
 {
   if (app.view.tint and app.view.season < app.level->seasons.size())
@@ -638,16 +635,21 @@ void handle_tools(App& app, const Canvas& cv, bool hovered)
   case Tool::kErase: {
     const bool erase = (tool == Tool::kErase);
     const bool on_tiles = layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles;
-    // The tiles a stamp writes (the palette selection's layout, or the paint stamp), built once
+    // Auto-tiling needs the cells the stroke wrote, to re-fill the band around them
+    const bool refill = (tool == Tool::kAutoTile) and on_tiles;
+    // Which rules the Auto tool paints with: the terrain the tile belongs to, or else the WFC
+    // fallback. The toolbar says which, and the status line reports what the stroke did
+    const TerrainId terrain = refill ? auto_tile_terrain(app) : kNoTerrain;
+    // The tiles a stamp writes (the palette selection's layout, or the paint stamp), built once.
+    // A terrain lays down its own tiles, so there the stroke only marks the cells it covers --
+    // stamping the selection (the terrain's own tiles, as often as not) would fight it
     memory::Scope paint_scope{app.memory.frame};
     Grid<TileRef> stamp{app.memory.frame};
     const Grid<TileRef>* tiles = nullptr;
-    if (!erase and on_tiles and (pressed or stroke.active))
+    if (!erase and on_tiles and terrain == kNoTerrain and (pressed or stroke.active))
     {
       tiles = paint_stamp(app, stamp) ? &stamp : nullptr;
     }
-    // Auto-tiling needs the cells the stroke wrote, to re-fill the band around them
-    const bool refill = (tool == Tool::kAutoTile) and on_tiles;
     auto painted = memory::make_vector<Cell>(app.memory.frame);
     memory::Vector<Cell>* touched = refill ? &painted : nullptr;
     if (pressed and editable)
@@ -674,15 +676,7 @@ void handle_tools(App& app, const Canvas& cv, bool hovered)
     }
     if (!painted.empty())
     {
-      const auto result = procgen::autotile(
-        lv.wfc,
-        painted.data(),
-        painted.size(),
-        procgen::AutoTileParams{.radius = app.auto_tile.radius, .iterations = app.auto_tile.iterations},
-        plane<TileGrid>(lv.layers[app.layer]),
-        app.memory.frame);
-      auto_tile_status = result;
-      invalidate_layer(app, app.layer);
+      auto_tile_stroke(app, app.layer, painted.data(), painted.size());
     }
     break;
   }
@@ -995,23 +989,48 @@ void toolbar(App& app)
   const Level& lv = *app.level;
   if (app.tool == Tool::kAutoTile)
   {
+    // Which of the two kinds of rules this tile paints with, so it is plain which tab to edit
+    const TerrainId terrain = terrain_of(lv.auto_tiles, app.paint.tile);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0F);
-    ImGui::SliderInt("Refill", &app.auto_tile.radius, 1, 8);
-    if (ImGui::IsItemHovered())
+    if (terrain != kNoTerrain)
     {
-      ImGui::SetTooltip("How many cells around what is painted the adjacency rules may re-fill");
-    }
-    // Auto-tiling has nothing to go on unless the tile being painted is in the rules
-    const bool known = find_tile(lv.wfc, app.paint.tile) < lv.wfc.tiles.size();
-    if (!known)
-    {
-      ImGui::SameLine();
-      ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "no rules for this tile");
+      ImGui::Text("terrain '%s'", lv.auto_tiles.terrains[terrain].name.c_str());
       if (ImGui::IsItemHovered())
       {
-        ImGui::SetTooltip("The tile being painted is not in the level's tile adjacency rules, so nothing can be "
-                          "filled in around it. Add it in View > Tile adjacency rules.");
+        ImGui::SetTooltip("This tile belongs to an auto-tiling terrain, so painting lays down its middle and tiles "
+                          "the border around it -- edges and inner/outer corners. Edit it in View > Tile adjacency "
+                          "rules > Auto-tiling.");
+      }
+    }
+    else
+    {
+      ImGui::SetNextItemWidth(80.0F);
+      ImGui::SliderInt("Refill", &app.auto_tile.radius, 1, 8);
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("How many cells around what is painted the WFC adjacency rules may re-fill");
+      }
+      // Auto-tiling has nothing to go on unless the tile being painted is in the rules
+      const bool known = find_tile(lv.wfc, app.paint.tile) < lv.wfc.tiles.size();
+      ImGui::SameLine();
+      if (!known)
+      {
+        ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "no rules for this tile");
+        if (ImGui::IsItemHovered())
+        {
+          ImGui::SetTooltip("The tile being painted is in neither kind of tile adjacency rules, so nothing can be "
+                            "filled in around it. Add it in View > Tile adjacency rules.");
+        }
+      }
+      else
+      {
+        ImGui::TextDisabled("WFC rules");
+        if (ImGui::IsItemHovered())
+        {
+          ImGui::SetTooltip("This tile has no auto-tiling terrain, so the WFC adjacency rules are scored against its "
+                            "neighbors instead. Those rules cannot prescribe inner and outer corners: give the tile a "
+                            "terrain under View > Tile adjacency rules > Auto-tiling for that.");
+        }
       }
     }
   }
@@ -1042,6 +1061,45 @@ void toolbar(App& app)
 }
 
 }  // namespace
+
+TerrainId auto_tile_terrain(const App& app) { return terrain_of(app.level->auto_tiles, app.paint.tile); }
+
+void auto_tile_stroke(App& app, std::size_t layer, const Cell* painted, std::size_t count)
+{
+  Level& lv = *app.level;
+  LVL_ASSERT_LT(layer, lv.layers.size());
+  auto& grid = plane<TileGrid>(lv.layers[layer]);
+  const TerrainId terrain = auto_tile_terrain(app);
+  AutoTileStatus status;
+  if (terrain != kNoTerrain)
+  {
+    // The terrain prescribes the tile of every cell it covers, edges and inner/outer corners
+    const auto result = procgen::paint_terrain(lv.auto_tiles, terrain, painted, count, grid, app.memory.frame);
+    status.terrain = true;
+    status.name = lv.auto_tiles.terrains[terrain].name.view();
+    status.cells = result.covered;
+    status.changed = result.changed;
+    status.trouble = result.missing;
+  }
+  else
+  {
+    // No terrain: the WFC rules can still tidy the band against hard constraints
+    const auto result = procgen::autotile(
+      lv.wfc,
+      painted,
+      count,
+      procgen::AutoTileParams{.radius = app.auto_tile.radius, .iterations = app.auto_tile.iterations},
+      grid,
+      app.memory.frame);
+    status.terrain = false;
+    status.name = "WFC rules";
+    status.cells = result.considered;
+    status.changed = result.changed;
+    status.trouble = result.unresolved;
+  }
+  app.auto_tile_status = status;
+  invalidate_layer(app, layer);
+}
 
 void viewport_window(App& app)
 {
