@@ -553,6 +553,7 @@ void batch_edit_section(App& app, TileSet& ts)
     edit.material = info.material;
     edit.collision = info.collision;
     edit.hidden = info.hidden;
+    edit.scatter_weight = info.scatter_weight;
   }
   if (ImGui::IsItemHovered())
   {
@@ -575,6 +576,10 @@ void batch_edit_section(App& app, TileSet& ts)
     ImGui::Checkbox("Hidden from palettes/generation##batch", &edit.hidden);
   });
   batch_field("##batch_collision", edit.set_collision, [&] { collision_edit(edit.collision); });
+  batch_field("##batch_weight", edit.set_scatter_weight, [&] {
+    ImGui::SetNextItemWidth(110.0F);
+    ImGui::DragFloat("Scatter weight##batch", &edit.scatter_weight, 0.05F, 0.0F, 1000.0F, "%.2f");
+  });
   // A property is either set to a value or removed by key
   if (batch_field("##batch_property", edit.set_property, [&] {
         ImGui::SetNextItemWidth(110.0F);
@@ -641,6 +646,13 @@ void tile_meta_panel(App& app)
   changed |= catalog_combo("Semantic type", lv.semantics, info.semantic);
   changed |= catalog_combo("Material", lv.materials, info.material);
   changed |= collision_edit(info.collision);
+  ImGui::SetNextItemWidth(110.0F);
+  changed |= ImGui::DragFloat("Scatter weight", &info.scatter_weight, 0.05F, 0.0F, 1000.0F, "%.2f");
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("How often a scattered fill (Generate > Fill) picks this tile, against the others it is "
+                      "scattered with: 2 is picked twice as often as 1, and 0 keeps it out of the scatter.");
+  }
 
   ImGui::SeparatorText("Properties");
   for (std::size_t i = 0; i < ts.properties.size(); ++i)

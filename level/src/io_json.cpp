@@ -250,7 +250,7 @@ void save_tileset(Json& j, const Level& level, const TileSet& ts)
     const TileInfo& info = ts.tiles[i];
     if (
       info.name.empty() and info.semantic == kNoSemantic and info.material == kNoMaterial and
-      info.collision == collision::kNone and !info.hidden)
+      info.collision == collision::kNone and !info.hidden and info.scatter_weight == 1.0F)
     {
       continue;
     }
@@ -275,6 +275,10 @@ void save_tileset(Json& j, const Level& level, const TileSet& ts)
     if (info.hidden)
     {
       json::write(t, "hidden", true);
+    }
+    if (info.scatter_weight != 1.0F)
+    {
+      json::write(t, "scatter_weight", info.scatter_weight);
     }
     tiles.push_back(std::move(t));
   }
@@ -364,6 +368,7 @@ bool load_tileset(json::Reader& r, const Json& j, Level& level, TileSet& ts)
       load_collision(r, t["collision"], info.collision);
     }
     r.get_optional(t, "hidden", info.hidden);
+    r.get_optional(t, "scatter_weight", info.scatter_weight);
     if (!r.ok())
     {
       return false;

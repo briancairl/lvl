@@ -324,27 +324,73 @@ void semantic_combo(const char* label, const Level& lv, int& id)
  * The selection is what the fill scatters, exactly as it is what the paint tool stamps, so the
  * same handful of grass variants serves both.
  */
-memory::Vector<TileRef> fill_tiles(const App& app, memory::Arena& arena)
+void fill_tiles(const App& app, memory::Arena& arena, memory::Vector<TileRef>& tiles, memory::Vector<float>& weights)
 {
-  auto out = memory::make_vector<TileRef>(arena);
   const TileSelection& selection = app.selection;
   if (selection.count > 0 and selection.tileset < app.level->tilesets.size())
   {
-    const auto ts = static_cast<TileSetId>(selection.tileset);
+    const auto id = static_cast<TileSetId>(selection.tileset);
+    const TileSet& ts = app.level->tilesets[selection.tileset];
     for (const TileIndex tile : selected_tiles(app, arena))
     {
-      out.push_back(TileRef{ts, tile});
+      tiles.push_back(TileRef{id, tile});
+      weights.push_back(tile < ts.tiles.size() ? ts.tiles[tile].scatter_weight : 1.0F);
     }
-    if (!app.generators.fill_scatter and out.size() > 1)
+    if (!app.generators.fill_scatter and tiles.size() > 1)
     {
-      out.resize(1);
+      tiles.resize(1);
+      weights.resize(1);
     }
   }
   else if (!app.paint.tile.empty())
   {
-    out.push_back(app.paint.tile);
+    tiles.push_back(app.paint.tile);
+    weights.push_back(1.0F);
   }
-  return out;
+}
+
+/**
+ * @brief The weight rows of the Fill tab: each tile, its share of the scatter, and its weight
+ *
+ * The weights live on the tiles (<code>TileInfo::scatter_weight</code>), so they are the ones the
+ * Tile metadata panel shows and they travel in the tileset; this is only where they are reachable
+ * while a fill is being set up. The share is what the weights actually come to, which is the
+ * number being chosen.
+ */
+void fill_weights_section(App& app, const memory::Vector<TileRef>& tiles, const memory::Vector<float>& weights)
+{
+  TileSet& ts = app.level->tilesets[app.selection.tileset];
+  float total = 0.0F;
+  for (const float w : weights)
+  {
+    total += std::max(w, 0.0F);
+  }
+  const float rows = std::min(static_cast<float>(tiles.size()), 6.0F);
+  ImGui::BeginChild(
+    "weights", ImVec2{0.0F, rows * (ImGui::GetFrameHeightWithSpacing() + 2.0F)}, ImGuiChildFlags_Border);
+  for (std::size_t i = 0; i < tiles.size(); ++i)
+  {
+    ImGui::PushID(static_cast<int>(i));
+    tile_image(app, tiles[i], ImGui::GetFrameHeight());
+    ImGui::SameLine();
+    const float even = 100.0F / static_cast<float>(tiles.size());
+    const float share = (total > 0.0F) ? (std::max(weights[i], 0.0F) / total * 100.0F) : even;
+    ImGui::TextDisabled("%5.1f%%", static_cast<double>(share));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(90.0F);
+    float weight = weights[i];
+    if (ImGui::DragFloat("##weight", &weight, 0.05F, 0.0F, 1000.0F, "%.2f") and tiles[i].tile < ts.tiles.size())
+    {
+      ts.tiles[tiles[i].tile].scatter_weight = std::max(weight, 0.0F);
+      app.modified = true;
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  if (total <= 0.0F)
+  {
+    ImGui::TextDisabled("Every weight is zero, so the scatter is even.");
+  }
 }
 
 void fill_section(App& app)
@@ -362,7 +408,9 @@ void fill_section(App& app)
 
   ImGui::SeparatorText("Tiles");
   memory::Scope scope{app.memory.frame};
-  const auto tiles = fill_tiles(app, app.memory.frame);
+  auto tiles = memory::make_vector<TileRef>(app.memory.frame);
+  auto weights = memory::make_vector<float>(app.memory.frame);
+  fill_tiles(app, app.memory.frame, tiles, weights);
   if (app.selection.count > 1)
   {
     ImGui::Checkbox("Scatter the selection", &g.fill_scatter);
@@ -389,6 +437,13 @@ void fill_section(App& app)
   {
     ImGui::SameLine();
     deselect_all_button(app);
+  }
+  if (tiles.size() > 1)
+  {
+    fill_weights_section(app, tiles, weights);
+  }
+  else if (app.selection.count > 0)
+  {
     selection_preview(app, 24.0F, 2);
   }
 
@@ -441,7 +496,7 @@ void fill_section(App& app)
   seed_input(app);
   if (ImGui::Button("Fill", ImVec2{-1, 0}) and !tiles.empty())
   {
-    apply_fill(app, g.fill_layer, tiles.data(), tiles.size());
+    apply_fill(app, g.fill_layer, tiles.data(), weights.data(), tiles.size());
   }
   const procgen::FillResult& result = g.fill_result;
   if (result.matched > 0 or result.changed > 0)
@@ -452,7 +507,7 @@ void fill_section(App& app)
 
 }  // namespace
 
-void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, std::size_t count)
+void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count)
 {
   Level& lv = *app.level;
   Generators& g = app.generators;
@@ -475,7 +530,8 @@ void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, std::s
   }
   mask.only_empty = g.fill_only_empty;
   app.undo.snapshot(lv, layer, "Fill");
-  g.fill_result = procgen::fill_masked(tiles, count, mask, lv.settings.seed, plane<TileGrid>(lv.layers[layer]));
+  g.fill_result =
+    procgen::fill_masked(tiles, weights, count, mask, lv.settings.seed, plane<TileGrid>(lv.layers[layer]));
   if (g.fill_result.changed > 0)
   {
     app.modified = true;

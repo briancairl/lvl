@@ -15,8 +15,17 @@
 namespace lvl::procgen
 {
 
+namespace
+{
+
+/// Resolution a cell's hash is taken at when weights decide the pick
+constexpr std::uint64_t kTickets = 1U << 24U;
+
+}  // namespace
+
 FillResult fill_masked(
   const level::TileRef* tiles,
+  const float* weights,
   std::size_t count,
   const FillMask& mask,
   std::uint64_t seed,
@@ -28,6 +37,20 @@ FillResult fill_masked(
   {
     return result;
   }
+  // Running total of the weights, so a cell's pick is one walk of the list. Weights that are all
+  // zero (or absent) stand for a weight of 1 each, so an untouched tileset scatters evenly and
+  // giving every tile the same weight comes to exactly the same thing
+  float total = 0.0F;
+  if (weights != nullptr)
+  {
+    for (std::size_t i = 0; i < count; ++i)
+    {
+      total += std::max(weights[i], 0.0F);
+    }
+  }
+  const bool weighted = (total > 0.0F);
+  total = weighted ? total : static_cast<float>(count);
+  const auto weight_of = [weights, weighted](std::size_t i) { return weighted ? std::max(weights[i], 0.0F) : 1.0F; };
   LVL_ASSERT_TRUE(mask.band == nullptr or mask.band->extents == e) << "the band layer is a different size";
   LVL_ASSERT_TRUE(mask.ids == nullptr or mask.ids->extents == e) << "the id layer is a different size";
   // The whole grid, unless a region narrows it
@@ -60,8 +83,28 @@ FillResult fill_masked(
       }
       ++result.matched;
       // By cell rather than in order, so the scatter does not shift when the mask changes
-      const std::size_t at =
-        (count < 2) ? 0 : static_cast<std::size_t>(random::hash(seed, x, y) % static_cast<std::uint64_t>(count));
+      std::size_t at = 0;
+      if (count > 1)
+      {
+        // Where this cell falls in the running total; the last tile takes any rounding slack
+        const float u = static_cast<float>(random::hash(seed, x, y) % kTickets) / static_cast<float>(kTickets) * total;
+        float upto = 0.0F;
+        at = count - 1;
+        for (std::size_t t = 0; t < count; ++t)
+        {
+          upto += weight_of(t);
+          if (u < upto)
+          {
+            at = t;
+            break;
+          }
+        }
+        // A tile of weight 0 can still be landed on by the slack above, so step off it
+        while (weight_of(at) <= 0.0F and at > 0)
+        {
+          --at;
+        }
+      }
       const level::TileRef tile = tiles[at];
       result.changed += (out.values[i] == tile) ? 0U : 1U;
       out.values[i] = tile;

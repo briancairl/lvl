@@ -869,7 +869,7 @@ TEST_F(Procgen, FillTakesOnlyTheHeightBand)
   const TileRef one = fill_tile(0);
   // Rows 0..10 hold heights 0.0 .. 1.0 in steps of 0.1, so [0.3, 0.5] is rows 3, 4 and 5
   const FillMask mask{.band = &f.height, .lo = 0.3F, .hi = 0.5F};
-  const FillResult result = fill_masked(&one, 1, mask, 1, f.tiles);
+  const FillResult result = fill_masked(&one, nullptr, 1, mask, 1, f.tiles);
   EXPECT_EQ(result.matched, 30U);
   EXPECT_EQ(result.changed, 30U);
   for (int y = 0; y < 11; ++y)
@@ -881,17 +881,17 @@ TEST_F(Procgen, FillTakesOnlyTheHeightBand)
     }
   }
   // Filling again writes the same thing, so nothing changes
-  EXPECT_EQ(fill_masked(&one, 1, mask, 1, f.tiles).changed, 0U);
+  EXPECT_EQ(fill_masked(&one, nullptr, 1, mask, 1, f.tiles).changed, 0U);
   // A band given the wrong way round matches nothing
   const FillMask empty{.band = &f.height, .lo = 0.5F, .hi = 0.3F};
-  EXPECT_EQ(fill_masked(&one, 1, empty, 1, f.tiles).matched, 0U);
+  EXPECT_EQ(fill_masked(&one, nullptr, 1, empty, 1, f.tiles).matched, 0U);
 }
 
 TEST_F(Procgen, FillTakesOnlyTheGroundType)
 {
   Field f{doc, Extents{9, 4}};
   const TileRef one = fill_tile(0);
-  const FillResult result = fill_masked(&one, 1, FillMask{.ids = &f.ids, .id = 2}, 1, f.tiles);
+  const FillResult result = fill_masked(&one, nullptr, 1, FillMask{.ids = &f.ids, .id = 2}, 1, f.tiles);
   EXPECT_EQ(result.matched, 12U);
   for (int y = 0; y < 4; ++y)
   {
@@ -908,7 +908,7 @@ TEST_F(Procgen, FillIntersectsItsMasks)
   const TileRef one = fill_tile(0);
   // Both tests must pass: rows 3..5 of the columns whose semantic is 1
   const FillMask mask{.band = &f.height, .lo = 0.3F, .hi = 0.5F, .ids = &f.ids, .id = 1};
-  EXPECT_EQ(fill_masked(&one, 1, mask, 1, f.tiles).matched, 9U);
+  EXPECT_EQ(fill_masked(&one, nullptr, 1, mask, 1, f.tiles).matched, 9U);
   for (int y = 0; y < 11; ++y)
   {
     for (int x = 0; x < 9; ++x)
@@ -919,14 +919,14 @@ TEST_F(Procgen, FillIntersectsItsMasks)
   }
   // With no mask at all, every cell is matched
   Field all{doc, Extents{9, 11}};
-  EXPECT_EQ(fill_masked(&one, 1, FillMask{}, 1, all.tiles).matched, 99U);
+  EXPECT_EQ(fill_masked(&one, nullptr, 1, FillMask{}, 1, all.tiles).matched, 99U);
 }
 
 TEST_F(Procgen, FillScattersSeveralTilesAndKeepsThemPut)
 {
   Field f{doc, Extents{32, 32}};
   const TileRef tiles[3] = {fill_tile(0), fill_tile(1), fill_tile(2)};
-  const FillResult result = fill_masked(tiles, 3, FillMask{}, 7, f.tiles);
+  const FillResult result = fill_masked(tiles, nullptr, 3, FillMask{}, 7, f.tiles);
   EXPECT_EQ(result.matched, 1024U);
   int counts[3] = {0, 0, 0};
   for (const TileRef& t : f.tiles.values)
@@ -946,12 +946,12 @@ TEST_F(Procgen, FillScattersSeveralTilesAndKeepsThemPut)
   Grid<TileRef> before{doc};
   before.assign(f.tiles.extents, kEmptyTile);
   before.values.assign(f.tiles.values.begin(), f.tiles.values.end());
-  EXPECT_EQ(fill_masked(tiles, 3, FillMask{}, 7, f.tiles).changed, 0U);
+  EXPECT_EQ(fill_masked(tiles, nullptr, 3, FillMask{}, 7, f.tiles).changed, 0U);
   EXPECT_EQ(before.values, f.tiles.values);
   // A different seed moves them, and a cell's tile does not depend on what else was filled
-  EXPECT_GT(fill_masked(tiles, 3, FillMask{}, 8, f.tiles).changed, 0U);
+  EXPECT_GT(fill_masked(tiles, nullptr, 3, FillMask{}, 8, f.tiles).changed, 0U);
   Field narrow{doc, Extents{32, 32}};
-  fill_masked(tiles, 3, FillMask{.band = &narrow.height, .lo = 0.3F, .hi = 0.5F}, 7, narrow.tiles);
+  fill_masked(tiles, nullptr, 3, FillMask{.band = &narrow.height, .lo = 0.3F, .hi = 0.5F}, 7, narrow.tiles);
   for (int y = 10; y <= 15; ++y)
   {
     for (int x = 0; x < 32; ++x)
@@ -968,7 +968,7 @@ TEST_F(Procgen, FillStaysInsideItsRegionAndSparesWhatIsDrawn)
   const TileRef drawn = fill_tile(9);
   f.tiles.at(5, 5) = drawn;
   const FillResult result =
-    fill_masked(&one, 1, FillMask{.region = Region{.x = 4, .y = 4, .width = 3, .height = 3}}, 1, f.tiles);
+    fill_masked(&one, nullptr, 1, FillMask{.region = Region{.x = 4, .y = 4, .width = 3, .height = 3}}, 1, f.tiles);
   EXPECT_EQ(result.matched, 9U);
   EXPECT_EQ(f.tiles.at(4, 4), one);
   EXPECT_EQ(f.tiles.at(6, 6), one);
@@ -976,13 +976,14 @@ TEST_F(Procgen, FillStaysInsideItsRegionAndSparesWhatIsDrawn)
   EXPECT_EQ(f.tiles.at(7, 4), kEmptyTile);
   // A region hanging off the grid is clipped, not an error
   EXPECT_EQ(
-    fill_masked(&one, 1, FillMask{.region = Region{.x = 10, .y = 10, .width = 8, .height = 8}}, 1, f.tiles).matched,
+    fill_masked(&one, nullptr, 1, FillMask{.region = Region{.x = 10, .y = 10, .width = 8, .height = 8}}, 1, f.tiles)
+      .matched,
     4U);
 
   // Only the empty cells, so what is already drawn survives
   Field keep{doc, Extents{12, 12}};
   keep.tiles.at(5, 5) = drawn;
-  EXPECT_EQ(fill_masked(&one, 1, FillMask{.only_empty = true}, 1, keep.tiles).matched, 143U);
+  EXPECT_EQ(fill_masked(&one, nullptr, 1, FillMask{.only_empty = true}, 1, keep.tiles).matched, 143U);
   EXPECT_EQ(keep.tiles.at(5, 5), drawn);
   EXPECT_EQ(keep.tiles.at(5, 6), one);
 }
@@ -991,13 +992,62 @@ TEST_F(Procgen, FillWithoutTilesWritesNothing)
 {
   Field f{doc, Extents{4, 4}};
   const TileRef one = fill_tile(0);
-  EXPECT_EQ(fill_masked(nullptr, 0, FillMask{}, 1, f.tiles).matched, 0U);
-  EXPECT_EQ(fill_masked(&one, 0, FillMask{}, 1, f.tiles).matched, 0U);
+  EXPECT_EQ(fill_masked(nullptr, nullptr, 0, FillMask{}, 1, f.tiles).matched, 0U);
+  EXPECT_EQ(fill_masked(&one, nullptr, 0, FillMask{}, 1, f.tiles).matched, 0U);
   for (const TileRef& t : f.tiles.values)
   {
     EXPECT_EQ(t, kEmptyTile);
   }
   Grid<TileRef> none{doc};
   none.assign(Extents{0, 0}, kEmptyTile);
-  EXPECT_EQ(fill_masked(&one, 1, FillMask{}, 1, none).matched, 0U);
+  EXPECT_EQ(fill_masked(&one, nullptr, 1, FillMask{}, 1, none).matched, 0U);
+}
+
+TEST_F(Procgen, FillWeightsDecideTheShares)
+{
+  Field f{doc, Extents{64, 64}};
+  const TileRef tiles[3] = {fill_tile(0), fill_tile(1), fill_tile(2)};
+  const auto shares = [&](const float* weights) {
+    fill_masked(tiles, weights, 3, FillMask{}, 11, f.tiles);
+    std::array<int, 3> out{0, 0, 0};
+    for (const TileRef& t : f.tiles.values)
+    {
+      for (int i = 0; i < 3; ++i)
+      {
+        out[static_cast<std::size_t>(i)] += (t == tiles[i]) ? 1 : 0;
+      }
+    }
+    EXPECT_EQ(out[0] + out[1] + out[2], 64 * 64);
+    return out;
+  };
+  // Six to one to one: the first tile takes about three quarters of the cells
+  const float steep[3] = {6.0F, 1.0F, 1.0F};
+  const auto weighted = shares(steep);
+  EXPECT_NEAR(static_cast<double>(weighted[0]) / (64 * 64), 0.75, 0.03);
+  EXPECT_NEAR(static_cast<double>(weighted[1]) / (64 * 64), 0.125, 0.03);
+  EXPECT_NEAR(static_cast<double>(weighted[2]) / (64 * 64), 0.125, 0.03);
+
+  // A weight of zero keeps a tile out of the scatter altogether
+  const float without[3] = {1.0F, 0.0F, 3.0F};
+  const auto some = shares(without);
+  EXPECT_EQ(some[1], 0);
+  EXPECT_NEAR(static_cast<double>(some[2]) / (64 * 64), 0.75, 0.03);
+
+  // Negative weights count as zero, and weights that are all zero leave the scatter even
+  const float negative[3] = {1.0F, -5.0F, 1.0F};
+  EXPECT_EQ(shares(negative)[1], 0);
+  const float none[3] = {0.0F, 0.0F, 0.0F};
+  const auto even = shares(none);
+  for (const int n : even)
+  {
+    EXPECT_NEAR(static_cast<double>(n) / (64 * 64), 1.0 / 3.0, 0.03);
+  }
+  // Equal weights and no weights at all come to the same thing
+  const float ones[3] = {1.0F, 1.0F, 1.0F};
+  fill_masked(tiles, ones, 3, FillMask{}, 11, f.tiles);
+  Grid<TileRef> flat{doc};
+  flat.assign(f.tiles.extents, kEmptyTile);
+  flat.values.assign(f.tiles.values.begin(), f.tiles.values.end());
+  EXPECT_EQ(fill_masked(tiles, nullptr, 3, FillMask{}, 11, f.tiles).changed, 0U);
+  EXPECT_EQ(flat.values, f.tiles.values);
 }

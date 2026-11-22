@@ -61,11 +61,18 @@ struct FillResult
  *
  * With one tile, every matched cell takes it. With several, each cell takes one by a hash of its
  * position and <code>seed</code>, so the scatter is stable: filling twice over writes the same
- * tiles, re-running after an edit leaves the rest of the map where it was, and only the seed moves
- * them. A <code>count</code> of 0 writes nothing.
+ * tiles, re-running after an edit leaves the rest of the map where it was, and only the seed (or a
+ * weight) moves them. A <code>count</code> of 0 writes nothing.
+ *
+ * <code>weights</code>, if given, holds one weight per tile and decides how often each is picked,
+ * relative to the others: twice the weight, twice the share of the filled cells. A weight of 0
+ * keeps a tile out, and negative weights count as 0. Null weights, or weights that are all 0, stand for a weight of 1
+ * each, so they scatter evenly and come to exactly what equal weights do. Because a cell's pick is a function of its
+ * position alone, raising one tile's weight re-rolls the whole scatter rather than only adding to that tile.
  */
 FillResult fill_masked(
   const level::TileRef* tiles,
+  const float* weights,
   std::size_t count,
   const FillMask& mask,
   std::uint64_t seed,

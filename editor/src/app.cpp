@@ -1122,7 +1122,7 @@ void smoke(App& app)
     before.assign(grid.values.begin(), grid.values.end());
     const level::TileRef chosen[3] = {
       level::TileRef{tileset, 0}, level::TileRef{tileset, 1}, level::TileRef{tileset, 2}};
-    apply_fill(app, tiles_layer, chosen, 3);
+    apply_fill(app, tiles_layer, chosen, nullptr, 3);
     const procgen::FillResult result = g.fill_result;
     if (result.matched == 0 or result.matched == grid.values.size())
     {
@@ -1161,14 +1161,52 @@ void smoke(App& app)
       break;
     }
     // Running it again writes the same tiles, so the scatter stays put
-    apply_fill(app, tiles_layer, chosen, 3);
+    apply_fill(app, tiles_layer, chosen, nullptr, 3);
     if (g.fill_result.changed != 0)
     {
       report(app, Status::error("filling again moved the scattered tiles"));
     }
+    // Weights change the shares: the first tile is asked for four times as much as the others
+    const float weights[3] = {4.0F, 1.0F, 1.0F};
+    apply_fill(app, tiles_layer, chosen, weights, 3);
+    std::size_t weighted[3] = {0, 0, 0};
+    for (std::size_t i = 0; i < grid.values.size(); ++i)
+    {
+      if (height.values[i] < g.fill_lo or height.values[i] > g.fill_hi)
+      {
+        continue;
+      }
+      for (std::size_t t = 0; t < 3; ++t)
+      {
+        weighted[t] += (grid.values[i] == chosen[t]) ? 1U : 0U;
+      }
+    }
+    if (weighted[0] + weighted[1] + weighted[2] != result.matched)
+    {
+      report(app, Status::error("a weighted fill left cells of the band without one of the selected tiles"));
+      break;
+    }
+    if (weighted[0] <= weighted[1] + weighted[2] or weighted[1] == 0 or weighted[2] == 0)
+    {
+      report(app, Status::error("the scatter weights did not change the shares"));
+      break;
+    }
+    // A weight of zero keeps a tile out altogether
+    const float without[3] = {1.0F, 0.0F, 1.0F};
+    apply_fill(app, tiles_layer, chosen, without, 3);
+    for (std::size_t i = 0; i < grid.values.size(); ++i)
+    {
+      const bool inside = (height.values[i] >= g.fill_lo and height.values[i] <= g.fill_hi);
+      if (inside and grid.values[i] == chosen[1])
+      {
+        report(app, Status::error("a tile of weight zero was still scattered"));
+        break;
+      }
+    }
+
     // With the scatter off, one tile covers the band instead
     g.fill_scatter = false;
-    apply_fill(app, tiles_layer, chosen, 1);
+    apply_fill(app, tiles_layer, chosen, nullptr, 1);
     for (std::size_t i = 0; i < grid.values.size(); ++i)
     {
       const bool inside = (height.values[i] >= g.fill_lo and height.values[i] <= g.fill_hi);

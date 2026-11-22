@@ -289,7 +289,11 @@ takes the undo snapshot and is what the Fill button calls.
 
 The tiles it writes are the palette selection, the same set the paint tool stamps. With one tile
 every matched cell takes it; with several it **scatters** them, each cell picking one by a hash of
-its position and the level's seed. So the scatter is a function of the cell, not of the order cells
+its position and the level's seed, weighted by `TileInfo::scatter_weight` -- how often a tile is
+picked against the others it is scattered with (0 keeps it out; all-zero or absent weights stand
+for 1 each, so an untouched tileset scatters evenly). The weight is ordinary tile metadata: it is
+edited in the Tile metadata panel, in its batch edit, and in the Fill tab's own rows, which also
+show what each weight comes to as a share, and it travels in the tileset. So the scatter is a function of the cell, not of the order cells
 are visited: filling twice writes the same tiles, narrowing the mask and filling again leaves the
 cells it still covers exactly as they were, and only the seed moves them. "Scatter the selection"
 off fills with the first selected tile instead, which is the plain whole-map fill.
@@ -406,7 +410,8 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
-  rule learning, rules from a palette layout, batch tile and constraint edits, terrains from a
+  rule learning, rules from a palette layout, batch tile and constraint edits (scatter weight
+  included), terrains from a
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
   selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files, a level whose layers
@@ -414,7 +419,9 @@ one check to mark required:
   layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
   layer, headers at their widest.
 - `//procgen`: masked fills (a height band, a ground type, the two together, the scatter being even
-  and staying put under a different mask, regions and clipping, sparing what is drawn, no tiles);
+  and staying put under a different mask, scatter weights deciding the shares (a weight of zero,
+  negative weights, all-zero and equal weights coming to the same thing), regions and clipping,
+  sparing what is drawn, no tiles);
   noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints; terrain painting (a nine-slice from one painted cell, the border re-tiling as the
@@ -433,8 +440,8 @@ one check to mark required:
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
   multi-tile paint stamp, a thirteen-tile terrain taken from one palette selection and painted (the
-  auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, and with the
-  scatter off),
+  auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
+  weight of zero, and with the scatter off),
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
