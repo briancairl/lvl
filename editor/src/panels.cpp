@@ -26,24 +26,6 @@ namespace
 
 using namespace level;
 
-template <typename EnumT> bool enum_combo(const char* label, EnumT& value)
-{
-  bool changed = false;
-  if (ImGui::BeginCombo(label, enum_name(value).data()))
-  {
-    for (std::size_t i = 0; i < EnumNames<EnumT>::kNames.size(); ++i)
-    {
-      if (ImGui::Selectable(EnumNames<EnumT>::kNames[i].data(), static_cast<std::size_t>(value) == i))
-      {
-        value = static_cast<EnumT>(i);
-        changed = true;
-      }
-    }
-    ImGui::EndCombo();
-  }
-  return changed;
-}
-
 /// Collision mask editor: four quadrant toggles plus flags
 bool collision_edit(std::uint8_t& mask)
 {

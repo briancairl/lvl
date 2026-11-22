@@ -101,7 +101,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/WFC/path files in JSON and binary |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, WFC rules), `wfc_neighbors.cpp` the pop-out drag-and-drop WFC neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -202,17 +202,34 @@ key/value property to set or a key to remove) is behind a checkbox saying whethe
 "Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
 tiles, count)` does the writing; like the single-tile fields, it is not undoable.
 
+### Tile adjacency rules
+
+The level's one set of tile adjacencies (`level::WfcRules`: what may sit next to what, plus each
+tile's weight, height band, water rule and semantic type) has a window of its own,
+`adjacency_window` (View > Tile adjacency rules, `editor/src/adjacency.cpp`). WFC reads it, and so
+can any other auto-tiling, so it is not a tab of the Generate panel; the WFC tab shows how many
+tiles and adjacencies it holds and has an "Edit rules..." button that opens and focuses it. The
+window holds the rule set's name and import/export, "Add palette tile(s)", the rules from the
+palette layout, the rule-tile strip, the selected tile's constraints, the batch constraints and the
+allowed neighbors per direction. The rules themselves, their file formats and `WfcTile` are
+unchanged: only the UI moved out of `generate.cpp`.
+
+Under "Allowed neighbors", clicking a thumbnail toggles that neighbor; pressing the left button and
+dragging across several sets all of them to what the first one became (allowed if it was forbidden,
+and the other way round), so a whole row can be swept in one motion. The drag is kept in one
+direction's row and ends when the button comes up.
+
 ### Batch WFC constraints
 
 A rule tile counts as selected when its tile is in the palette selection; ctrl+clicking the rule
-tile strip in the WFC rules tab toggles it there too (`selected_rule_tiles`). With two or more
+tile strip in the adjacency rules window toggles it there too (`selected_rule_tiles`). With two or more
 selected, "Batch constraints" writes the ticked fields (weight, height band, water rule, semantic
 type) to all of them through `level::apply_edit(WfcRules&, WfcTileEdit, ...)`, the counterpart of
 the tile-metadata batch edit; `batch_field` draws one row of either.
 
 ### WFC rules from the palette layout
 
-"From the palette layout" in the WFC rules tab turns the palette selection into adjacency rules:
+"From the palette layout" in the adjacency rules window turns the palette selection into adjacency rules:
 every pair of selected tiles that sit next to each other in the palette may sit next to each other
 on the map, in that direction (corners too when `WfcRules::diagonals` is on). "Allow what it shows"
 merges those pairs into the rules; "Only what it shows"
@@ -222,9 +239,9 @@ contain, keep the rules they have. `level::constrain_from_layout` does both; its
 not be the one the rules live in. "Add palette tile(s)" adds the selection, or the paint stamp when
 nothing is selected.
 
-### WFC neighbor editor
+### Neighbor editor
 
-`wfc_neighbors_window` (View > WFC neighbors, or "Neighbor editor..." in the WFC rules tab) is a
+`neighbors_window` (View > Tile neighbors, or "Neighbor editor..." in the adjacency rules window) is a
 floating window: a palette of the rule tiles, and a 3x3 grid with the edited tile in the middle and one
 drop slot per `Direction`. Drag a tile from the palette into a slot to allow it there, between slots to
 move it (Ctrl: copy), onto the palette or right-click it to forbid it, onto the middle to edit it next.
@@ -236,7 +253,7 @@ side rules (`level::derive_diagonals`), so an existing rule set stays solvable.
 `kDirections` is the sides, `kDiagonals` the corners and `kNeighbors` all eight.
 
 Wherever a neighbor is picked for a known direction — a tile in one of the slots, or one of the
-thumbnails under "Allowed neighbors" in the rules tab — hovering it shows `wfc_pair_tooltip`: the two
+thumbnails under "Allowed neighbors" in the adjacency rules window — hovering it shows `wfc_pair_tooltip`: the two
 tiles drawn in the positions the rule would put them in (the edited one outlined yellow), and whether
 the pair is allowed. The "Preview pairs" checkbox in either window turns it off (`App::wfc_preview`),
 and the neighbor editor falls back to its plain text tooltip.
@@ -299,9 +316,10 @@ one check to mark required:
   memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
   worker's scratch), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
-  paths: demo level, generators (incl. WFC with corner rules and the neighbor editor), undo/redo, save/load
-  in both formats, all exports, a style profile save/load, deletes, a batch tile edit, WFC rules and batch
-  constraints from a palette selection, the file dialog, reopening the newest recent level, and the
+  paths: demo level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
+  editor), undo/redo, save/load
+  in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
+  batch constraints from a palette selection, the file dialog, reopening the newest recent level, and the
   unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

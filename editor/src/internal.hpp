@@ -97,8 +97,10 @@ void minimap_panel(App& app);
 void log_panel(App& app);
 void file_dialog(App& app);
 void style_panel(App& app);
-/// The pop-out WFC neighbor editor: drag tiles into the eight sides around a rule tile
-void wfc_neighbors_window(App& app);
+/// The tile adjacency rules window: the rule tiles, their constraints and their allowed neighbors
+void adjacency_window(App& app);
+/// The pop-out neighbor editor: drag tiles into the eight sides around a rule tile
+void neighbors_window(App& app);
 
 /**
  * @brief Tooltip showing how rule tile <code>b</code> lines up <code>direction</code> of rule tile
@@ -175,6 +177,25 @@ void tile_image(const App& app, level::TileRef tile, float size);
 
 /// ImGui texture id of a texture
 inline ImTextureID texture_id(const Texture& t) { return static_cast<ImTextureID>(t.id); }
+
+/// Combo box over a serialized enum's names; returns true if changed
+template <typename EnumT> bool enum_combo(const char* label, EnumT& value)
+{
+  bool changed = false;
+  if (ImGui::BeginCombo(label, enum_name(value).data()))
+  {
+    for (std::size_t i = 0; i < EnumNames<EnumT>::kNames.size(); ++i)
+    {
+      if (ImGui::Selectable(EnumNames<EnumT>::kNames[i].data(), static_cast<std::size_t>(value) == i))
+      {
+        value = static_cast<EnumT>(i);
+        changed = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
 
 /// Combo box over a catalog (semantics/materials); returns true if changed
 template <typename CatalogT> bool catalog_combo(const char* label, const CatalogT& catalog, std::uint16_t& id)

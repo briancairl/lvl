@@ -37,8 +37,10 @@ portal and a spawn marker, the tileset palette and tile metadata with seasonal v
 - **Wave function collapse**: generates tiles constrained by adjacency rules and by other layers
   (per-tile height bands, wet/dry/shore water rules, semantic types). It can keep hand-placed tiles
   and regenerate just a selected region.
-- **Visual WFC rule editor**: tile weights and constraints, and per-direction neighbor toggles over
-  tile thumbnails. Rules can also be learned from an existing tile layer.
+- **Tile adjacency rules**: a window of its own for the level's adjacency rules (what may sit next to
+  what), used by WFC and by any other auto-tiling: tile weights and constraints, and per-direction
+  neighbor toggles over tile thumbnails, which a left-button drag can sweep over several at a time.
+  Rules can also be learned from an existing tile layer or taken from the palette layout.
 - **Portals** (target level, target portal, exit direction), **markers**, and **path/route graphs**
   (roads, patrols, rivers, navigation) with one-way edges, costs, node wait times and a shortest-route
   preview.
@@ -49,8 +51,7 @@ portal and a spawn marker, the tileset palette and tile metadata with seasonal v
 - **Files**: levels, tilesets, WFC rules and path graphs save and load as **JSON** (the human-readable
   source of truth) or **binary**. `lvl_convert` translates either way.
 - **Exports**: the full map as a PNG at any scale, and a mini-preview PNG (also shown live in a panel).
-- **Generators** live in tabs of the Generate panel: Heightmap, Water-shedding, WFC and the WFC
-  rule editor.
+- **Generators** live in tabs of the Generate panel: Heightmap, Water-shedding and WFC.
 - **UI style profiles**: Dear ImGui's style editor with presets (lvl, dark, light, classic) and a
   font scale. Profiles save/load as JSON, and a default profile (`~/.config/lvl/style.json`) is
   applied at startup.

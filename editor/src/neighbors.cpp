@@ -1,9 +1,9 @@
 /**
  * @copyright 2026-present Brian Cairl
  *
- * @file wfc_neighbors.cpp
+ * @file neighbors.cpp
  *
- * The pop-out WFC neighbor editor. The selected rule tile sits in the middle of a 3x3 grid; each of
+ * The pop-out tile neighbor editor. The selected rule tile sits in the middle of a 3x3 grid; each of
  * the eight surrounding slots lists the tiles allowed on that side of it. Tiles are dragged from the
  * palette into a slot to allow them there, between slots to move them (Ctrl: copy), and back onto
  * the palette (or right-clicked) to forbid them again. Dropping a tile on the middle edits it next.
@@ -436,14 +436,14 @@ bool wfc_pair_tooltip(const App& app, WfcTileId a, WfcTileId b, Direction direct
   return true;
 }
 
-void wfc_neighbors_window(App& app)
+void neighbors_window(App& app)
 {
   ImGui::SetNextWindowSize(ImVec2{820, 640}, ImGuiCond_FirstUseEver);
   const ImVec2 middle = ImGui::GetMainViewport()->GetCenter();
   ImGui::SetNextWindowPos(middle, ImGuiCond_FirstUseEver, ImVec2{0.5F, 0.5F});
   // Floats over the viewport: opaque, so the map doesn't show through
   ImGui::SetNextWindowBgAlpha(1.0F);
-  if (!ImGui::Begin("WFC neighbors", &app.panels.wfc_neighbors))
+  if (!ImGui::Begin("Tile neighbors", &app.panels.neighbors))
   {
     ImGui::End();
     return;
@@ -457,7 +457,7 @@ void wfc_neighbors_window(App& app)
   if (rules.tiles.empty())
   {
     ImGui::TextDisabled(
-      "No rule tiles. Add tiles from the palette in Generate > WFC rules, or learn them from a layer.");
+      "No rule tiles. Add tiles from the palette in Tile adjacency rules, or learn them from a layer.");
     ImGui::End();
     return;
   }
@@ -476,7 +476,10 @@ void wfc_neighbors_window(App& app)
   }
   ImGui::SameLine();
   ImGui::Text(
-    "%s: tile %u of %zu", rules.name.empty() ? "WFC rules" : rules.name.c_str(), app.wfc_tile + 1, rules.tiles.size());
+    "%s: tile %u of %zu",
+    rules.name.empty() ? "Adjacency rules" : rules.name.c_str(),
+    app.wfc_tile + 1,
+    rules.tiles.size());
   ImGui::SameLine(0.0F, 2.0F * ImGui::GetStyle().ItemSpacing.x);
   if (ImGui::Checkbox("Constrain corners", &rules.diagonals))
   {

@@ -216,16 +216,6 @@ struct Generators
   int region_h = 0;
 };
 
-/// Tabs of the Generate panel
-enum class GeneratorTab : std::uint8_t
-{
-  kNone,
-  kHeightmap,
-  kWatershed,
-  kWfc,
-  kWfcRules,
-};
-
 /// What a delete button removes
 enum class DeleteKind : std::uint8_t
 {
@@ -268,8 +258,10 @@ struct Panels
   bool log = true;
   bool style = false;
   bool demo = false;
-  /// The pop-out WFC neighbor editor
-  bool wfc_neighbors = false;
+  /// The tile adjacency rules window (the rule tiles and their allowed neighbors)
+  bool adjacency = false;
+  /// The pop-out neighbor editor
+  bool neighbors = false;
 };
 
 /// What the modal file dialog is for
@@ -351,11 +343,9 @@ struct App
   level::Entity route_from = level::kNullEntity;
 
   Generators generators;
-  /// Generate panel tab to bring to front on the next frame
-  GeneratorTab generator_tab_request = GeneratorTab::kNone;
-  /// WFC editor: the tile whose neighbors are being edited
+  /// Adjacency rules: the tile whose constraints and neighbors are being edited
   level::WfcTileId wfc_tile = 0;
-  /// WFC editor: hovering a neighbor previews how the two tiles would line up
+  /// Adjacency rules: hovering a neighbor previews how the two tiles would line up
   bool wfc_preview = true;
   /// What the batch edit applies to the constraints of the selected rule tiles
   level::WfcTileEdit wfc_batch;

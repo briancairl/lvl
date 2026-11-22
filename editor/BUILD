@@ -64,16 +64,17 @@ cc_library(
 cc_library(
     name = "editor",
     srcs = [
+        "src/adjacency.cpp",
         "src/app.cpp",
         "src/deletion.cpp",
         "src/file_dialog.cpp",
         "src/generate.cpp",
         "src/internal.hpp",
+        "src/neighbors.cpp",
         "src/panels.cpp",
         "src/platform.cpp",
         "src/recent.cpp",
         "src/selection.cpp",
-        "src/wfc_neighbors.cpp",
         "src/viewport.cpp",
         "src/web.cpp",
     ],
