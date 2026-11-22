@@ -200,6 +200,15 @@ as in the palette). Every batch context draws the same `deselect_all_button` (th
 Batch edit, and both WFC sections), and Edit > Deselect all tiles / Ctrl+Shift+A empties it from
 anywhere.
 
+With two or more tiles selected, the paint tool writes them all at once, in the relative positions
+the palette gives them (a tree of 3x3 tiles stays a tree), so the selection is both what a batch
+edit applies to and what painting stamps. `paint_stamp` builds that stamp — the selection's layout
+when two or more tiles are selected, otherwise `App::paint`'s one tile or palette rectangle — and
+`stamp_extents` is its footprint, for the cursor's hover preview. A cell the stamp leaves empty (a
+hole in the selection) keeps what is under it. The stamp's top-left corner sits at the cursor, it is
+built once per stroke application in the frame arena, and the brush radius applies only when the
+stamp is a single tile. The eyedropper empties the selection, so the tile it picks is what paints.
+
 With two or more tiles selected, "Batch edit" at the bottom of the Tile metadata panel writes
 metadata to all of them at once: each field (semantic type, material, hidden, collision, a
 key/value property to set or a key to remove) is behind a checkbox saying whether it is applied, and

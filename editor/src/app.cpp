@@ -914,6 +914,38 @@ void smoke(App& app)
     break;
   }
   case 21: {
+    // A multi-tile paint stamp: the selected tiles keep their relative positions in the palette
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    const level::Extents palette = palette_grid(app, app.tileset);
+    if (palette.width < 2 or palette.height < 2)
+    {
+      report(app, Status::error("the demo palette is too small for a multi-tile stamp"));
+      break;
+    }
+    const auto columns = static_cast<level::TileIndex>(palette.width);
+    for (const level::TileIndex tile : {level::TileIndex{0}, level::TileIndex{1}, columns})
+    {
+      app.selection.set(tile, true);
+    }
+    level::Grid<level::TileRef> stamp{app.memory.frame};
+    const level::Extents footprint = stamp_extents(app);
+    if (!paint_stamp(app, stamp) or stamp.extents != level::Extents{2, 2} or footprint != stamp.extents)
+    {
+      report(app, Status::error("the palette selection did not become a 2x2 paint stamp"));
+      break;
+    }
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    if (
+      stamp.at(0, 0) != level::TileRef{tileset, 0} or stamp.at(1, 0) != level::TileRef{tileset, 1} or
+      stamp.at(0, 1) != level::TileRef{tileset, columns} or !stamp.at(1, 1).empty())
+    {
+      report(app, Status::error("the paint stamp does not hold the selection's layout"));
+    }
+    app.selection.clear();
+    break;
+  }
+  case 22: {
     // The recent levels: the saves and the load above left their paths in the list, newest first,
     // and the newest one opens again from it (as File > Open recent does)
     load_recent_files(app);
@@ -926,7 +958,7 @@ void smoke(App& app)
     file_action(app, FileAction::kOpenLevel, newest.c_str());
     break;
   }
-  case 22:
+  case 23:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -935,7 +967,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 23:
+  case 24:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

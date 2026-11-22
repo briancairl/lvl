@@ -172,30 +172,24 @@ void apply_cell(App& app, Layer& layer, Cell c, bool erase, float weight)
   }
 }
 
-/// Applies the brush (radius, or a tile stamp) centered on a cell
-void apply_brush(App& app, Cell center, bool erase)
+/// Applies the brush: a tile stamp with its top-left corner at the cell, or the radius brush
+void apply_brush(App& app, Cell center, bool erase, const Grid<TileRef>* stamp = nullptr)
 {
   Layer& layer = app.level->layers[app.layer];
-  if (layer.kind == LayerKind::kTiles and !erase and (app.paint.stamp_width > 1 or app.paint.stamp_height > 1))
+  if (layer.kind == LayerKind::kTiles and !erase and stamp != nullptr and stamp->size() > 1)
   {
-    // Stamp a rectangle of tiles from the palette, top-left at the cursor
-    const TileRef base = app.paint.tile;
-    if (base.tileset >= app.level->tilesets.size())
-    {
-      return;
-    }
-    const TileSet& ts = app.level->tilesets[base.tileset];
-    const int columns = std::max(1, slice_grid(ts.slice, ts.image_width, ts.image_height).width);
+    // Stamp the tiles as the palette lays them out, keeping their relative positions; a cell the
+    // stamp leaves empty (a hole in the palette selection) keeps what is under it
     auto& g = plane<TileGrid>(layer);
-    for (int dy = 0; dy < app.paint.stamp_height; ++dy)
+    for (int dy = 0; dy < stamp->height(); ++dy)
     {
-      for (int dx = 0; dx < app.paint.stamp_width; ++dx)
+      for (int dx = 0; dx < stamp->width(); ++dx)
       {
+        const TileRef tile = stamp->at(dx, dy);
         const Cell c{center.x + dx, center.y + dy};
-        const int index = static_cast<int>(base.tile) + dy * columns + dx;
-        if (g.extents.contains(c) and index < static_cast<int>(ts.tiles.size()))
+        if (!tile.empty() and g.extents.contains(c))
         {
-          g.at(c) = TileRef{base.tileset, static_cast<TileIndex>(index)};
+          g.at(c) = tile;
         }
       }
     }
@@ -219,7 +213,7 @@ void apply_brush(App& app, Cell center, bool erase)
 }
 
 /// Applies the brush along the line from a to b (so fast strokes leave no gaps)
-void apply_line(App& app, Cell a, Cell b, bool erase)
+void apply_line(App& app, Cell a, Cell b, bool erase, const Grid<TileRef>* stamp = nullptr)
 {
   const int steps = std::max(std::abs(b.x - a.x), std::abs(b.y - a.y));
   for (int i = (a == b) ? 0 : 1; i <= steps; ++i)
@@ -228,7 +222,8 @@ void apply_line(App& app, Cell a, Cell b, bool erase)
     apply_brush(
       app,
       Cell{static_cast<int>(std::lround(a.x + (b.x - a.x) * t)), static_cast<int>(std::lround(a.y + (b.y - a.y) * t))},
-      erase);
+      erase,
+      stamp);
   }
 }
 
@@ -320,6 +315,9 @@ void eyedrop(App& app, Cell c)
       app.paint.stamp_height = 1;
       app.tileset = t.tileset;
       app.tile = t.tile;
+      // A multi-tile selection would otherwise keep being what painting writes
+      app.selection.clear();
+      app.selection.retarget(t.tileset);
     }
     break;
   }
@@ -610,18 +608,28 @@ void handle_tools(App& app, const Canvas& cv, bool hovered)
     break;
   case Tool::kPaint:
   case Tool::kErase: {
+    // The tiles a stamp writes (the palette selection's layout, or the paint stamp), built once
+    memory::Scope paint_scope{app.memory.frame};
+    Grid<TileRef> stamp{app.memory.frame};
+    const Grid<TileRef>* tiles = nullptr;
+    if (
+      tool == Tool::kPaint and layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and
+      (pressed or stroke.active))
+    {
+      tiles = paint_stamp(app, stamp) ? &stamp : nullptr;
+    }
     if (pressed and editable)
     {
       app.undo.snapshot(lv, app.layer, tool == Tool::kPaint ? "Paint" : "Erase");
       stroke.active = true;
       stroke.last = cell;
-      apply_line(app, cell, cell, tool == Tool::kErase);
+      apply_line(app, cell, cell, tool == Tool::kErase, tiles);
       invalidate_layer(app, app.layer);
       app.modified = true;
     }
     else if (stroke.active and down and cell != stroke.last)
     {
-      apply_line(app, stroke.last, cell, tool == Tool::kErase);
+      apply_line(app, stroke.last, cell, tool == Tool::kErase, tiles);
       stroke.last = cell;
       invalidate_layer(app, app.layer);
     }
@@ -850,17 +858,36 @@ void handle_tools(App& app, const Canvas& cv, bool hovered)
   // Hover feedback: brush footprint
   if (hovered and lv.settings.extents.contains(cell) and (tool == Tool::kPaint or tool == Tool::kErase))
   {
-    const int r =
-      (layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and tool == Tool::kPaint) ? 0 : app.brush.radius;
-    const int w = (layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and tool == Tool::kPaint)
-      ? app.paint.stamp_width
-      : 1;
-    const int h = (layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and tool == Tool::kPaint)
-      ? app.paint.stamp_height
-      : 1;
+    const bool stamping = layer_ok and lv.layers[app.layer].kind == LayerKind::kTiles and tool == Tool::kPaint;
+    const int r = stamping ? 0 : app.brush.radius;
+    const Extents footprint = stamping ? stamp_extents(app) : Extents{1, 1};
+    const ImU32 color = editable ? IM_COL32(255, 255, 255, 200) : IM_COL32(255, 80, 80, 200);
     const ImVec2 a = cv.to_screen(app.view, static_cast<float>(cell.x - r), static_cast<float>(cell.y - r));
-    const ImVec2 b = cv.to_screen(app.view, static_cast<float>(cell.x + r + w), static_cast<float>(cell.y + r + h));
-    cv.draw->AddRect(a, b, editable ? IM_COL32(255, 255, 255, 200) : IM_COL32(255, 80, 80, 200), 0, 0, 1.5F);
+    const ImVec2 b = cv.to_screen(
+      app.view, static_cast<float>(cell.x + r + footprint.width), static_cast<float>(cell.y + r + footprint.height));
+    cv.draw->AddRect(a, b, color, 0, 0, 1.5F);
+    // A multi-tile stamp can have holes (the palette selection's): outline the cells it writes
+    SelectionBounds bounds;
+    if (stamping and app.selection.count >= 2 and selection_bounds(app, bounds))
+    {
+      for (int y = 0; y < bounds.height; ++y)
+      {
+        for (int x = 0; x < bounds.width; ++x)
+        {
+          const auto tile = static_cast<TileIndex>((bounds.y + y) * bounds.columns + (bounds.x + x));
+          if (app.selection.has(tile))
+          {
+            cv.draw->AddRect(
+              cv.to_screen(app.view, static_cast<float>(cell.x + x), static_cast<float>(cell.y + y)),
+              cv.to_screen(app.view, static_cast<float>(cell.x + x + 1), static_cast<float>(cell.y + y + 1)),
+              color,
+              0,
+              0,
+              1.0F);
+          }
+        }
+      }
+    }
   }
 }
 
