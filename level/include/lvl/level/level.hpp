@@ -19,6 +19,7 @@
 #include "lvl/level/auto_tile_rules.hpp"
 #include "lvl/level/layer.hpp"
 #include "lvl/level/objects.hpp"
+#include "lvl/level/step_rules.hpp"
 #include "lvl/level/tileset.hpp"
 #include "lvl/level/types.hpp"
 #include "lvl/level/wfc_rules.hpp"
@@ -64,6 +65,8 @@ struct Level
   WfcRules wfc;
   /// Auto-tiling terrains (the other kind of tile adjacency rules; see auto_tile_rules.hpp)
   AutoTileRules auto_tiles;
+  /// Height-step terrains, keyed on the difference in level between cells (see step_rules.hpp)
+  StepRules steps;
   memory::Vector<PathGraph> graphs;
   Registry registry;
 };

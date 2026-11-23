@@ -10,6 +10,7 @@ cc_library(
     name = "model",
     srcs = [
         "src/auto_tile_rules.cpp",
+        "src/step_rules.cpp",
         "src/layer.cpp",
         "src/level.cpp",
         "src/objects.cpp",
@@ -19,6 +20,7 @@ cc_library(
     ],
     hdrs = [
         "include/lvl/level/auto_tile_rules.hpp",
+        "include/lvl/level/step_rules.hpp",
         "include/lvl/level/grid.hpp",
         "include/lvl/level/layer.hpp",
         "include/lvl/level/level.hpp",

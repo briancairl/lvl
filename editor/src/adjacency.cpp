@@ -658,6 +658,238 @@ void auto_tile_body(App& app)
   app.modified |= changed;
 }
 
+// -------------------------------------------------------------------------------------------------
+// Height-step rules: terrains whose tiles are keyed on the difference in level between cells
+// -------------------------------------------------------------------------------------------------
+
+/// The pattern a step type answers, drawn as the outline of the ground that stands above the rest
+void draw_step(ImDrawList* draw, ImVec2 lo, ImVec2 hi, StepType type)
+{
+  constexpr ImU32 kEdge = IM_COL32(120, 200, 255, 255);
+  constexpr float kThick = 2.5F;
+  // Rather than keep a second copy of the table, probe it: the pattern to draw is the first set of
+  // dropped neighbors that names this type
+  StepCode code = 0;
+  for (unsigned mask = 0; mask < 256U; ++mask)
+  {
+    StepCode candidate = 0;
+    for (std::size_t n = 0; n < kStepNeighbors.size(); ++n)
+    {
+      candidate = step_code_with(candidate, n, ((mask >> n) & 1U) != 0U ? StepRelation::kBelow : StepRelation::kLevel);
+    }
+    if (step_type_of(candidate) == type)
+    {
+      code = candidate;
+      break;
+    }
+  }
+  const float notch = (hi.x - lo.x) * 0.22F;
+  const auto drops = [code](std::size_t n) { return step_relation(code, n) == StepRelation::kBelow; };
+  if (drops(1))
+  {
+    draw->AddLine(ImVec2{lo.x, lo.y + 1}, ImVec2{hi.x, lo.y + 1}, kEdge, kThick);
+  }
+  if (drops(6))
+  {
+    draw->AddLine(ImVec2{lo.x, hi.y - 1}, ImVec2{hi.x, hi.y - 1}, kEdge, kThick);
+  }
+  if (drops(3))
+  {
+    draw->AddLine(ImVec2{lo.x + 1, lo.y}, ImVec2{lo.x + 1, hi.y}, kEdge, kThick);
+  }
+  if (drops(4))
+  {
+    draw->AddLine(ImVec2{hi.x - 1, lo.y}, ImVec2{hi.x - 1, hi.y}, kEdge, kThick);
+  }
+  // A corner that drops on its own is the concave case, drawn as a notch
+  static constexpr std::size_t kCorners[4] = {0, 2, 5, 7};
+  static constexpr std::size_t kCornerSides[4][2] = {{1, 3}, {1, 4}, {6, 3}, {6, 4}};
+  for (std::size_t i = 0; i < 4; ++i)
+  {
+    if (!drops(kCorners[i]) or drops(kCornerSides[i][0]) or drops(kCornerSides[i][1]))
+    {
+      continue;
+    }
+    const bool east = (kCorners[i] == 2 or kCorners[i] == 7);
+    const bool south = (kCorners[i] == 5 or kCorners[i] == 7);
+    const ImVec2 at{east ? hi.x - notch : lo.x, south ? hi.y - notch : lo.y};
+    draw->AddRectFilled(at, ImVec2{at.x + notch, at.y + notch}, kEdge);
+  }
+}
+
+/// One step type's slot: the tile it holds, outlined where the ground drops away
+bool step_slot(App& app, StepTerrain& terrain, StepType type, float size)
+{
+  bool changed = false;
+  const auto index = static_cast<std::size_t>(type);
+  ImGui::PushID(static_cast<int>(index));
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  const TileRef held = terrain.tiles[index];
+  if (held.empty())
+  {
+    ImGui::Dummy(ImVec2{size, size});
+    ImGui::GetWindowDrawList()->AddRectFilled(
+      origin, ImVec2{origin.x + size, origin.y + size}, IM_COL32(28, 28, 32, 255));
+  }
+  else
+  {
+    tile_image(app, held, size);
+  }
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Left) and !app.paint.tile.empty())
+  {
+    terrain.tiles[index] = app.paint.tile;
+    changed = true;
+  }
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+  {
+    terrain.tiles[index] = kEmptyTile;
+    changed = true;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip(
+      "%s\nClick to use the palette tile, right-click to clear.\nThe lines show where the ground drops away.%s",
+      enum_name(type).data(),
+      (type == StepType::kNone) ? "\nNo arrangement of levels asks for this one; gft's sheets keep the slot." : "");
+  }
+  ImGui::GetWindowDrawList()->AddRect(origin, ImVec2{origin.x + size, origin.y + size}, IM_COL32(90, 90, 100, 255));
+  draw_step(ImGui::GetWindowDrawList(), origin, ImVec2{origin.x + size, origin.y + size}, type);
+  ImGui::PopID();
+  return changed;
+}
+
+bool step_terrain_list(App& app)
+{
+  Level& lv = *app.level;
+  StepRules& rules = lv.steps;
+  bool changed = false;
+  if (ImGui::SmallButton("Add terrain"))
+  {
+    const auto next = static_cast<int>(rules.terrains.size());
+    app.step_terrain = add_step_terrain(rules, format<32>("level_%d", next));
+    rules.terrains[app.step_terrain].level_lo = next;
+    rules.terrains[app.step_terrain].level_hi = next;
+    changed = true;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("A band of height levels and the eighteen tiles its ground and its cliffs are drawn from");
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu terrain(s)", rules.terrains.size());
+  if (rules.terrains.empty())
+  {
+    return changed;
+  }
+  app.step_terrain = std::min<StepTerrainId>(app.step_terrain, static_cast<StepTerrainId>(rules.terrains.size() - 1));
+  ImGui::BeginChild("step_terrains", ImVec2{0, 4 * ImGui::GetTextLineHeightWithSpacing()}, ImGuiChildFlags_Borders);
+  for (std::size_t i = 0; i < rules.terrains.size(); ++i)
+  {
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Delete this terrain"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kStepTerrain,
+          .index = i,
+          .what = format<128>("step terrain '%s'", rules.terrains[i].name.c_str()),
+          .detail = "Cells at its levels will be left untiled until another terrain covers them."});
+    }
+    ImGui::SameLine();
+    std::size_t filled = 0;
+    for (const TileRef& t : rules.terrains[i].tiles)
+    {
+      filled += t.empty() ? 0U : 1U;
+    }
+    if (ImGui::Selectable(
+          format<96>(
+            "%s  levels %d..%d  (%zu/18)",
+            rules.terrains[i].name.c_str(),
+            rules.terrains[i].level_lo,
+            rules.terrains[i].level_hi,
+            filled),
+          i == app.step_terrain))
+    {
+      app.step_terrain = static_cast<StepTerrainId>(i);
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  return changed;
+}
+
+void steps_body(App& app)
+{
+  Level& lv = *app.level;
+  bool changed = step_terrain_list(app);
+  ImGui::TextDisabled("Ground cut into whole height levels, with a cliff drawn wherever two levels meet.\n"
+                      "Fill a map with them in Generate > Height steps.");
+  if (lv.steps.terrains.empty())
+  {
+    ImGui::TextDisabled("No terrains yet. Add one, then select a tileset's 3-wide, 6-tall step block and take it.");
+    app.modified |= changed;
+    return;
+  }
+  StepTerrain& terrain = lv.steps.terrains[app.step_terrain];
+  ImGui::SeparatorText("Terrain");
+  changed |= input_text("Name", terrain.name);
+  changed |= ImGui::DragIntRange2("Levels", &terrain.level_lo, &terrain.level_hi, 0.1F, 0, 255);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("The height levels this terrain covers. A cell takes the first terrain whose band holds its "
+                      "level, so bands should not overlap.");
+  }
+
+  // The 3x6 block, read the way gft's sheets hold it
+  memory::Scope scope{app.memory.frame};
+  Grid<TileRef> layout{app.memory.frame};
+  StepLayout shape = StepLayout::kStacked;
+  const bool has_block =
+    palette_layout(app, layout) and step_layout_of(layout.extents.width, layout.extents.height, shape);
+  ImGui::BeginDisabled(!has_block);
+  if (ImGui::Button(
+        has_block and shape == StepLayout::kSideBySide ? "Take the palette block (step-ups left, step-downs right)"
+                                                       : "Take the palette block"))
+  {
+    learn_step_layout(terrain, layout);
+    changed = true;
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (!has_block)
+  {
+    ImGui::TextDisabled("select 18 tiles: 6 across and 3 down, or 3 across and 6 down");
+  }
+  else
+  {
+    ImGui::TextDisabled(
+      "%s", (shape == StepLayout::kSideBySide) ? "6 across, 3 down" : "3 across, 6 down (gft's own order)");
+  }
+
+  // The slots are drawn in whichever shape the palette selection is, so they sit as the tileset does
+  const StepLayout drawn = has_block ? shape : StepLayout::kSideBySide;
+  const int block_w = (drawn == StepLayout::kSideBySide) ? kSideBySideWidth : kStackedWidth;
+  const int block_h = (drawn == StepLayout::kSideBySide) ? kSideBySideHeight : kStackedHeight;
+
+  ImGui::SeparatorText("Tiles");
+  constexpr float kSlot = 40.0F;
+  ImGui::BeginChild("step_types", ImVec2{0, 0}, ImGuiChildFlags_Borders);
+  for (int y = 0; y < block_h; ++y)
+  {
+    for (int x = 0; x < block_w; ++x)
+    {
+      if (x > 0)
+      {
+        ImGui::SameLine();
+      }
+      changed |= step_slot(app, terrain, static_cast<StepType>(step_type_at(drawn, x, y)), kSlot);
+    }
+  }
+  ImGui::EndChild();
+  app.modified |= changed;
+}
+
 void adjacency_body(App& app)
 {
   Level& lv = *app.level;
@@ -774,6 +1006,14 @@ void adjacency_window(App& app)
     {
       shown = RulesMode::kAutoTile;
       auto_tile_body(app);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Height steps", nullptr, flags(RulesMode::kSteps)))
+    {
+      shown = RulesMode::kSteps;
+      ImGui::BeginChild("steps");
+      steps_body(app);
+      ImGui::EndChild();
       ImGui::EndTabItem();
     }
     if (ImGui::IsItemHovered())

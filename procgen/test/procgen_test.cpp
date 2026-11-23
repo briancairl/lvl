@@ -9,11 +9,13 @@
 #include <gtest/gtest.h>
 
 // LVL
+#include "lvl/core/image.hpp"
 #include "lvl/level/auto_tile_rules.hpp"
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
+#include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
 
@@ -1050,4 +1052,555 @@ TEST_F(Procgen, FillWeightsDecideTheShares)
   flat.values.assign(f.tiles.values.begin(), f.tiles.values.end());
   EXPECT_EQ(fill_masked(tiles, nullptr, 3, FillMask{}, 11, f.tiles).changed, 0U);
   EXPECT_EQ(flat.values, f.tiles.values);
+}
+
+namespace
+{
+
+/// A code where the listed neighbors (NW, N, NE, W, E, SW, S, SE) are below and the rest level
+StepCode below(std::initializer_list<std::size_t> neighbors)
+{
+  StepCode code = 0;
+  for (const std::size_t n : neighbors)
+  {
+    code = step_code_with(code, n, StepRelation::kBelow);
+  }
+  return code;
+}
+
+/// Levels laid out from a picture, one digit per cell
+Grid<std::uint16_t> levels_of(memory::Arena& arena, std::initializer_list<const char*> rows)
+{
+  Grid<std::uint16_t> g{arena};
+  const auto height = static_cast<int>(rows.size());
+  const auto width = static_cast<int>(std::string_view{*rows.begin()}.size());
+  g.assign(Extents{width, height}, std::uint16_t{0});
+  int y = 0;
+  for (const char* row : rows)
+  {
+    for (int x = 0; x < width; ++x)
+    {
+      g.at(x, y) = static_cast<std::uint16_t>(row[x] - '0');
+    }
+    ++y;
+  }
+  return g;
+}
+
+/**
+ * @brief One terrain per level, each drawing the ground at its level and above
+ *
+ * A terrain's rim comes from the edge of its own upper set, so one terrain covering every level
+ * would be a single flat sheet with no cliffs anywhere. The terraces are separate terrains on
+ * separate layers, which is also how they have to be drawn: a cliff tile is transparent where the
+ * terrace below shows through it.
+ *
+ * Terrain k's tiles are numbered k * 18 + the step type, so a tile says which terrace drew it.
+ */
+StepRules per_level_rules(memory::Arena& arena, int levels)
+{
+  StepRules rules{arena};
+  for (int k = 0; k < levels; ++k)
+  {
+    StepTerrain& t = rules.terrains[add_step_terrain(rules, format<32>("level_%d", k))];
+    t.level_lo = k;
+    t.level_hi = k;
+    for (std::size_t i = 0; i < kStepTypeCount; ++i)
+    {
+      t.tiles[i] = TileRef{0, static_cast<TileIndex>(k * static_cast<int>(kStepTypeCount) + i)};
+    }
+  }
+  return rules;
+}
+
+/// The step type a tile holds, whichever terrace drew it
+StepType type_of(TileRef tile) { return static_cast<StepType>(tile.tile % kStepTypeCount); }
+
+/// One tile layer per terrace, which is how they have to be drawn
+struct Terraces
+{
+  Terraces(memory::Arena& arena, Extents e, std::size_t n) :
+      grids{memory::ArenaAllocator<Grid<TileRef>>{arena}}, ptrs{memory::ArenaAllocator<Grid<TileRef>*>{arena}}
+  {
+    grids.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      grids.emplace_back(arena);
+      grids.back().assign(e, kEmptyTile);
+    }
+    for (Grid<TileRef>& g : grids)
+    {
+      ptrs.push_back(&g);
+    }
+  }
+  memory::Vector<Grid<TileRef>> grids;
+  memory::Vector<Grid<TileRef>*> ptrs;
+};
+
+StepFillResult draw(
+  const StepRules& rules,
+  const Grid<std::uint16_t>& levels,
+  StepFillParams params,
+  std::initializer_list<Grid<TileRef>*> layers,
+  Grid<std::uint8_t>* mask = nullptr)
+{
+  return tile_steps(rules, levels, params, layers.begin(), layers.size(), mask);
+}
+
+}  // namespace
+
+TEST(Steps, TheTableMatchesGft)
+{
+  // Every case of gft's getSlopeFromBumpCode, by the neighbors it has below it
+  EXPECT_EQ(step_type_of(below({0, 1, 2, 3, 5})), StepType::kOutwardTopRight);
+  EXPECT_EQ(step_type_of(below({0, 1, 2})), StepType::kOutwardTop);
+  EXPECT_EQ(step_type_of(below({0, 1, 2, 4, 7})), StepType::kOutwardTopLeft);
+  EXPECT_EQ(step_type_of(below({7})), StepType::kInwardBottomRight);
+  EXPECT_EQ(step_type_of(below({5, 6})), StepType::kInwardBottom);
+  EXPECT_EQ(step_type_of(below({6, 7})), StepType::kInwardBottom);
+  EXPECT_EQ(step_type_of(below({5})), StepType::kInwardBottomLeft);
+  EXPECT_EQ(step_type_of(below({0, 3, 5})), StepType::kOutwardLeft);
+  EXPECT_EQ(step_type_of(below({2, 4, 7})), StepType::kOutwardRight);
+  EXPECT_EQ(step_type_of(below({2, 4})), StepType::kInwardRight);
+  EXPECT_EQ(step_type_of(below({4, 7})), StepType::kInwardRight);
+  EXPECT_EQ(step_type_of(below({0, 3})), StepType::kInwardLeft);
+  EXPECT_EQ(step_type_of(below({3, 5})), StepType::kInwardLeft);
+  EXPECT_EQ(step_type_of(below({0, 3, 5, 6, 7})), StepType::kOutwardBottomLeft);
+  EXPECT_EQ(step_type_of(below({5, 6, 7})), StepType::kOutwardBottom);
+  EXPECT_EQ(step_type_of(below({2, 4, 5, 6, 7})), StepType::kOutwardBottomRight);
+  EXPECT_EQ(step_type_of(below({2})), StepType::kInwardTopRight);
+  EXPECT_EQ(step_type_of(below({1, 2})), StepType::kInwardTop);
+  EXPECT_EQ(step_type_of(below({0, 1})), StepType::kInwardTop);
+  EXPECT_EQ(step_type_of(below({0})), StepType::kInwardTopLeft);
+  // Level on every side, and anything the table does not name, is flat
+  EXPECT_EQ(step_type_of(below({})), StepType::kFlat);
+  EXPECT_EQ(step_type_of(below({1, 6})), StepType::kFlat);
+  EXPECT_EQ(step_type_of(below({0, 1, 2, 3, 4, 5, 6, 7})), StepType::kFlat);
+  // A neighbor above means this cell is at the foot of a step, which is never drawn
+  for (std::size_t n = 0; n < 8; ++n)
+  {
+    const StepCode code = step_code_with(below({0, 1, 2}), n, StepRelation::kAbove);
+    EXPECT_EQ(step_type_of(code), StepType::kFlat) << "with neighbor " << n << " above";
+  }
+}
+
+TEST_F(Procgen, StepsDrawTheRimOfAPlateauOnItsOwnLayer)
+{
+  const StepRules rules = per_level_rules(doc, 2);
+  // A 3x3 plateau of level 1 in a field of level 0
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01110", "00000"});
+  Grid<TileRef> ground{doc};
+  Grid<TileRef> upper{doc};
+  ground.assign(levels.extents, kEmptyTile);
+  upper.assign(levels.extents, kEmptyTile);
+
+  const StepFillResult result = draw(rules, levels, StepFillParams{}, {&ground, &upper});
+  EXPECT_EQ(result.missing, 0U);
+  EXPECT_EQ(result.untermed, 0U);
+  // The bottom terrace covers the whole map and is flat throughout: it has no edge to show
+  EXPECT_EQ(result.tiled, 25U + 9U);
+  for (int y = 0; y < 5; ++y)
+  {
+    for (int x = 0; x < 5; ++x)
+    {
+      EXPECT_EQ(type_of(ground.at(x, y)), StepType::kFlat) << "at (" << x << ", " << y << ")";
+    }
+  }
+  // The upper terrace holds its nine-slice, and nothing at all outside itself, so what shows
+  // through its transparent parts is the terrace below
+  for (int y = 0; y < 3; ++y)
+  {
+    for (int x = 0; x < 3; ++x)
+    {
+      static constexpr StepType kSlice[3][3] = {
+        {StepType::kOutwardTopRight, StepType::kOutwardTop, StepType::kOutwardTopLeft},
+        {StepType::kOutwardLeft, StepType::kFlat, StepType::kOutwardRight},
+        {StepType::kOutwardBottomLeft, StepType::kOutwardBottom, StepType::kOutwardBottomRight}};
+      EXPECT_EQ(type_of(upper.at(1 + x, 1 + y)), kSlice[y][x]) << "at (" << x << ", " << y << ")";
+    }
+  }
+  for (int x = 0; x < 5; ++x)
+  {
+    EXPECT_TRUE(upper.at(x, 0).empty()) << "at (" << x << ", 0)";
+    EXPECT_TRUE(upper.at(x, 4).empty()) << "at (" << x << ", 4)";
+  }
+  // Each terrace's tiles come from its own terrain
+  EXPECT_EQ(ground.at(0, 0), (TileRef{0, static_cast<TileIndex>(StepType::kFlat)}));
+  EXPECT_EQ(upper.at(2, 2), (TileRef{0, static_cast<TileIndex>(kStepTypeCount + 7)}));
+
+  // Drawing again changes nothing, and lowering the plateau clears the upper layer behind it
+  EXPECT_EQ(draw(rules, levels, StepFillParams{}, {&ground, &upper}).changed, 0U);
+  for (std::uint16_t& v : levels.values)
+  {
+    v = 0;
+  }
+  const StepFillResult flattened = draw(rules, levels, StepFillParams{}, {&ground, &upper});
+  EXPECT_GT(flattened.changed, 0U);
+  for (const TileRef& t : upper.values)
+  {
+    EXPECT_TRUE(t.empty()) << "the upper layer should be cleared where its terrace has gone";
+  }
+}
+
+TEST_F(Procgen, StepsDrawInwardCornersWhereTheGroundWraps)
+{
+  const StepRules rules = per_level_rules(doc, 2);
+  // A plateau with one corner cell missing, so the ground wraps around a hole
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01100", "00000"});
+  Grid<TileRef> ground{doc};
+  Grid<TileRef> upper{doc};
+  ground.assign(levels.extents, kEmptyTile);
+  upper.assign(levels.extents, kEmptyTile);
+  draw(rules, levels, StepFillParams{}, {&ground, &upper});
+  // (2, 2) has only its SE neighbor below -- the hole at (3, 3) -- which is the concave corner
+  EXPECT_EQ(type_of(upper.at(2, 2)), StepType::kInwardBottomRight);
+  EXPECT_EQ(type_of(upper.at(2, 1)), StepType::kOutwardTop);
+  // The hole itself is not part of the upper terrace, so the terrace below shows through
+  EXPECT_TRUE(upper.at(3, 3).empty());
+  EXPECT_EQ(type_of(ground.at(3, 3)), StepType::kFlat);
+}
+
+TEST_F(Procgen, StepsTakeTheMapEdgeAsLevelGround)
+{
+  const StepRules rules = per_level_rules(doc, 2);
+  // A plateau running off the left edge: no cliff is drawn along the edge itself
+  Grid<std::uint16_t> levels = levels_of(doc, {"11000", "11000", "11000"});
+  Grid<TileRef> ground{doc};
+  Grid<TileRef> upper{doc};
+  ground.assign(levels.extents, kEmptyTile);
+  upper.assign(levels.extents, kEmptyTile);
+  draw(rules, levels, StepFillParams{}, {&ground, &upper});
+  EXPECT_EQ(type_of(upper.at(0, 1)), StepType::kFlat);
+  EXPECT_EQ(type_of(upper.at(1, 1)), StepType::kOutwardRight);
+}
+
+TEST_F(Procgen, StepLayersAreOnePerLevelAndTerrainsOnlySayHow)
+{
+  // The layers follow the levels; a terrain only says which tiles a level is drawn in. One
+  // terrain covering every level is the ordinary case, and two let the art change with height.
+  StepRules rules{doc};
+  StepTerrain& water = rules.terrains[add_step_terrain(rules, "water")];
+  water.level_lo = 0;
+  water.level_hi = 0;
+  water.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 100};
+  StepTerrain& grass = rules.terrains[add_step_terrain(rules, "grass")];
+  grass.level_lo = 1;
+  grass.level_hi = 3;
+  grass.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 200};
+  grass.tiles[static_cast<std::size_t>(StepType::kOutwardTop)] = TileRef{0, 201};
+
+  // A 3x3 plateau, so it has a middle as well as a rim
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01110", "00000"});
+  Terraces drawn{doc, levels.extents, 2};
+  const StepFillResult result =
+    tile_steps(rules, levels, StepFillParams{}, drawn.ptrs.data(), drawn.ptrs.size(), nullptr);
+  EXPECT_EQ(result.untermed, 0U);
+  // Level 0's layer covers the whole map in the water terrain's flat tile: the opaque base
+  for (const TileRef& t : drawn.grids[0].values)
+  {
+    EXPECT_EQ(t, (TileRef{0, 100}));
+  }
+  // Level 1's layer holds only the raised ground, in the grass terrain's tiles
+  EXPECT_EQ(drawn.grids[1].at(2, 1), (TileRef{0, 201}));
+  EXPECT_EQ(drawn.grids[1].at(2, 2), (TileRef{0, 200}));
+  EXPECT_TRUE(drawn.grids[1].at(0, 0).empty()) << "nothing below the terrace, so the base shows through";
+  EXPECT_GT(result.missing, 0U) << "the corners have no tile, which is reported rather than guessed";
+
+  // One terrain covering every level draws every terrace in the same eighteen tiles
+  const StepRules single = [&] {
+    StepRules r{doc};
+    StepTerrain& all = r.terrains[add_step_terrain(r, "ground")];
+    all.level_lo = 0;
+    all.level_hi = 255;
+    for (std::size_t i = 0; i < kStepTypeCount; ++i)
+    {
+      all.tiles[i] = TileRef{0, static_cast<TileIndex>(i)};
+    }
+    return r;
+  }();
+  Terraces one{doc, levels.extents, 2};
+  tile_steps(single, levels, StepFillParams{}, one.ptrs.data(), one.ptrs.size(), nullptr);
+  EXPECT_EQ(type_of(one.grids[0].at(0, 0)), StepType::kFlat);
+  EXPECT_EQ(type_of(one.grids[1].at(2, 1)), StepType::kOutwardTop) << "the terrace above still gets its cliff";
+  EXPECT_TRUE(one.grids[1].at(0, 0).empty());
+
+  // A level no terrain covers is left undrawn and counted, and a null layer is simply skipped
+  StepRules high{doc};
+  StepTerrain& top = high.terrains[add_step_terrain(high, "top")];
+  top.level_lo = 1;
+  top.level_hi = 3;
+  top.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 300};
+  Terraces sparse{doc, levels.extents, 2};
+  const StepFillResult gap =
+    tile_steps(high, levels, StepFillParams{}, sparse.ptrs.data(), sparse.ptrs.size(), nullptr);
+  EXPECT_EQ(gap.untermed, 16U) << "every cell at level 0, which no terrain covers";
+  for (const TileRef& t : sparse.grids[0].values)
+  {
+    EXPECT_TRUE(t.empty()) << "level 0 has no art, so its layer stays empty";
+  }
+  EXPECT_EQ(sparse.grids[1].at(2, 2), (TileRef{0, 300}));
+  Grid<TileRef>* skipped[2] = {nullptr, &sparse.grids[1]};
+  EXPECT_EQ(tile_steps(high, levels, StepFillParams{}, skipped, 2, nullptr).changed, 0U);
+}
+
+TEST_F(Procgen, StepCollisionStaysOneFlatLayer)
+{
+  const StepRules rules = per_level_rules(doc, 2);
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01110", "00000"});
+  Grid<TileRef> ground{doc};
+  Grid<TileRef> upper{doc};
+  ground.assign(levels.extents, kEmptyTile);
+  upper.assign(levels.extents, kEmptyTile);
+  Grid<std::uint8_t> mask{doc};
+  mask.assign(levels.extents, std::uint8_t{0});
+
+  // Below: the foot of the cliff is blocked and the plateau stays walkable
+  draw(rules, levels, StepFillParams{.collision = StepCollision::kBelow}, {&ground, &upper}, &mask);
+  EXPECT_EQ(mask.at(0, 0), level::collision::kSolid);
+  EXPECT_EQ(mask.at(2, 0), level::collision::kSolid);
+  EXPECT_EQ(mask.at(2, 1), 0);
+  EXPECT_EQ(mask.at(2, 2), 0);
+
+  // Above: the rim is blocked instead, and the old marks are cleared rather than left behind
+  draw(rules, levels, StepFillParams{.collision = StepCollision::kAbove}, {&ground, &upper}, &mask);
+  EXPECT_EQ(mask.at(0, 0), 0);
+  EXPECT_EQ(mask.at(2, 1), level::collision::kSolid);
+  EXPECT_EQ(mask.at(2, 2), 0);
+
+  // Other bits of the mask are left alone
+  mask.at(0, 0) = level::collision::kTrigger;
+  draw(rules, levels, StepFillParams{.collision = StepCollision::kBelow}, {&ground, &upper}, &mask);
+  EXPECT_EQ(mask.at(0, 0), level::collision::kTrigger | level::collision::kSolid);
+  // And nothing is touched at all when the collision layer is not asked for
+  draw(rules, levels, StepFillParams{}, {&ground, &upper}, &mask);
+  EXPECT_EQ(mask.at(2, 1), 0);
+  // The mask is one flat layer whatever the tiles are spread over: drawing with no tile layers at
+  // all still fills it
+  draw(rules, levels, StepFillParams{.collision = StepCollision::kBelow}, {nullptr, nullptr}, &mask);
+  EXPECT_EQ(mask.at(0, 0), level::collision::kTrigger | level::collision::kSolid);
+  EXPECT_EQ(mask.at(2, 2), 0);
+}
+
+TEST_F(Procgen, TidyRemovesSpursAndNotches)
+{
+  // A plateau with a one-cell spur poking out of its east side and a one-cell bite out of its west
+  Grid<std::uint16_t> levels = levels_of(doc, {"0000000", "0111000", "0111100", "0011000", "0111000", "0000000"});
+  const TidyResult result = tidy_levels(levels, TidyParams{}, scratch);
+  EXPECT_TRUE(result.stable);
+  EXPECT_GT(result.changed, 0U);
+  // The spur is gone and the bite is filled, and the plateau is still there
+  EXPECT_EQ(levels.at(4, 2), 0) << "the one-cell spur should go";
+  EXPECT_EQ(levels.at(2, 3), 1) << "the one-cell bite should be filled";
+  EXPECT_EQ(levels.at(2, 2), 1) << "the body of the plateau should stay";
+  std::size_t high = 0;
+  for (const std::uint16_t v : levels.values)
+  {
+    high += (v > 0) ? 1U : 0U;
+  }
+  EXPECT_GE(high, 8U) << "squaring the plateau off should not swallow it";
+  // And what is left is a shape the tiles can draw
+  const StepRules rules = per_level_rules(doc, 4);
+  Terraces drawn{doc, levels.extents, 4};
+  EXPECT_EQ(tile_steps(rules, levels, StepFillParams{}, drawn.ptrs.data(), drawn.ptrs.size(), nullptr).unexpressed, 0U);
+  // Running it again settles immediately and changes nothing
+  const TidyResult again = tidy_levels(levels, TidyParams{}, scratch);
+  EXPECT_EQ(again.changed, 0U);
+  EXPECT_TRUE(again.stable);
+}
+
+TEST_F(Procgen, TidyKeepsTheMapEdgeAndSeveralLevels)
+{
+  // Terraces running off the edge are not shaved back
+  Grid<std::uint16_t> levels = levels_of(doc, {"2211", "2211", "1111", "1111"});
+  tidy_levels(levels, TidyParams{}, scratch);
+  EXPECT_EQ(levels.at(0, 0), 2) << "a terrace running off the edge should not be shaved back";
+  EXPECT_EQ(levels.at(1, 1), 2);
+  EXPECT_EQ(levels.at(3, 3), 1);
+
+  // A single high cell on a middle terrace goes, and the hole wide enough to keep stays
+  Grid<std::uint16_t> stack =
+    levels_of(doc, {"11111111", "11211111", "11111111", "11000011", "11000011", "11000011", "11000011", "11111111"});
+  tidy_levels(stack, TidyParams{}, scratch);
+  EXPECT_EQ(stack.at(2, 1), 1) << "the lone level-2 cell should be shaved off";
+  EXPECT_EQ(stack.at(3, 4), 0) << "a hole well wider than the lattice is kept";
+  EXPECT_EQ(stack.at(0, 0), 1) << "the ground around it should stay where it is";
+  // A lone high cell in a corner is squared off rather than left as a shape with no tile: the
+  // repair grows it until the table has an answer
+  Grid<std::uint16_t> corner = levels_of(doc, {"112", "111", "111"});
+  const TidyParams repair_only{.remove_spurs = false, .fill_notches = false};
+  EXPECT_GT(tidy_levels(corner, repair_only, scratch).changed, 0U);
+  EXPECT_EQ(corner.at(2, 0), 2) << "the repair only ever raises, so the high cell stays high";
+  EXPECT_EQ(tidy_levels(corner, repair_only, scratch).changed, 0U) << "and then it is settled";
+
+  // With every pass turned off nothing moves at all
+  Grid<std::uint16_t> untouched = levels_of(doc, {"112", "111", "111"});
+  const TidyParams nothing{.remove_spurs = false, .fill_notches = false, .square_corners = false};
+  EXPECT_EQ(tidy_levels(untouched, nothing, scratch).changed, 0U);
+  EXPECT_EQ(untouched.at(2, 0), 2);
+  EXPECT_EQ(untouched.at(0, 0), 1);
+}
+
+TEST_F(Procgen, TidyMakesEveryPatternOneTheTableCanDraw)
+{
+  // The point of the pass. gft's table names 20 of the 255 ways a cell can stand above its
+  // neighbors, so a terraced heightmap is full of shapes it cannot draw: one-cell spurs and
+  // notches, and 45-degree boundaries, which a staircase of single cells is. Tidying squares them
+  // off, and what is left is counted rather than guessed at.
+  for (const std::uint64_t seed : {1234U, 7U, 99U})
+  {
+    for (const int bands : {3, 5, 8})
+    {
+      Grid<float> height{doc};
+      height.assign(Extents{64, 64}, 0.0F);
+      generate_heightmap(HeightmapParams{}, seed, height, nullptr, 1);
+      Grid<std::uint16_t> levels{doc};
+      levels.assign(height.extents, std::uint16_t{0});
+      terrace(height, TerraceParams{.levels = bands}, levels);
+      const StepRules rules = per_level_rules(doc, bands);
+      Terraces drawn{doc, height.extents, static_cast<std::size_t>(bands)};
+      const auto tile = [&] {
+        return tile_steps(rules, levels, StepFillParams{}, drawn.ptrs.data(), drawn.ptrs.size(), nullptr);
+      };
+
+      const StepFillResult before = tile();
+      EXPECT_GT(before.unexpressed, 0U) << "a raw terracing should hold shapes with no tile";
+
+      const TidyResult tidied = tidy_levels(levels, TidyParams{}, scratch);
+      EXPECT_TRUE(tidied.stable) << "seed " << seed << ", " << bands << " bands";
+      const StepFillResult after = tile();
+      EXPECT_EQ(after.unexpressed, 0U) << "seed " << seed << ", " << bands << " bands";
+      EXPECT_EQ(after.missing, 0U);
+      // The repair on its own is a fixed point: there is nothing left for it to square off. The
+      // smoothing is not, because the repair may leave a one-cell notch -- which the inward corner
+      // tiles draw perfectly well -- and a two-cell smoothing would fill it again
+      const TidyParams repair_only{.remove_spurs = false, .fill_notches = false};
+      EXPECT_EQ(tidy_levels(levels, repair_only, scratch).changed, 0U) << "seed " << seed;
+      EXPECT_EQ(tile().unexpressed, 0U);
+    }
+  }
+}
+
+TEST_F(Procgen, TidyLeavesTheShapeRecognisable)
+{
+  // Squaring a staircase off should not swallow the terrain: the levels still have to follow the
+  // heightmap, and the range it covers should not collapse
+  Grid<float> height{doc};
+  height.assign(Extents{64, 64}, 0.0F);
+  generate_heightmap(HeightmapParams{}, 1234, height, nullptr, 1);
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{0});
+  terrace(height, TerraceParams{.levels = 5}, levels);
+  auto before = memory::make_vector<std::uint16_t>(doc);
+  before.assign(levels.values.begin(), levels.values.end());
+
+  tidy_levels(levels, TidyParams{}, scratch);
+  int top_before = 0;
+  int top_after = 0;
+  std::size_t same = 0;
+  std::size_t raised = 0;
+  for (std::size_t i = 0; i < levels.values.size(); ++i)
+  {
+    top_before = std::max(top_before, static_cast<int>(before[i]));
+    top_after = std::max(top_after, static_cast<int>(levels.values[i]));
+    same += (before[i] == levels.values[i]) ? 1U : 0U;
+    raised += (levels.values[i] > before[i]) ? 1U : 0U;
+  }
+  EXPECT_EQ(top_after, top_before) << "the range of levels should survive";
+  EXPECT_GT(same * 10, levels.values.size() * 9) << "nine cells in ten should keep the level they had";
+  EXPECT_GT(raised, 0U);
+  // No cell moves by more than one level, and the average move is a small fraction of one. This is
+  // what squaring terraces off a block at a time buys: growing cells one at a time until the table
+  // is happy instead cascades along every diagonal and floods whole valleys
+  long total = 0;
+  int worst = 0;
+  for (std::size_t i = 0; i < levels.values.size(); ++i)
+  {
+    const int d = std::abs(static_cast<int>(levels.values[i]) - static_cast<int>(before[i]));
+    total += d;
+    worst = std::max(worst, d);
+  }
+  EXPECT_LE(worst, 1);
+  EXPECT_LT(static_cast<double>(total) / static_cast<double>(levels.values.size()), 0.15);
+}
+
+TEST_F(Procgen, TerraceSkewMakesTheUpperBandsThinner)
+{
+  // A ramp from 0 to 1, so the number of cells in a band is that band's height
+  Grid<float> height{doc};
+  height.assign(Extents{1000, 1}, 0.0F);
+  for (int x = 0; x < 1000; ++x)
+  {
+    height.at(x, 0) = static_cast<float>(x) / 999.0F;
+  }
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{0});
+
+  const auto widths = [&](float skew) {
+    const TerraceResult r = terrace(height, TerraceParams{.levels = 4, .skew = skew}, levels);
+    EXPECT_EQ(r.top, 3) << "skew " << skew;
+    std::array<int, 4> counts{};
+    for (const std::uint16_t v : levels.values)
+    {
+      counts[std::min<std::size_t>(v, 3)]++;
+    }
+    EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 1000);
+    return counts;
+  };
+
+  // A skew of 1 is the equal bands it was before
+  const auto equal = widths(1.0F);
+  for (const int c : equal)
+  {
+    EXPECT_NEAR(c, 250, 2);
+  }
+
+  // Below 1, each band is thinner than the one below it, and they still divide the range exactly
+  const auto thinning = widths(0.5F);
+  for (std::size_t i = 1; i < thinning.size(); ++i)
+  {
+    EXPECT_LT(thinning[i], thinning[i - 1]) << "band " << i;
+    // Each one is about half the last
+    EXPECT_NEAR(static_cast<double>(thinning[i]) / thinning[i - 1], 0.5, 0.05) << "band " << i;
+  }
+
+  // Above 1 it is the other way round
+  const auto thickening = widths(2.0F);
+  for (std::size_t i = 1; i < thickening.size(); ++i)
+  {
+    EXPECT_GT(thickening[i], thickening[i - 1]) << "band " << i;
+  }
+
+  // The result says what the bands came out at, bottom and top
+  const TerraceResult r = terrace(height, TerraceParams{.levels = 4, .skew = 0.5F}, levels);
+  EXPECT_NEAR(static_cast<double>(r.rate), 1.0 / 1.875, 0.01) << "the lowest band";
+  EXPECT_NEAR(static_cast<double>(r.top_rate), 0.125 / 1.875, 0.01) << "and the highest";
+}
+
+TEST_F(Procgen, TerraceSkewByRateRunsIntoTheCeiling)
+{
+  Grid<float> height{doc};
+  height.assign(Extents{100, 1}, 0.0F);
+  for (int x = 0; x < 100; ++x)
+  {
+    height.at(x, 0) = static_cast<float>(x) / 99.0F;
+  }
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{0});
+
+  // Bands of 0.2 that each shrink by a quarter sum to 0.8 at most, so the top of a range of 1
+  // is past where they converge. It is held at the ceiling rather than running away
+  const TerraceResult r =
+    terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.2F, .skew = 0.25F, .max_level = 6}, levels);
+  EXPECT_LE(r.top, 6);
+  EXPECT_GT(r.top, 0);
+  for (int x = 1; x < 100; ++x)
+  {
+    EXPECT_GE(levels.at(x, 0), levels.at(x - 1, 0)) << "levels should never fall as the ground rises";
+  }
+  EXPECT_EQ(levels.at(99, 0), r.top);
+  // A skew above 1 by rate simply gives fewer, fatter bands
+  const TerraceResult wide =
+    terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.1F, .skew = 1.5F}, levels);
+  const TerraceResult plain = terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.1F}, levels);
+  EXPECT_LT(wide.top, plain.top);
 }

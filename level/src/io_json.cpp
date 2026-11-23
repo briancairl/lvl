@@ -9,8 +9,8 @@
  * {
  *   "format": "lvl-level", "version": 100,
  *   "settings": {...}, "semantics": [...], "materials": [...], "seasons": [...],
- *   "tilesets": [...], "wfc": {...}, "auto_tiles": [...], "paths": [...], "portals": [...], "markers": [...],
- *   "layers": [ {"name": ..., "kind": ..., ..., "data": [...]}, ... ]
+ *   "tilesets": [...], "wfc": {...}, "auto_tiles": [...], "steps": [...], "paths": [...], "portals": [...], "markers":
+ * [...], "layers": [ {"name": ..., "kind": ..., ..., "data": [...]}, ... ]
  * }
  * @endcode
  *
@@ -634,6 +634,90 @@ bool load_auto_tiles(json::Reader& r, const Json& j, Level& level)
         return r.fail("terrain tile refers to unknown tileset '%s'", tileset.c_str());
       }
       set_variant(terrain, mask, tile);
+    }
+  }
+  return r.ok();
+}
+
+void save_steps(Json& j, const Level& level)
+{
+  j = Json::array();
+  for (const StepTerrain& terrain : level.steps.terrains)
+  {
+    Json t = Json::object();
+    json::write(t, "name", terrain.name);
+    json::write(t, "level_lo", terrain.level_lo);
+    json::write(t, "level_hi", terrain.level_hi);
+    // One entry per step type it has a tile for, named rather than positional so the file survives
+    // the table growing a row
+    Json tiles = Json::array();
+    for (std::size_t i = 0; i < kStepTypeCount; ++i)
+    {
+      const TileRef tile = terrain.tiles[i];
+      if (tile.empty())
+      {
+        continue;
+      }
+      Json e = Json::object();
+      json::write(e, "type", static_cast<StepType>(i));
+      json::write(e, "tileset", level.tilesets[tile.tileset].name);
+      json::write(e, "tile", tile.tile);
+      tiles.push_back(std::move(e));
+    }
+    t["tiles"] = std::move(tiles);
+    j.push_back(std::move(t));
+  }
+}
+
+bool load_steps(json::Reader& r, const Json& j, Level& level)
+{
+  level.steps.terrains.clear();
+  if (!r.array(j, "steps"))
+  {
+    return false;
+  }
+  for (const auto& t : j)
+  {
+    Name name;
+    r.get(t, "name", name);
+    if (!r.ok())
+    {
+      return false;
+    }
+    StepTerrain& terrain = level.steps.terrains[add_step_terrain(level.steps, name.view())];
+    r.get_optional(t, "level_lo", terrain.level_lo);
+    r.get_optional(t, "level_hi", terrain.level_hi);
+    if (!r.ok())
+    {
+      return false;
+    }
+    const auto tiles = t.find("tiles");
+    if (tiles == t.end())
+    {
+      continue;
+    }
+    if (!r.array(*tiles, "tiles"))
+    {
+      return false;
+    }
+    for (const auto& e : *tiles)
+    {
+      Name tileset;
+      TileRef tile;
+      StepType type = StepType::kFlat;
+      r.get(e, "type", type);
+      r.get(e, "tileset", tileset);
+      r.get(e, "tile", tile.tile);
+      tile.tileset = tileset_named(level, tileset);
+      if (!r.ok())
+      {
+        return false;
+      }
+      if (tile.tileset == kNoTileSet)
+      {
+        return r.fail("step tile refers to unknown tileset '%s'", tileset.c_str());
+      }
+      terrain.tiles[static_cast<std::size_t>(type)] = tile;
     }
   }
   return r.ok();
@@ -1312,6 +1396,7 @@ Status save_level_json(const char* path, const Level& level, IoContext& ctx)
     j["tilesets"] = std::move(tilesets);
     save_wfc(j["wfc"], level);
     save_auto_tiles(j["auto_tiles"], level);
+    save_steps(j["steps"], level);
     save_paths(j["paths"], level, records);
     save_objects(j, records);
     const JsonString text = json::dump(j, 2);
@@ -1467,6 +1552,10 @@ Status load_level_json(const char* path, Level& level, IoContext& ctx)
     {
       load_auto_tiles(r, *terrains, level);
     }
+    if (const auto steps = j.find("steps"); r.ok() and steps != j.end())
+    {
+      load_steps(r, *steps, level);
+    }
     if (const auto paths = j.find("paths"); r.ok() and paths != j.end())
     {
       load_paths(r, *paths, level, records);
@@ -1576,6 +1665,7 @@ Status save_wfc_json(const char* path, const Level& level, IoContext& ctx)
     save_list(j, "semantics", level.semantics, 1);
     save_wfc(j["wfc"], level);
     save_auto_tiles(j["auto_tiles"], level);
+    save_steps(j["steps"], level);
   });
 }
 
@@ -1596,6 +1686,10 @@ Status load_wfc_json(const char* path, Level& level, IoContext& ctx)
     if (const auto terrains = j.find("auto_tiles"); r.ok() and terrains != j.end())
     {
       load_auto_tiles(r, *terrains, level);
+    }
+    if (const auto steps = j.find("steps"); r.ok() and steps != j.end())
+    {
+      load_steps(r, *steps, level);
     }
   });
 }

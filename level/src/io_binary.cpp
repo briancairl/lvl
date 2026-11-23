@@ -45,6 +45,17 @@ template <typename S> void serialize(S& s, TileInfo& v)
   s.value4b(v.scatter_weight);
 }
 
+template <typename S> void serialize(S& s, StepTerrain& v)
+{
+  s.object(v.name);
+  s.value4b(v.level_lo);
+  s.value4b(v.level_hi);
+  for (TileRef& tile : v.tiles)
+  {
+    s.object(tile);
+  }
+}
+
 template <typename S> void serialize(S& s, TileProperty& v)
 {
   s.value2b(v.tile);
@@ -201,6 +212,7 @@ template <typename S> void serialize(S& s, Meta& m)
   s.object(level.wfc);
   Terrains terrains{&level.auto_tiles, level.arena};
   s.object(terrains);
+  s.container(level.steps.terrains, kMaxList);
   s.container(level.graphs, kMaxList);
   s.container(m.records->portals, kMaxList);
   s.container(m.records->markers, kMaxList);
@@ -428,6 +440,7 @@ struct WfcFile
   memory::Vector<Name>* tilesets;
   WfcRules* rules;
   AutoTileRules* auto_tiles;
+  memory::Vector<StepTerrain>* steps;
   memory::Arena* arena;
 };
 
@@ -438,6 +451,7 @@ template <typename S> void serialize(S& s, WfcFile& f)
   s.object(*f.rules);
   Terrains terrains{f.auto_tiles, f.arena};
   s.object(terrains);
+  s.container(*f.steps, kMaxList);
 }
 
 struct PathsFile
@@ -537,6 +551,7 @@ Status save_wfc_binary(const char* path, const Level& level, IoContext& ctx)
     &tilesets,
     const_cast<WfcRules*>(&level.wfc),
     const_cast<AutoTileRules*>(&level.auto_tiles),
+    const_cast<memory::Vector<StepTerrain>*>(&level.steps.terrains),
     &temp};
   return binary::write_file(path, ctx.workers[0].scratch, binary::Kind::kWfcRules, file);
 }
@@ -549,7 +564,8 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
   auto tilesets = memory::make_vector<Name>(temp);
   WfcRules rules{temp};
   AutoTileRules auto_tiles{temp};
-  WfcFile file{&semantics, &tilesets, &rules, &auto_tiles, &temp};
+  auto steps = memory::make_vector<StepTerrain>(temp);
+  WfcFile file{&semantics, &tilesets, &rules, &auto_tiles, &steps, &temp};
   LVL_RETURN_IF_ERROR(read_binary(path, ctx, binary::Kind::kWfcRules, file));
 
   auto tileset_map = memory::make_vector<TileSetId>(temp, tilesets.size(), kNoTileSet);
@@ -617,6 +633,31 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
     {
       v.tile.tileset = tileset_map[v.tile.tileset];
       set_variant(out, v.mask, v.tile);
+    }
+  }
+  // Step terrains travel the same way; an empty slot stays empty rather than being remapped
+  level.steps.terrains.clear();
+  for (const StepTerrain& terrain : steps)
+  {
+    StepTerrain& out = level.steps.terrains[add_step_terrain(level.steps, terrain.name.view())];
+    out.level_lo = terrain.level_lo;
+    out.level_hi = terrain.level_hi;
+    for (std::size_t i = 0; i < kStepTypeCount; ++i)
+    {
+      const TileRef tile = terrain.tiles[i];
+      if (tile.empty())
+      {
+        continue;
+      }
+      if (tile.tileset >= tileset_map.size() or tileset_map[tile.tileset] == kNoTileSet)
+      {
+        return Status::error(
+          "%s: step terrain '%s' refers to tileset '%s', which this level doesn't have",
+          path,
+          terrain.name.c_str(),
+          (tile.tileset < tilesets.size()) ? tilesets[tile.tileset].c_str() : "?");
+      }
+      out.tiles[i] = TileRef{tileset_map[tile.tileset], tile.tile};
     }
   }
   return Status::okay();

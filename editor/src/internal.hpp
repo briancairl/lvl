@@ -159,6 +159,29 @@ void selection_preview(const App& app, float thumb, int max_rows);
  * already hold a tile) comes from <code>App::generators</code>, and the scatter from the level's
  * seed. Takes an undo snapshot and records what it did in <code>Generators::fill_result</code>.
  */
+/// Generate > Height steps: cuts the heightmap into whole levels (and redraws the tiles, if asked)
+void apply_terrace(App& app);
+
+/// Index of the tile layer height level <code>height_level</code> is drawn into, or layers.size()
+std::size_t step_layer_of(const level::Level& level, int height_level);
+
+/// Levels the level layer uses (its highest plus one), or 0 if it is not one
+int step_level_count(const level::Level& level, std::size_t level_layer);
+
+/// Adds a tile layer for every height level that has none, lowest first
+void add_step_layers(App& app);
+
+/**
+ * @brief Generate > Height steps: draws the cliffs between the levels, and blocks them if asked
+ *
+ * One tile layer per height level, found by <code>step_layer_of</code>: a cliff tile is transparent
+ * where the terrace below shows through it, so they are composited rather than flattened. The
+ * terrain whose band holds a level only says which tiles that level is drawn in, so one terrain
+ * covering every level is the ordinary case. The collision mask stays a single flat layer, since it
+ * comes from the levels and not from any one terrace.
+ */
+void apply_steps(App& app);
+
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count);
 
 /// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked

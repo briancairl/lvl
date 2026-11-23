@@ -98,10 +98,10 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/rules/path files in JSON and binary |
-| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers) |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/rules/path files in JSON and binary |
+| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -215,14 +215,17 @@ key/value property to set or a key to remove) is behind a checkbox saying whethe
 "Take from tile N" fills the fields from the tile shown above. `level::apply_edit(tileset, TileEdit,
 tiles, count)` does the writing; like the single-tile fields, it is not undoable.
 
-### Two kinds of tile adjacency rules
+### Three kinds of tile adjacency rules
 
-A level holds two, and the "Tile adjacency rules" window has a tab for each:
+A level holds three, and the "Tile adjacency rules" window has a tab for each:
 
 - **WFC** (`level::WfcRules`): a permission relation on pairs, per direction -- what *may* sit next
   to what. The WFC generator solves it over a region.
 - **Auto-tiling** (`level::AutoTileRules`, `level/auto_tile_rules.hpp`): terrains, each keying its
   tiles on the pattern of like neighbors around a cell.
+
+- **Height steps** (`level::StepRules`, `level/step_rules.hpp`): terrains keyed on how a cell's
+  height *level* compares with its neighbors', which is what draws a cliff.
 
 They are not interchangeable, and the second exists because the first cannot prescribe inner and
 outer corners. A WFC cell's legal tiles are the conjunction of independent per-direction
@@ -253,6 +256,95 @@ around it; 0 means the painted cells take the edge tiles themselves.
 
 Terrains follow tileset removal, and travel in the level files and in the standalone rules file
 (which carries both kinds), remapped by tileset name.
+
+### Height steps
+
+Ground cut into whole levels, with a cliff wherever two levels meet. This mirrors how gft tiles its
+worlds (`getSlopeFromBumpCode` in gft's `game/src/data/world.cpp`), so what the editor draws is what
+the game will draw -- and since gft works the tiling out from the per-cell height it reads, what a
+level really owes the game is the **levels**, not the tiles.
+
+- **`LayerKind::kLevel`** is the integer height level per cell, an `IdGrid` plane like the semantic
+  and material layers. `procgen::terrace` cuts a heightmap into it, either into a given number of
+  bands or into bands of a given height (`TerraceMode`), over the heightmap's own range unless one
+  is given. `skew` makes the bands a geometric series rather than equal ones: below 1 each band is
+  thinner than the one below it, so the ground is cut finely towards the top and coarsely at the
+  bottom, which is what gives a skyline more steps as it rises. By count the bands still divide the
+  range exactly however they are skewed; by rate a skew below 1 makes them converge, so a tall
+  enough map runs into `max_level`. It is an ordinary layer, so the levels can be touched up by
+  hand and are saved.
+- **`level::StepType`** is the vocabulary: 18 tiles, in either of two block shapes
+  (`level::StepLayout`). Three across and six down is how gft's own sheets hold them, an *outward*
+  row and an *inward* row alternating; six across and three down is the same eighteen as two 3x3
+  blocks side by side, the step-ups on the left and the step-downs on the right, which is easier to
+  read off a tileset. Outward is the rim of ground standing above its neighbors (its edges, its
+  convex corners, and the flat middle); inward is where that rim turns back on itself around a
+  hole. The rules window draws its slots in whichever shape the palette selection is.
+- **`level::step_type_of`** is gft's table, ported. Each neighbor is *level with*, *below* or *above*
+  this cell, and the tile follows from the whole eight-neighbor pattern. Every one of gft's cases
+  leaves the "a neighbor is above me" group empty, so the table reduces to a map from "which
+  neighbors are below me" to a tile, and a cell with anything above it is `kFlat`: **only the higher
+  side of a step is drawn**, and the ground at the foot of a cliff stays plain. Patterns the table
+  does not name are `kFlat` too, as they are in gft.
+- **`procgen::tidy_levels`** squares the terraces off, and is what makes the rest work. The table
+  names 20 of the 255 ways a cell's neighbors can stand below it, so a heightmap cut straight into
+  levels is full of shapes with no tile: one-cell spurs and notches, and -- the larger half of it --
+  45-degree boundaries, which a staircase with one-cell treads is. Morphology alone cannot remove
+  those, since a diagonal edge is two cells wide everywhere.
+
+  The pass works on the **upper sets** (the cells at level k or above), built from the top down and
+  unioned with the terrace above *before* being cleaned, so they stay nested and their unions are
+  squared off too. Each one gets an opening (spurs narrower than `min_feature` go), a closing
+  (notches fill), a **snap** to a lattice of `min_feature` blocks where each block goes the way its
+  cells vote, and a pass that fills blocks meeting only at a corner. A table-driven **repair**
+  (`square_corners`) then backstops it, growing a terrace a cell at a time until `step_type_of` has
+  an answer; `tile_steps` counts whatever is still left as `unexpressed`.
+
+  **Voting a block at a time is the point.** The repair on its own cascades: raising a cell to fix
+  a 45-degree boundary makes offenders of its neighbors, and a diagonal carries that along its
+  whole length, so valleys flood -- on a 96x96 map of five terraces it moved half the cells and
+  raised some by four levels. A block is decided once, by what was already there, so it cannot
+  cascade: the same map moves 6% of its cells, none by more than one level.
+
+  Two things it is honest about rather than promising. The lattice is anchored at the grid's origin
+  (choosing a phase per terrace was tried and is worse, because terraces on different phases do not
+  nest squarely), so a feature exactly `min_feature` wide lying across the blocks can still be
+  voted away -- `min_feature` is a preference, not a guarantee. And the four inward corner tiles
+  draw a single-cell notch perfectly well, so the repair may leave one that a two-cell smoothing
+  would fill again: the repair alone is a fixed point, the whole pass with smoothing on is not.
+- **`procgen::tile_steps`** draws a level layer with those tiles, **one tile layer per height
+  level**. They have to be separate: a cliff tile is transparent where the terrace below shows
+  through it, which is how these tilesets are cut, so the terraces are composited rather than
+  flattened into one plane. Stacked in order, level 0 at the bottom, they come out right.
+
+  Layer k draws the cells at level k or above: the middle of that ground flat, its rim edges and
+  corners, and everything below it cleared, so re-running after the levels change leaves nothing
+  behind. Level 0 therefore covers the whole map and is flat throughout, which is the opaque base
+  the rest composite over. Within one layer the only question is whether a neighbor is part of the
+  same ground, so no cell is ever "above" another: that is what the stacking expresses. Cells off
+  the grid count as part of it, so the map's edge is not a cliff.
+
+  **The layers follow the levels, not the terrains.** A terrain only says which tiles a level is
+  drawn in (`level::step_terrain_at`), so one terrain covering every level is the ordinary case and
+  several let the art change with height -- grass cliffs low down, rock higher up. Cells at a level
+  no terrain covers are counted in `untermed` and left alone.
+
+  In the editor a level's layer is the tile layer named `step <k>` (`editor::step_layer_of`), and
+  `editor::add_step_layers` adds the missing ones lowest first. Cutting the heightmap into levels
+  adds them and draws them in the one call, since it is the levels that say how many are wanted.
+
+- **Only the tile visual is split.** The collision mask -- and any other per-cell data a level
+  keeps, semantics and materials among them -- stays a single flat layer, because it follows from
+  the levels rather than from any one terrace. It is optional and re-runnable: `StepCollision::kBelow` marks the cells
+  at the foot of every cliff solid (leaving the ground on top walkable), `kAbove` marks its edge
+  instead. Either
+  way it sets `collision::kSolid` where a step is and clears it where there is none, leaving the
+  other bits of the mask alone, so recutting the levels never leaves a wall where the cliff has
+  gone.
+
+Generate > Height steps runs the passes (`editor::apply_terrace`, which tidies as well unless that
+is turned off, and `editor::apply_steps`), and recutting the levels redraws the tiles unless that is
+turned off. The panel reports what the tidy moved and how many cells the tiles still cannot express.
 
 ### Auto-tiled painting
 
@@ -410,8 +502,8 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
-  rule learning, rules from a palette layout, batch tile and constraint edits (scatter weight
-  included), terrains from a
+  rule learning, rules from a palette layout, a step terrain read from either block shape, batch
+  tile and constraint edits (scatter weight included), terrains from a
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
   selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files, a level whose layers
@@ -421,7 +513,17 @@ one check to mark required:
 - `//procgen`: masked fills (a height band, a ground type, the two together, the scatter being even
   and staying put under a different mask, scatter weights deciding the shares (a weight of zero,
   negative weights, all-zero and equal weights coming to the same thing), regions and clipping,
-  sparing what is drawn, no tiles);
+  sparing what is drawn, no tiles); height steps (every case of gft's table and that anything else
+  is flat, a plateau's rim, inward corners, the map edge, terrains picked by level, a layer per level holding only its own
+  ground and being cleared where that ground has gone, one terrain covering every level and several
+  changing the art with height, a level with no terrain left undrawn and counted, a null layer
+  skipped, collision staying one flat mask (set and cleared on either side of a cliff, and filled
+  even with no tile layers at all)); terracing (by count and by rate, a flat map,
+  a given range, clamping and the ceiling, and the skew -- equal bands unchanged, each band a
+  fixed fraction of the last in either direction, and converging bands held at the ceiling); tidying (spurs and notches, the map edge kept, a lone
+  high corner squared off rather than shaved, every pattern drawable afterwards across several
+  seeds and band counts, the repair being a fixed point, and the terrain surviving it -- nine cells
+  in ten unmoved, none by more than one level);
   noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints; terrain painting (a nine-slice from one painted cell, the border re-tiling as the
@@ -441,7 +543,9 @@ one check to mark required:
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
   multi-tile paint stamp, a thirteen-tile terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
-  weight of zero, and with the scatter off),
+  weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
+  layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of
+  a step, and redrawing changing nothing),
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

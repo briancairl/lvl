@@ -84,6 +84,8 @@ protected:
     level.layers[water].preview = Preview::kHeat;
     const auto sem = add_layer(level, LayerKind::kSemantic, "semantics");
     plane<IdGrid>(level.layers[sem]).at(2, 2) = road;
+    const auto lvls = add_layer(level, LayerKind::kLevel, "levels");
+    plane<IdGrid>(level.layers[lvls]).at(3, 1) = 4;
 
     level.wfc.name = "forest rules";
     const WfcTileId a = add_tile(level.wfc, TileRef{id, 1});
@@ -110,6 +112,19 @@ protected:
     road_tiles.neighborhood = Neighborhood::kSides;
     road_tiles.expand = 0;
     set_variant(road_tiles, kSideNeighbors, TileRef{id, 1});
+
+    // Height-step terrains: a band of levels each, with their eighteen tiles
+    StepTerrain& low = level.steps.terrains[add_step_terrain(level.steps, "lowland")];
+    low.level_lo = 0;
+    low.level_hi = 1;
+    for (std::size_t i = 0; i < kStepTypeCount; ++i)
+    {
+      low.tiles[i] = TileRef{id, static_cast<TileIndex>(i % 5)};
+    }
+    StepTerrain& high = level.steps.terrains[add_step_terrain(level.steps, "highland")];
+    high.level_lo = 2;
+    high.level_hi = 7;
+    high.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{id, 2};
 
     create_portal(
       level.registry,
@@ -249,6 +264,26 @@ protected:
     EXPECT_EQ(b.auto_tiles.terrains[1].neighborhood, Neighborhood::kSides);
     EXPECT_EQ(b.auto_tiles.terrains[1].expand, 0);
     EXPECT_EQ(terrain_of(b.auto_tiles, TileRef{0, 4}), 0U);
+
+    const std::size_t lvls = find_layer(b, LayerKind::kLevel);
+    ASSERT_LT(lvls, b.layers.size());
+    EXPECT_EQ(b.layers[lvls].name, std::string_view{"levels"});
+    EXPECT_EQ(plane<IdGrid>(b.layers[lvls]).at(3, 1), 4);
+
+    ASSERT_EQ(b.steps.terrains.size(), 2UL);
+    const StepTerrain& low = b.steps.terrains[0];
+    EXPECT_EQ(low.name, std::string_view{"lowland"});
+    EXPECT_EQ(low.level_lo, 0);
+    EXPECT_EQ(low.level_hi, 1);
+    for (std::size_t i = 0; i < kStepTypeCount; ++i)
+    {
+      EXPECT_EQ(low.tiles[i], (TileRef{0, static_cast<TileIndex>(i % 5)})) << "step tile " << i;
+    }
+    EXPECT_EQ(b.steps.terrains[1].level_hi, 7);
+    // The slots the highland terrain never filled come back empty rather than as tile 0
+    EXPECT_EQ(b.steps.terrains[1].tiles[static_cast<std::size_t>(StepType::kFlat)], (TileRef{0, 2}));
+    EXPECT_TRUE(b.steps.terrains[1].tiles[static_cast<std::size_t>(StepType::kOutwardTop)].empty());
+    EXPECT_EQ(step_terrain_at(b.steps, 5), 1);
 
     ASSERT_EQ(a.graphs.size(), b.graphs.size());
     EXPECT_EQ(b.graphs[1].kind, GraphKind::kPatrol);
@@ -392,9 +427,16 @@ TEST_F(LevelIo, StandaloneWfcRulesAndPaths)
     EXPECT_EQ(target.auto_tiles.terrains[0].name, std::string_view{"shore"});
     EXPECT_EQ(resolve(target.auto_tiles.terrains[0], kAllNeighbors), (TileRef{0, 3}));
     EXPECT_EQ(target.auto_tiles.terrains[1].neighborhood, Neighborhood::kSides);
+    // As it does the height-step terrains
+    ASSERT_EQ(target.steps.terrains.size(), 2UL);
+    EXPECT_EQ(target.steps.terrains[0].name, std::string_view{"lowland"});
+    EXPECT_EQ(target.steps.terrains[0].level_hi, 1);
+    EXPECT_EQ(target.steps.terrains[0].tiles[static_cast<std::size_t>(StepType::kFlat)], (TileRef{0, 2}));
+    EXPECT_TRUE(target.steps.terrains[1].tiles[static_cast<std::size_t>(StepType::kOutwardTop)].empty());
     // Loading again replaces rather than duplicates
     ASSERT_TRUE(load_wfc_rules(wfc_path.c_str(), target, ctx).ok);
     EXPECT_EQ(target.auto_tiles.terrains.size(), 2UL);
+    EXPECT_EQ(target.steps.terrains.size(), 2UL);
 
     const auto paths_status = load_paths(paths_path.c_str(), target, ctx);
     ASSERT_TRUE(paths_status.ok) << paths_status;
