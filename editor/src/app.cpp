@@ -1243,9 +1243,28 @@ void smoke(App& app)
       level::StepTerrain& terrain = lv.steps.terrains[level::add_step_terrain(lv.steps, format<32>("band_%d", band))];
       terrain.level_lo = band;
       terrain.level_hi = band;
+      // Through the side-by-side block, so the layout the palette offers is covered too
+      level::Grid<level::TileRef> block{app.memory.frame};
+      block.assign(level::Extents{level::kSideBySideWidth, level::kSideBySideHeight}, level::kEmptyTile);
+      for (int by = 0; by < level::kSideBySideHeight; ++by)
+      {
+        for (int bx = 0; bx < level::kSideBySideWidth; ++bx)
+        {
+          block.at(bx, by) = level::TileRef{
+            tileset, static_cast<level::TileIndex>(level::step_type_at(level::StepLayout::kSideBySide, bx, by))};
+        }
+      }
+      if (level::learn_step_layout(terrain, block) != level::kStepTypeCount)
+      {
+        report(app, Status::error("the side-by-side step block was not taken"));
+      }
       for (std::size_t i = 0; i < level::kStepTypeCount; ++i)
       {
-        terrain.tiles[i] = level::TileRef{tileset, static_cast<level::TileIndex>(i)};
+        if (terrain.tiles[i] != level::TileRef{tileset, static_cast<level::TileIndex>(i)})
+        {
+          report(app, Status::error("the side-by-side block put a tile in the wrong slot"));
+          break;
+        }
       }
     }
     app.step_terrain = 0;

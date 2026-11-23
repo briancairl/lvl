@@ -156,15 +156,16 @@ StepTerrainId step_terrain_of(const StepRules& rules, TileRef tile)
 
 std::size_t learn_step_layout(StepTerrain& terrain, const Grid<TileRef>& layout)
 {
-  if (layout.extents.width != kStepBlockWidth or layout.extents.height != kStepBlockHeight)
+  StepLayout shape = StepLayout::kStacked;
+  if (!step_layout_of(layout.extents.width, layout.extents.height, shape))
   {
     return 0;
   }
-  for (int y = 0; y < kStepBlockHeight; ++y)
+  for (int y = 0; y < layout.extents.height; ++y)
   {
-    for (int x = 0; x < kStepBlockWidth; ++x)
+    for (int x = 0; x < layout.extents.width; ++x)
     {
-      terrain.tiles[static_cast<std::size_t>(y * kStepBlockWidth + x)] = layout.at(x, y);
+      terrain.tiles[step_type_at(shape, x, y)] = layout.at(x, y);
     }
   }
   return kStepTypeCount;

@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 // LVL
+#include "lvl/core/image.hpp"
 #include "lvl/level/auto_tile_rules.hpp"
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/autotile.hpp"
@@ -1328,12 +1329,21 @@ TEST_F(Procgen, TidyRemovesSpursAndNotches)
   const TidyResult result = tidy_levels(levels, TidyParams{}, scratch);
   EXPECT_TRUE(result.stable);
   EXPECT_GT(result.changed, 0U);
-  // The spur is gone and the bite is filled
-  EXPECT_EQ(levels.at(4, 2), 0);
-  EXPECT_EQ(levels.at(2, 3), 1);
-  // The body of the plateau is untouched
-  EXPECT_EQ(levels.at(1, 1), 1);
-  EXPECT_EQ(levels.at(2, 2), 1);
+  // The spur is gone and the bite is filled, and the plateau is still there
+  EXPECT_EQ(levels.at(4, 2), 0) << "the one-cell spur should go";
+  EXPECT_EQ(levels.at(2, 3), 1) << "the one-cell bite should be filled";
+  EXPECT_EQ(levels.at(2, 2), 1) << "the body of the plateau should stay";
+  std::size_t high = 0;
+  for (const std::uint16_t v : levels.values)
+  {
+    high += (v > 0) ? 1U : 0U;
+  }
+  EXPECT_GE(high, 8U) << "squaring the plateau off should not swallow it";
+  // And what is left is a shape the tiles can draw
+  const StepRules rules = all_levels_rules(doc);
+  Grid<TileRef> tiles{doc};
+  tiles.assign(levels.extents, kEmptyTile);
+  EXPECT_EQ(tile_steps(rules, levels, StepFillParams{}, tiles, nullptr).unexpressed, 0U);
   // Running it again settles immediately and changes nothing
   const TidyResult again = tidy_levels(levels, TidyParams{}, scratch);
   EXPECT_EQ(again.changed, 0U);
@@ -1349,11 +1359,13 @@ TEST_F(Procgen, TidyKeepsTheMapEdgeAndSeveralLevels)
   EXPECT_EQ(levels.at(1, 1), 2);
   EXPECT_EQ(levels.at(3, 3), 1);
 
-  // A single high cell on a middle terrace goes, and the level below it stays
-  Grid<std::uint16_t> stack = levels_of(doc, {"111111", "112111", "111111", "100001", "100001", "111111"});
+  // A single high cell on a middle terrace goes, and the hole wide enough to keep stays
+  Grid<std::uint16_t> stack =
+    levels_of(doc, {"11111111", "11211111", "11111111", "11000011", "11000011", "11000011", "11000011", "11111111"});
   tidy_levels(stack, TidyParams{}, scratch);
   EXPECT_EQ(stack.at(2, 1), 1) << "the lone level-2 cell should be shaved off";
-  EXPECT_EQ(stack.at(2, 4), 0) << "the 4x2 hole is wide enough to keep";
+  EXPECT_EQ(stack.at(3, 4), 0) << "a hole well wider than the lattice is kept";
+  EXPECT_EQ(stack.at(0, 0), 1) << "the ground around it should stay where it is";
   // A lone high cell in a corner is squared off rather than left as a shape with no tile: the
   // repair grows it until the table has an answer
   Grid<std::uint16_t> corner = levels_of(doc, {"112", "111", "111"});
@@ -1434,7 +1446,19 @@ TEST_F(Procgen, TidyLeavesTheShapeRecognisable)
     raised += (levels.values[i] > before[i]) ? 1U : 0U;
   }
   EXPECT_EQ(top_after, top_before) << "the range of levels should survive";
-  EXPECT_GT(same * 2, levels.values.size()) << "most cells should keep the level they had";
-  // The repair only ever raises, so no cell is cut away by it
+  EXPECT_GT(same * 10, levels.values.size() * 9) << "nine cells in ten should keep the level they had";
   EXPECT_GT(raised, 0U);
+  // No cell moves by more than one level, and the average move is a small fraction of one. This is
+  // what squaring terraces off a block at a time buys: growing cells one at a time until the table
+  // is happy instead cascades along every diagonal and floods whole valleys
+  long total = 0;
+  int worst = 0;
+  for (std::size_t i = 0; i < levels.values.size(); ++i)
+  {
+    const int d = std::abs(static_cast<int>(levels.values[i]) - static_cast<int>(before[i]));
+    total += d;
+    worst = std::max(worst, d);
+  }
+  EXPECT_LE(worst, 1);
+  EXPECT_LT(static_cast<double>(total) / static_cast<double>(levels.values.size()), 0.15);
 }

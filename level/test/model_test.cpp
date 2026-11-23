@@ -90,6 +90,58 @@ TEST_F(LevelModel, SlicingAndSeasonalVariants)
   EXPECT_EQ(lookup[3], 3);
 }
 
+TEST_F(LevelModel, StepTerrainReadsEitherBlockShape)
+{
+  // Three across and six down, as gft's sheets hold them: read across and down
+  StepRules rules{arena};
+  StepTerrain& stacked = rules.terrains[add_step_terrain(rules, "stacked")];
+  Grid<TileRef> tall{arena};
+  tall.assign(Extents{3, 6}, kEmptyTile);
+  for (int y = 0; y < 6; ++y)
+  {
+    for (int x = 0; x < 3; ++x)
+    {
+      tall.at(x, y) = TileRef{0, static_cast<TileIndex>(y * 3 + x)};
+    }
+  }
+  EXPECT_EQ(learn_step_layout(stacked, tall), kStepTypeCount);
+  for (std::size_t i = 0; i < kStepTypeCount; ++i)
+  {
+    EXPECT_EQ(stacked.tiles[i], (TileRef{0, static_cast<TileIndex>(i)})) << "type " << i;
+  }
+
+  // Six across and three down: the step-ups in the left 3x3, the step-downs in the right one
+  StepTerrain& side = rules.terrains[add_step_terrain(rules, "side")];
+  Grid<TileRef> wide{arena};
+  wide.assign(Extents{6, 3}, kEmptyTile);
+  for (int y = 0; y < 3; ++y)
+  {
+    for (int x = 0; x < 6; ++x)
+    {
+      // Left block holds the outward rows (0, 2, 4), right block the inward ones (1, 3, 5)
+      const int half = (x < 3) ? 0 : 1;
+      wide.at(x, y) = TileRef{0, static_cast<TileIndex>((y * 2 + half) * 3 + (x - half * 3))};
+    }
+  }
+  EXPECT_EQ(learn_step_layout(side, wide), kStepTypeCount);
+  // Both layouts name the same tile for every type
+  for (std::size_t i = 0; i < kStepTypeCount; ++i)
+  {
+    EXPECT_EQ(side.tiles[i], stacked.tiles[i]) << "type " << i;
+  }
+  // The left block is the outward nine-slice, read as one
+  EXPECT_EQ(side.tiles[static_cast<std::size_t>(StepType::kOutwardTop)], (TileRef{0, 1}));
+  EXPECT_EQ(side.tiles[static_cast<std::size_t>(StepType::kFlat)], (TileRef{0, 7}));
+  EXPECT_EQ(side.tiles[static_cast<std::size_t>(StepType::kInwardBottomRight)], (TileRef{0, 3}));
+
+  // Any other shape is refused and leaves the terrain alone
+  StepTerrain& untouched = rules.terrains[add_step_terrain(rules, "untouched")];
+  Grid<TileRef> square{arena};
+  square.assign(Extents{4, 4}, TileRef{0, 1});
+  EXPECT_EQ(learn_step_layout(untouched, square), 0UL);
+  EXPECT_TRUE(untouched.tiles[0].empty());
+}
+
 TEST_F(LevelModel, BatchTileEditWritesOnlyTheFieldsItIsGiven)
 {
   Level level{arena};

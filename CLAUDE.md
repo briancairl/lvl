@@ -268,10 +268,13 @@ level really owes the game is the **levels**, not the tiles.
   and material layers. `procgen::terrace` cuts a heightmap into it, either into a given number of
   bands or into bands of a given height (`TerraceMode`), over the heightmap's own range unless one
   is given. It is an ordinary layer, so the levels can be touched up by hand and are saved.
-- **`level::StepType`** is the vocabulary: 18 tiles, read from a palette block three wide and six
-  tall, an *outward* row and an *inward* row alternating, exactly as gft's sheets hold them. Outward
-  is the rim of ground standing above its neighbors (its edges, its convex corners, and the flat
-  middle); inward is where that rim turns back on itself around a hole.
+- **`level::StepType`** is the vocabulary: 18 tiles, in either of two block shapes
+  (`level::StepLayout`). Three across and six down is how gft's own sheets hold them, an *outward*
+  row and an *inward* row alternating; six across and three down is the same eighteen as two 3x3
+  blocks side by side, the step-ups on the left and the step-downs on the right, which is easier to
+  read off a tileset. Outward is the rim of ground standing above its neighbors (its edges, its
+  convex corners, and the flat middle); inward is where that rim turns back on itself around a
+  hole. The rules window draws its slots in whichever shape the palette selection is.
 - **`level::step_type_of`** is gft's table, ported. Each neighbor is *level with*, *below* or *above*
   this cell, and the tile follows from the whole eight-neighbor pattern. Every one of gft's cases
   leaves the "a neighbor is above me" group empty, so the table reduces to a map from "which
@@ -280,19 +283,30 @@ level really owes the game is the **levels**, not the tiles.
   does not name are `kFlat` too, as they are in gft.
 - **`procgen::tidy_levels`** squares the terraces off, and is what makes the rest work. The table
   names 20 of the 255 ways a cell's neighbors can stand below it, so a heightmap cut straight into
-  levels is full of shapes with no tile -- one-cell spurs and notches, and 45-degree boundaries,
-  which a staircase of single cells is. The pass works on the **upper sets** (the cells at level k
-  or above), built from the top down so they stay nested, and does three things to each: an opening
-  shaves spurs narrower than `min_feature`, a closing fills notches, and a **repair** asks
-  `step_type_of` itself which cells it still has no answer for and grows the terrace a cell at a
-  time until it does. The repair only ever raises, so it settles, and a staircase is rounded up
-  into blocks rather than cut through. `tile_steps` counts whatever is left as `unexpressed`.
+  levels is full of shapes with no tile: one-cell spurs and notches, and -- the larger half of it --
+  45-degree boundaries, which a staircase with one-cell treads is. Morphology alone cannot remove
+  those, since a diagonal edge is two cells wide everywhere.
 
-  The smoothing and the repair pull against each other a little: the four inward corner tiles draw
-  a *single-cell* notch perfectly well, so the repair may leave one that a two-cell smoothing would
-  then fill. The repair alone is therefore a fixed point and the whole pass is not -- running it
-  twice with smoothing on moves a few more cells, which is why the smoothing is a preference and
-  the repair is the part that must stay on.
+  The pass works on the **upper sets** (the cells at level k or above), built from the top down and
+  unioned with the terrace above *before* being cleaned, so they stay nested and their unions are
+  squared off too. Each one gets an opening (spurs narrower than `min_feature` go), a closing
+  (notches fill), a **snap** to a lattice of `min_feature` blocks where each block goes the way its
+  cells vote, and a pass that fills blocks meeting only at a corner. A table-driven **repair**
+  (`square_corners`) then backstops it, growing a terrace a cell at a time until `step_type_of` has
+  an answer; `tile_steps` counts whatever is still left as `unexpressed`.
+
+  **Voting a block at a time is the point.** The repair on its own cascades: raising a cell to fix
+  a 45-degree boundary makes offenders of its neighbors, and a diagonal carries that along its
+  whole length, so valleys flood -- on a 96x96 map of five terraces it moved half the cells and
+  raised some by four levels. A block is decided once, by what was already there, so it cannot
+  cascade: the same map moves 6% of its cells, none by more than one level.
+
+  Two things it is honest about rather than promising. The lattice is anchored at the grid's origin
+  (choosing a phase per terrace was tried and is worse, because terraces on different phases do not
+  nest squarely), so a feature exactly `min_feature` wide lying across the blocks can still be
+  voted away -- `min_feature` is a preference, not a guarantee. And the four inward corner tiles
+  draw a single-cell notch perfectly well, so the repair may leave one that a two-cell smoothing
+  would fill again: the repair alone is a fixed point, the whole pass with smoothing on is not.
 - **`procgen::tile_steps`** draws a level layer with those tiles. A cell takes the first terrain
   whose level band holds it, so a map can step from water through sand to rock and each band bring
   its own cliff. Cells off the grid count as level with the cell being looked at, so the map's edge
@@ -463,8 +477,8 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
-  rule learning, rules from a palette layout, batch tile and constraint edits (scatter weight
-  included), terrains from a
+  rule learning, rules from a palette layout, a step terrain read from either block shape, batch
+  tile and constraint edits (scatter weight included), terrains from a
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
   selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
   stability, standalone files moving between levels, malformed/truncated files, a level whose layers
@@ -479,7 +493,8 @@ one check to mark required:
   either side of a cliff being set and cleared again); terracing (by count and by rate, a flat map,
   a given range, clamping and the ceiling); tidying (spurs and notches, the map edge kept, a lone
   high corner squared off rather than shaved, every pattern drawable afterwards across several
-  seeds and band counts, the repair being a fixed point, and the terrain still recognisable);
+  seeds and band counts, the repair being a fixed point, and the terrain surviving it -- nine cells
+  in ten unmoved, none by more than one level);
   noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, WFC with adjacency, layer constraints, kept tiles/regions, impossible
   constraints; terrain painting (a nine-slice from one painted cell, the border re-tiling as the

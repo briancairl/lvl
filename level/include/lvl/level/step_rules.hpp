@@ -74,9 +74,58 @@ enum class StepType : std::uint8_t
 
 inline constexpr std::size_t kStepTypeCount = 18;
 
-/// The palette block a step terrain is read from: three tiles across, six down
-inline constexpr int kStepBlockWidth = 3;
-inline constexpr int kStepBlockHeight = 6;
+/**
+ * @brief The two shapes a step terrain's eighteen tiles may be laid out in
+ *
+ * <code>kStacked</code> is how gft's own sheets hold them: three across and six down, an outward
+ * row and an inward row alternating. <code>kSideBySide</code> is the same eighteen as two 3x3
+ * blocks next to each other, six across and three down -- the step-ups on the left, the
+ * step-downs on the right -- which is the easier one to read off a tileset.
+ */
+enum class StepLayout : std::uint8_t
+{
+  kStacked,
+  kSideBySide,
+};
+
+inline constexpr int kStackedWidth = 3;
+inline constexpr int kStackedHeight = 6;
+inline constexpr int kSideBySideWidth = 6;
+inline constexpr int kSideBySideHeight = 3;
+
+/// The layout a block of this size is, or nothing if it is neither
+constexpr bool step_layout_of(int width, int height, StepLayout& out)
+{
+  if (width == kStackedWidth and height == kStackedHeight)
+  {
+    out = StepLayout::kStacked;
+    return true;
+  }
+  if (width == kSideBySideWidth and height == kSideBySideHeight)
+  {
+    out = StepLayout::kSideBySide;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * @brief Which of the eighteen tiles sits at (x, y) of a block in this layout
+ *
+ * Stacked is simply read across and down. Side by side puts the outward rows (0, 2, 4 of the
+ * stacked sheet) in the left 3x3 and the inward rows (1, 3, 5) in the right one, so each 3x3 reads
+ * as a nine-slice of its own.
+ */
+constexpr std::size_t step_type_at(StepLayout layout, int x, int y)
+{
+  if (layout == StepLayout::kStacked)
+  {
+    return static_cast<std::size_t>(y * kStackedWidth + x);
+  }
+  const int half = (x < kStackedWidth) ? 0 : 1;
+  const int column = x - half * kStackedWidth;
+  return static_cast<std::size_t>((y * 2 + half) * kStackedWidth + column);
+}
 
 /**
  * @brief How a cell stands against its eight neighbors, two bits each
@@ -166,8 +215,10 @@ StepTerrainId step_terrain_of(const StepRules& rules, TileRef tile);
 /**
  * @brief Reads a terrain's eighteen tiles out of one palette selection
  *
- * The selection is the 3x6 block gft's sheets use, read across and down. A block of another shape
- * is refused. Returns how many tiles were taken (18, or 0).
+ * The selection is either block shape (see <code>StepLayout</code>): three across and six down as
+ * gft's sheets hold them, or six across and three down with the step-ups on the left and the
+ * step-downs on the right. A block of any other shape is refused. Returns how many tiles were
+ * taken (18, or 0).
  */
 std::size_t learn_step_layout(StepTerrain& terrain, const Grid<TileRef>& layout);
 

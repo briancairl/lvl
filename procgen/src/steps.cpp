@@ -37,7 +37,8 @@ public:
   Morphology(level::Extents e, memory::Arena& scratch) :
       e_{e},
       a_{memory::make_vector<std::uint8_t>(scratch, e.count(), std::uint8_t{0})},
-      b_{memory::make_vector<std::uint8_t>(scratch, e.count(), std::uint8_t{0})}
+      b_{memory::make_vector<std::uint8_t>(scratch, e.count(), std::uint8_t{0})},
+      c_{memory::make_vector<std::uint8_t>(scratch, e.count(), std::uint8_t{0})}
   {}
 
   std::uint8_t* data() { return a_.data(); }
@@ -54,6 +55,83 @@ public:
   {
     dilate(n);
     erode(n);
+  }
+
+  /**
+   * @brief Snaps the set to a lattice of n x n blocks, each block going the way its cells vote
+   *
+   * This is what squares a terrace off without moving it. A boundary that runs diagonally cannot be
+   * drawn at all (see <code>repair</code>), and growing cells one at a time until it can turns a
+   * valley into a plateau -- the fix cascades, each cell it raises making offenders of its
+   * neighbors, and a diagonal carries that along its whole length. Voting a whole block at a time
+   * cannot cascade: every block is decided once, by what was already there.
+   *
+   * The lattice has a phase, and it matters: a two-cell terrace lying across the blocks rather
+   * than along them is a tie in every block it touches and can be voted away. So each terrace is
+   * snapped at whichever of the n x n phases changes the fewest of its cells, which is what keeps
+   * a feature the width it was asked to keep.
+   */
+  void snap(int n, int ox, int oy)
+  {
+    phase_x_ = ox;
+    phase_y_ = oy;
+    snap_at(n, ox, oy);
+  }
+
+  /**
+   * @brief Fills blocks that meet only at a corner, so the lattice has no diagonal joins either
+   *
+   * Once the set is a union of blocks, the one arrangement still left without a tile is two blocks
+   * touching corner to corner -- the same 45-degree join as before, one scale up. Filling the two
+   * empty blocks squares it off. Blocks only ever fill, so this ends, and because a block is only
+   * reached when it already touches the terrace at two corners it does not run away.
+   */
+  bool join_blocks(int n)
+  {
+    bool touched = false;
+    const int ox = phase_x_;
+    const int oy = phase_y_;
+    const auto block = [&](int bx, int by) {
+      const int x = std::clamp(bx, 0, e_.width - 1);
+      const int y = std::clamp(by, 0, e_.height - 1);
+      return (bx < e_.width and by < e_.height) and a_[e_.index(x, y)] != 0U;
+    };
+    const auto fill = [&](int bx, int by) {
+      for (int dy = std::max(by, 0); dy < by + n and dy < e_.height; ++dy)
+      {
+        for (int dx = std::max(bx, 0); dx < bx + n and dx < e_.width; ++dx)
+        {
+          a_[e_.index(dx, dy)] = 1U;
+        }
+      }
+    };
+    for (int by = oy - n; by + n < e_.height; by += n)
+    {
+      for (int bx = ox - n; bx + n < e_.width; bx += n)
+      {
+        if (bx + n < 0 or by + n < 0)
+        {
+          continue;
+        }
+        const bool nw = block(bx, by);
+        const bool ne = block(bx + n, by);
+        const bool sw = block(bx, by + n);
+        const bool se = block(bx + n, by + n);
+        if (nw and se and !ne and !sw)
+        {
+          fill(bx + n, by);
+          fill(bx, by + n);
+          touched = true;
+        }
+        else if (ne and sw and !nw and !se)
+        {
+          fill(bx, by);
+          fill(bx + n, by + n);
+          touched = true;
+        }
+      }
+    }
+    return touched;
   }
 
   /**
@@ -115,6 +193,40 @@ public:
   }
 
 private:
+  /// One pass of the vote, with the lattice starting at (ox, oy)
+  void snap_at(int n, int ox, int oy)
+  {
+    for (int by = oy - n; by < e_.height; by += n)
+    {
+      for (int bx = ox - n; bx < e_.width; bx += n)
+      {
+        int inside = 0;
+        int cells = 0;
+        for (int dy = std::max(by, 0); dy < by + n and dy < e_.height; ++dy)
+        {
+          for (int dx = std::max(bx, 0); dx < bx + n and dx < e_.width; ++dx)
+          {
+            inside += (a_[e_.index(dx, dy)] != 0U) ? 1 : 0;
+            ++cells;
+          }
+        }
+        if (cells == 0)
+        {
+          continue;
+        }
+        // A tie goes to the terrace, so a plateau rounds outward rather than losing its edge
+        const auto vote = static_cast<std::uint8_t>((inside * 2 >= cells) ? 1 : 0);
+        for (int dy = std::max(by, 0); dy < by + n and dy < e_.height; ++dy)
+        {
+          for (int dx = std::max(bx, 0); dx < bx + n and dx < e_.width; ++dx)
+          {
+            a_[e_.index(dx, dy)] = vote;
+          }
+        }
+      }
+    }
+  }
+
   [[nodiscard]] std::uint8_t at(int x, int y) const
   {
     // Off the grid reads as the nearest cell on it, so the map's edge is not shaved away
@@ -165,6 +277,9 @@ private:
   level::Extents e_;
   memory::Vector<std::uint8_t> a_;
   memory::Vector<std::uint8_t> b_;
+  memory::Vector<std::uint8_t> c_;
+  int phase_x_ = 0;
+  int phase_y_ = 0;
 };
 
 }  // namespace
@@ -202,6 +317,13 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
   // built from the top down, each one starting from the set above it, which keeps them nested
   // whatever the cleaning does. A cell's level is then the highest set it belongs to.
   auto above = memory::make_vector<std::uint8_t>(scratch, e.count(), std::uint8_t{0});
+  // The lattice is anchored at the grid's own origin. Choosing the phase per terrace was tried and
+  // is worse: each one picks the phase that suits it alone, and terraces on different phases do not
+  // nest squarely, which leaves the repair below cascading again. A feature exactly min_feature
+  // wide that lies across the blocks rather than along them can still be voted away; that is the
+  // price of squaring off, and it is why min_feature is a preference rather than a guarantee.
+  const int phase_x = 0;
+  const int phase_y = 0;
   int round = 0;
   bool settled = false;
   bool repaired = true;
@@ -214,7 +336,9 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
       std::uint8_t* mask = work.data();
       for (std::size_t i = 0; i < e.count(); ++i)
       {
-        mask[i] = (static_cast<int>(levels.values[i]) >= k) ? 1U : 0U;
+        // Never narrower than the terrace above it, so the sets stay nested -- and taken in before
+        // the squaring off, so the union is squared off too rather than breaking it again
+        mask[i] = (static_cast<int>(levels.values[i]) >= k or above[i] != 0U) ? 1U : 0U;
       }
       if (morphology and round == 0)
       {
@@ -226,12 +350,11 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
         {
           work.close(n);
         }
+        work.snap(n, phase_x, phase_y);
+        for (int join = 0; join < kMaxRepairs and work.join_blocks(n); ++join)
+        {
+        }
         mask = work.data();
-      }
-      // Never narrower than the terrace above it, so the sets stay nested
-      for (std::size_t i = 0; i < e.count(); ++i)
-      {
-        mask[i] = static_cast<std::uint8_t>(mask[i] | above[i]);
       }
       if (params.square_corners)
       {

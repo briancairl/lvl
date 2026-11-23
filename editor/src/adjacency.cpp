@@ -844,33 +844,46 @@ void steps_body(App& app)
   // The 3x6 block, read the way gft's sheets hold it
   memory::Scope scope{app.memory.frame};
   Grid<TileRef> layout{app.memory.frame};
-  const bool has_block = palette_layout(app, layout) and layout.extents.width == kStepBlockWidth and
-    layout.extents.height == kStepBlockHeight;
+  StepLayout shape = StepLayout::kStacked;
+  const bool has_block =
+    palette_layout(app, layout) and step_layout_of(layout.extents.width, layout.extents.height, shape);
   ImGui::BeginDisabled(!has_block);
-  if (ImGui::Button("Take the palette block (3 wide, 6 tall)"))
+  if (ImGui::Button(
+        has_block and shape == StepLayout::kSideBySide ? "Take the palette block (step-ups left, step-downs right)"
+                                                       : "Take the palette block"))
   {
     learn_step_layout(terrain, layout);
     changed = true;
   }
   ImGui::EndDisabled();
+  ImGui::SameLine();
   if (!has_block)
   {
-    ImGui::SameLine();
-    ImGui::TextDisabled("select 18 tiles, 3 across and 6 down");
+    ImGui::TextDisabled("select 18 tiles: 6 across and 3 down, or 3 across and 6 down");
   }
+  else
+  {
+    ImGui::TextDisabled(
+      "%s", (shape == StepLayout::kSideBySide) ? "6 across, 3 down" : "3 across, 6 down (gft's own order)");
+  }
+
+  // The slots are drawn in whichever shape the palette selection is, so they sit as the tileset does
+  const StepLayout drawn = has_block ? shape : StepLayout::kSideBySide;
+  const int block_w = (drawn == StepLayout::kSideBySide) ? kSideBySideWidth : kStackedWidth;
+  const int block_h = (drawn == StepLayout::kSideBySide) ? kSideBySideHeight : kStackedHeight;
 
   ImGui::SeparatorText("Tiles");
   constexpr float kSlot = 40.0F;
   ImGui::BeginChild("step_types", ImVec2{0, 0}, ImGuiChildFlags_Borders);
-  for (int y = 0; y < kStepBlockHeight; ++y)
+  for (int y = 0; y < block_h; ++y)
   {
-    for (int x = 0; x < kStepBlockWidth; ++x)
+    for (int x = 0; x < block_w; ++x)
     {
       if (x > 0)
       {
         ImGui::SameLine();
       }
-      changed |= step_slot(app, terrain, static_cast<StepType>(y * kStepBlockWidth + x), kSlot);
+      changed |= step_slot(app, terrain, static_cast<StepType>(step_type_at(drawn, x, y)), kSlot);
     }
   }
   ImGui::EndChild();
