@@ -1274,50 +1274,73 @@ TEST_F(Procgen, StepsTakeTheMapEdgeAsLevelGround)
   EXPECT_EQ(type_of(upper.at(1, 1)), StepType::kOutwardRight);
 }
 
-TEST_F(Procgen, StepTerracesDrawOnlyTheirOwnGround)
+TEST_F(Procgen, StepLayersAreOnePerLevelAndTerrainsOnlySayHow)
 {
+  // The layers follow the levels; a terrain only says which tiles a level is drawn in. One
+  // terrain covering every level is the ordinary case, and two let the art change with height.
   StepRules rules{doc};
   StepTerrain& water = rules.terrains[add_step_terrain(rules, "water")];
   water.level_lo = 0;
+  water.level_hi = 0;
   water.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 100};
   StepTerrain& grass = rules.terrains[add_step_terrain(rules, "grass")];
-  grass.level_lo = 2;
+  grass.level_lo = 1;
+  grass.level_hi = 3;
   grass.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 200};
   grass.tiles[static_cast<std::size_t>(StepType::kOutwardTop)] = TileRef{0, 201};
 
-  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "02220", "02220", "33330"});
-  Grid<TileRef> low{doc};
-  Grid<TileRef> high{doc};
-  low.assign(levels.extents, kEmptyTile);
-  high.assign(levels.extents, kEmptyTile);
-  const StepFillResult result = draw(rules, levels, StepFillParams{}, {&low, &high});
-  // The lower terrace covers everything; the upper one only its own ground, level 2 and above
-  EXPECT_EQ(low.at(0, 0), (TileRef{0, 100}));
-  EXPECT_EQ(high.at(2, 1), (TileRef{0, 201}));
-  EXPECT_EQ(high.at(2, 2), (TileRef{0, 200}));
-  EXPECT_TRUE(high.at(0, 0).empty());
-  // Level 3 is above the grass terrace's floor, so it is drawn by it too
-  EXPECT_FALSE(high.at(0, 3).empty());
-  // A pattern the terrain has no tile for is reported rather than guessed at
-  EXPECT_GT(result.missing, 0U);
+  // A 3x3 plateau, so it has a middle as well as a rim
+  Grid<std::uint16_t> levels = levels_of(doc, {"00000", "01110", "01110", "01110", "00000"});
+  Terraces drawn{doc, levels.extents, 2};
+  const StepFillResult result =
+    tile_steps(rules, levels, StepFillParams{}, drawn.ptrs.data(), drawn.ptrs.size(), nullptr);
   EXPECT_EQ(result.untermed, 0U);
-  EXPECT_EQ(find_step_terrain(rules, "grass"), 1);
-  EXPECT_EQ(step_terrain_of(rules, (TileRef{0, 201})), 1);
+  // Level 0's layer covers the whole map in the water terrain's flat tile: the opaque base
+  for (const TileRef& t : drawn.grids[0].values)
+  {
+    EXPECT_EQ(t, (TileRef{0, 100}));
+  }
+  // Level 1's layer holds only the raised ground, in the grass terrain's tiles
+  EXPECT_EQ(drawn.grids[1].at(2, 1), (TileRef{0, 201}));
+  EXPECT_EQ(drawn.grids[1].at(2, 2), (TileRef{0, 200}));
+  EXPECT_TRUE(drawn.grids[1].at(0, 0).empty()) << "nothing below the terrace, so the base shows through";
+  EXPECT_GT(result.missing, 0U) << "the corners have no tile, which is reported rather than guessed";
 
-  // A terrain with no layer is simply not drawn, and the others still are
-  Grid<TileRef> only_low{doc};
-  only_low.assign(levels.extents, kEmptyTile);
-  draw(rules, levels, StepFillParams{}, {&only_low, nullptr});
-  EXPECT_EQ(only_low.at(0, 0), (TileRef{0, 100}));
+  // One terrain covering every level draws every terrace in the same eighteen tiles
+  const StepRules single = [&] {
+    StepRules r{doc};
+    StepTerrain& all = r.terrains[add_step_terrain(r, "ground")];
+    all.level_lo = 0;
+    all.level_hi = 255;
+    for (std::size_t i = 0; i < kStepTypeCount; ++i)
+    {
+      all.tiles[i] = TileRef{0, static_cast<TileIndex>(i)};
+    }
+    return r;
+  }();
+  Terraces one{doc, levels.extents, 2};
+  tile_steps(single, levels, StepFillParams{}, one.ptrs.data(), one.ptrs.size(), nullptr);
+  EXPECT_EQ(type_of(one.grids[0].at(0, 0)), StepType::kFlat);
+  EXPECT_EQ(type_of(one.grids[1].at(2, 1)), StepType::kOutwardTop) << "the terrace above still gets its cliff";
+  EXPECT_TRUE(one.grids[1].at(0, 0).empty());
 
-  // Ground below every terrace is reported rather than drawn
-  StepRules high_only{doc};
-  StepTerrain& top = high_only.terrains[add_step_terrain(high_only, "top")];
-  top.level_lo = 3;
+  // A level no terrain covers is left undrawn and counted, and a null layer is simply skipped
+  StepRules high{doc};
+  StepTerrain& top = high.terrains[add_step_terrain(high, "top")];
+  top.level_lo = 1;
+  top.level_hi = 3;
   top.tiles[static_cast<std::size_t>(StepType::kFlat)] = TileRef{0, 300};
-  Grid<TileRef> one{doc};
-  one.assign(levels.extents, kEmptyTile);
-  EXPECT_EQ(draw(high_only, levels, StepFillParams{}, {&one}).untermed, 16U);
+  Terraces sparse{doc, levels.extents, 2};
+  const StepFillResult gap =
+    tile_steps(high, levels, StepFillParams{}, sparse.ptrs.data(), sparse.ptrs.size(), nullptr);
+  EXPECT_EQ(gap.untermed, 16U) << "every cell at level 0, which no terrain covers";
+  for (const TileRef& t : sparse.grids[0].values)
+  {
+    EXPECT_TRUE(t.empty()) << "level 0 has no art, so its layer stays empty";
+  }
+  EXPECT_EQ(sparse.grids[1].at(2, 2), (TileRef{0, 300}));
+  Grid<TileRef>* skipped[2] = {nullptr, &sparse.grids[1]};
+  EXPECT_EQ(tile_steps(high, levels, StepFillParams{}, skipped, 2, nullptr).changed, 0U);
 }
 
 TEST_F(Procgen, StepCollisionStaysOneFlatLayer)

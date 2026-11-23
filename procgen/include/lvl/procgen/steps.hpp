@@ -154,24 +154,30 @@ struct StepFillResult
 };
 
 /**
- * @brief Draws the terraces and the cliffs between them, a layer per terrain
+ * @brief Draws the terraces and the cliffs between them, a layer per height level
  *
- * <code>layers</code> holds one tile layer per terrain of <code>rules</code>, in the same order; a
- * null entry leaves that terrain undrawn. **They have to be separate layers.** A cliff tile is
- * drawn with transparency, because what shows through it is the ground of the terrace below -- that
- * is how these tilesets are cut -- so the terraces have to sit one on top of another and be
- * composited, not flattened into one plane. Stacked in order of <code>level_lo</code>, lowest at
- * the bottom, they come out right.
+ * <code>layers</code> holds one tile layer per height level: <code>layers[k]</code> is the terrace
+ * at level k, and the array wants one entry per level the map uses, so a map cut into five levels
+ * wants five layers. A null entry leaves that level undrawn.
  *
- * Each terrain draws over its **upper set**: the cells at <code>level_lo</code> or above, which is
- * the ground that terrain is the surface of and everything standing on top of it. Within that set
- * a cell takes the tile for how the set lies around it (lvl::level::step_type_of) -- the middle of
- * it flat, its rim edges and corners -- and outside the set the layer is cleared, so re-running
- * after the levels change leaves nothing behind. Since the question is only whether a neighbor is
- * in the same set, no cell is ever "above" another here; that case belongs to the levels, which
- * the stacking of the layers expresses instead.
+ * **They have to be separate layers.** A cliff tile is drawn with transparency, because what shows
+ * through it is the ground of the terrace below -- that is how these tilesets are cut -- so the
+ * terraces have to sit one on top of another and be composited, not flattened into one plane.
+ * Stacked in order, level 0 at the bottom, they come out right.
  *
- * Cells off the grid count as inside the set, so the map's edge is not a cliff.
+ * Layer k draws the cells at level k or above: the middle of that ground flat, its rim edges and
+ * corners, and everything below it cleared, so re-running after the levels change leaves nothing
+ * behind. Level 0 therefore covers the whole map and is flat throughout, which is the opaque base
+ * the rest composite over. Within one layer the only question is whether a neighbor is part of the
+ * same ground, so no cell is ever "above" another here; that is what the stacking expresses.
+ *
+ * Which *art* a level is drawn in comes from the terrain whose band holds it
+ * (<code>level::step_terrain_at</code>), so a map can step from grass cliffs up to rock ones by
+ * giving the bands different terrains -- and a single terrain covering every level is the ordinary
+ * case, drawing every terrace in the one set of eighteen tiles. Cells at a level no terrain covers
+ * are counted in <code>untermed</code> and left alone.
+ *
+ * Cells off the grid count as part of the same ground, so the map's edge is not a cliff.
  *
  * Only the tile *visual* is split this way. <code>collision</code> -- and any other per-cell data a
  * level keeps, semantics and materials among them -- stays a single flat layer, because it follows

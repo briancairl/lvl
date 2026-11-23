@@ -1239,11 +1239,12 @@ void smoke(App& app)
     lv.steps.terrains.clear();
     const auto tileset = static_cast<level::TileSetId>(app.tileset);
     static constexpr int kBands = 3;
-    for (int band = 0; band < kBands; ++band)
+    // One terrain covering every level: the ordinary case, where every terrace is drawn in the
+    // same eighteen tiles and it is the levels, not the terrains, that make the layers
     {
-      level::StepTerrain& terrain = lv.steps.terrains[level::add_step_terrain(lv.steps, format<32>("band_%d", band))];
-      terrain.level_lo = band;
-      terrain.level_hi = band;
+      level::StepTerrain& terrain = lv.steps.terrains[level::add_step_terrain(lv.steps, "ground")];
+      terrain.level_lo = 0;
+      terrain.level_hi = 255;
       // Through the side-by-side block, so the layout the palette offers is covered too
       level::Grid<level::TileRef> block{app.memory.frame};
       block.assign(level::Extents{level::kSideBySideWidth, level::kSideBySideHeight}, level::kEmptyTile);
@@ -1270,16 +1271,6 @@ void smoke(App& app)
     }
     app.step_terrain = 0;
 
-    // A tile layer per terrain, as the panel's button adds them
-    add_step_layers(app);
-    for (const level::StepTerrain& terrain : lv.steps.terrains)
-    {
-      if (step_layer_of(lv, terrain.name.view()) >= lv.layers.size())
-      {
-        report(app, Status::error("a step terrain was left without a layer"));
-      }
-    }
-
     g.step_height_layer = height_layer;
     g.step_level_layer = level_layer;
     g.step_collision_layer = collision_layer;
@@ -1288,7 +1279,15 @@ void smoke(App& app)
     g.step_tile_after_terrace = true;
     g.step_tidy = true;
     g.tidy = procgen::TidyParams{};
+    // Cutting the levels adds a layer per level and draws them, all from the one call
     apply_terrace(app);
+    for (int band = 0; band < kBands; ++band)
+    {
+      if (step_layer_of(lv, band) >= lv.layers.size())
+      {
+        report(app, Status::error("a height level was left without a layer"));
+      }
+    }
     if (g.terrace_result.top != kBands - 1)
     {
       report(app, Status::error("cutting the heightmap did not produce the levels asked for"));
@@ -1313,7 +1312,7 @@ void smoke(App& app)
     bool ok = true;
     for (int band = 0; band < kBands and ok; ++band)
     {
-      const std::size_t at = step_layer_of(lv, lv.steps.terrains[band].name.view());
+      const std::size_t at = step_layer_of(lv, band);
       const auto& grid = level::plane<level::TileGrid>(lv.layers[at]);
       for (int y = 0; y < levels.extents.height and ok; ++y)
       {

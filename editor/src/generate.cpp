@@ -639,26 +639,37 @@ void steps_section(App& app)
   }
 
   ImGui::SeparatorText("Tiles and collision");
-  // A layer per terrain, named after it. The cliff tiles are transparent where the terrace below
-  // shows through, so they have to be composited rather than flattened into one plane
+  // A layer per height level, not per terrain: the terrain only says which tiles a level is drawn
+  // in, and one terrain covering every level is the ordinary case
+  const int levels = step_level_count(lv, g.step_level_layer);
   std::size_t missing_layers = 0;
-  for (const StepTerrain& terrain : lv.steps.terrains)
+  for (int k = 0; k < levels; ++k)
   {
-    missing_layers += (step_layer_of(lv, terrain.name.view()) < lv.layers.size()) ? 0U : 1U;
+    missing_layers += (step_layer_of(lv, k) < lv.layers.size()) ? 0U : 1U;
   }
-  ImGui::TextDisabled("One tile layer per terrain, named after it, stacked lowest first.");
-  for (std::size_t t = 0; t < lv.steps.terrains.size(); ++t)
+  if (levels <= 1)
   {
-    const StepTerrain& terrain = lv.steps.terrains[t];
-    const std::size_t at = step_layer_of(lv, terrain.name.view());
+    ImGui::TextColored(
+      ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "The level layer holds one level, so there are no steps to draw");
+    ImGui::TextDisabled("Cut the heightmap into levels above. A flat or empty heightmap gives one level.");
+  }
+  else
+  {
+    ImGui::TextDisabled("%d level(s), one tile layer each, stacked lowest first.", levels);
+  }
+  for (int k = 0; k < levels; ++k)
+  {
+    const std::size_t at = step_layer_of(lv, k);
+    const level::StepTerrainId id = level::step_terrain_at(lv.steps, k);
+    const char* art = (id == level::kNoStepTerrain) ? "no terrain" : lv.steps.terrains[id].name.c_str();
     if (at < lv.layers.size())
     {
-      ImGui::BulletText("%s -> layer %zu '%s'", terrain.name.c_str(), at, lv.layers[at].name.c_str());
+      ImGui::BulletText("level %d -> layer '%s', drawn as %s", k, lv.layers[at].name.c_str(), art);
     }
     else
     {
       ImGui::Bullet();
-      ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "%s has no layer", terrain.name.c_str());
+      ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "level %d has no layer", k);
     }
   }
   if (missing_layers > 0)
@@ -669,7 +680,7 @@ void steps_section(App& app)
     }
     if (ImGui::IsItemHovered())
     {
-      ImGui::SetTooltip("Adds a tile layer named after each terrain that has none, lowest terrace first");
+      ImGui::SetTooltip("Adds a tile layer for each height level that has none, lowest first");
     }
   }
   int collision = static_cast<int>(g.step_collision);
@@ -690,7 +701,7 @@ void steps_section(App& app)
   {
     has_collision = layer_combo("Collision layer", lv, LayerKind::kCollision, g.step_collision_layer);
   }
-  ImGui::BeginDisabled(!has_collision or missing_layers == lv.steps.terrains.size());
+  ImGui::BeginDisabled(!has_collision or levels <= 0 or missing_layers == static_cast<std::size_t>(levels));
   if (ImGui::Button("Draw the steps", ImVec2{-1, 0}))
   {
     apply_steps(app);
@@ -723,11 +734,14 @@ void steps_section(App& app)
 
 }  // namespace
 
-std::size_t step_layer_of(const Level& level, std::string_view terrain)
+Name step_layer_name(int level) { return Name{format<32>("step %d", level)}; }
+
+std::size_t step_layer_of(const Level& level, int height_level)
 {
+  const Name wanted = step_layer_name(height_level);
   for (std::size_t i = 0; i < level.layers.size(); ++i)
   {
-    if (level.layers[i].kind == LayerKind::kTiles and level.layers[i].name == terrain)
+    if (level.layers[i].kind == LayerKind::kTiles and level.layers[i].name == wanted.view())
     {
       return i;
     }
@@ -735,28 +749,33 @@ std::size_t step_layer_of(const Level& level, std::string_view terrain)
   return level.layers.size();
 }
 
+int step_level_count(const Level& level, std::size_t level_layer)
+{
+  if (level_layer >= level.layers.size() or level.layers[level_layer].kind != LayerKind::kLevel)
+  {
+    return 0;
+  }
+  int top = 0;
+  for (const std::uint16_t v : plane<IdGrid>(level.layers[level_layer]).values)
+  {
+    top = std::max(top, static_cast<int>(v));
+  }
+  return top + 1;
+}
+
 void add_step_layers(App& app)
 {
   Level& lv = *app.level;
-  // Lowest terrace first, so the layers stack the way they are drawn: each cliff tile is
+  // One per height level, lowest first, so they stack the way they are drawn: each cliff tile is
   // transparent where the terrace below shows through it
-  memory::Scope scope{app.memory.frame};
-  auto order = memory::make_vector<std::size_t>(app.memory.frame);
-  for (std::size_t i = 0; i < lv.steps.terrains.size(); ++i)
+  const int levels = step_level_count(lv, app.generators.step_level_layer);
+  for (int k = 0; k < levels; ++k)
   {
-    order.push_back(i);
-  }
-  std::stable_sort(order.begin(), order.end(), [&lv](std::size_t a, std::size_t b) {
-    return lv.steps.terrains[a].level_lo < lv.steps.terrains[b].level_lo;
-  });
-  for (const std::size_t i : order)
-  {
-    const StepTerrain& terrain = lv.steps.terrains[i];
-    if (step_layer_of(lv, terrain.name.view()) < lv.layers.size())
+    if (step_layer_of(lv, k) < lv.layers.size())
     {
       continue;
     }
-    const std::size_t at = add_layer(lv, LayerKind::kTiles, terrain.name.view());
+    const std::size_t at = add_layer(lv, LayerKind::kTiles, step_layer_name(k).view());
     LVL_LOG_INFO() << "Added step layer '" << lv.layers[at].name.view() << '\'';
     app.modified = true;
   }
@@ -786,6 +805,9 @@ void apply_terrace(App& app)
                  << " cell(s) moved";
   if (g.step_tile_after_terrace)
   {
+    // The levels decide how many layers are wanted, so they can only be added once the levels
+    // exist -- which is here, and doing it now saves cutting the levels and seeing nothing drawn
+    add_step_layers(app);
     apply_steps(app);
   }
 }
@@ -801,18 +823,20 @@ void apply_steps(App& app)
   const bool block = (g.step_collision != procgen::StepCollision::kNone) and
     (g.step_collision_layer < lv.layers.size()) and (lv.layers[g.step_collision_layer].kind == LayerKind::kCollision);
 
-  // One tile layer per terrain, found by the terrain's name. A cliff tile is transparent where the
-  // terrace below shows through it, so the terraces cannot share a plane
+  // One tile layer per height level, found by name. A cliff tile is transparent where the terrace
+  // below shows through it, so the terraces cannot share a plane
+  const int levels = step_level_count(lv, g.step_level_layer);
   memory::Scope scope{app.memory.frame};
-  auto targets = memory::make_vector<TileGrid*>(app.memory.frame, lv.steps.terrains.size(), nullptr);
-  for (std::size_t t = 0; t < lv.steps.terrains.size(); ++t)
+  auto targets = memory::make_vector<TileGrid*>(app.memory.frame, static_cast<std::size_t>(levels), nullptr);
+  for (int k = 0; k < levels; ++k)
   {
-    const std::size_t at = step_layer_of(lv, lv.steps.terrains[t].name.view());
-    targets[t] = (at < lv.layers.size()) ? &plane<TileGrid>(lv.layers[at]) : nullptr;
-    if (at < lv.layers.size())
+    const std::size_t at = step_layer_of(lv, k);
+    if (at >= lv.layers.size())
     {
-      app.undo.snapshot(lv, at, "Draw steps");
+      continue;
     }
+    targets[static_cast<std::size_t>(k)] = &plane<TileGrid>(lv.layers[at]);
+    app.undo.snapshot(lv, at, "Draw steps");
   }
   g.step_result = procgen::tile_steps(
     lv.steps,
@@ -821,10 +845,9 @@ void apply_steps(App& app)
     targets.data(),
     targets.size(),
     block ? &plane<MaskGrid>(lv.layers[g.step_collision_layer]) : nullptr);
-  for (std::size_t t = 0; t < lv.steps.terrains.size(); ++t)
+  for (int k = 0; k < levels; ++k)
   {
-    const std::size_t at = step_layer_of(lv, lv.steps.terrains[t].name.view());
-    if (at < lv.layers.size())
+    if (const std::size_t at = step_layer_of(lv, k); at < lv.layers.size())
     {
       invalidate_layer(app, at);
     }
@@ -834,8 +857,8 @@ void apply_steps(App& app)
     invalidate_layer(app, g.step_collision_layer);
   }
   app.modified = app.modified or (g.step_result.changed > 0) or (g.step_result.blocked > 0);
-  LVL_LOG_INFO() << "Steps: " << g.step_result.tiled << " tiled, " << g.step_result.changed << " changed, "
-                 << g.step_result.blocked << " blocked";
+  LVL_LOG_INFO() << "Steps: " << g.step_result.tiled << " tiled over " << levels << " level(s), "
+                 << g.step_result.changed << " changed, " << g.step_result.blocked << " blocked";
 }
 
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count)

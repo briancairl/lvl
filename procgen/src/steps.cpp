@@ -7,7 +7,6 @@
 // C++ Standard Library
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 // LVL
 #include "lvl/core/logging.hpp"
@@ -492,30 +491,27 @@ StepFillResult tile_steps(
     }
   }
 
-  // A cell no terrain reaches gets nothing drawn at all
-  int lowest = std::numeric_limits<int>::max();
-  for (const StepTerrain& t : rules.terrains)
-  {
-    lowest = std::min(lowest, t.level_lo);
-  }
+  // A cell whose own level no terrain has art for is left alone and counted
   for (std::size_t i = 0; i < e.count(); ++i)
   {
-    result.untermed += (static_cast<int>(levels.values[i]) < lowest) ? 1U : 0U;
+    result.untermed +=
+      (level::step_terrain_at(rules, static_cast<int>(levels.values[i])) == level::kNoStepTerrain) ? 1U : 0U;
   }
 
-  const std::size_t count = std::min(layer_count, rules.terrains.size());
-  for (std::size_t t = 0; t < count; ++t)
+  // One layer per height level: layer k is the ground at level k and above, drawn in the art of
+  // whichever terrain's band holds level k
+  for (std::size_t k = 0; k < layer_count; ++k)
   {
-    level::Grid<TileRef>* grid = layers[t];
+    level::Grid<TileRef>* grid = layers[k];
     if (grid == nullptr)
     {
       continue;
     }
     LVL_ASSERT_TRUE(grid->extents == e) << "a step layer is a different size to the level layer";
-    const StepTerrain& terrain = rules.terrains[t];
-    const int floor = terrain.level_lo;
+    const auto floor = static_cast<int>(k);
+    const StepTerrainId id = level::step_terrain_at(rules, floor);
     const auto inside = [&](Cell c) {
-      // Off the grid counts as inside, so the map's edge is not drawn as a cliff
+      // Off the grid counts as part of the same ground, so the map's edge is not a cliff
       return !e.contains(c) or static_cast<int>(levels.values[e.index(c.x, c.y)]) >= floor;
     };
     for (int y = 0; y < e.height; ++y)
@@ -523,9 +519,10 @@ StepFillResult tile_steps(
       for (int x = 0; x < e.width; ++x)
       {
         const std::size_t i = e.index(x, y);
-        if (static_cast<int>(levels.values[i]) < floor)
+        if (static_cast<int>(levels.values[i]) < floor or id == level::kNoStepTerrain)
         {
-          // Below this terrace: clear it, so the layer holds only what this terrain draws
+          // Below this terrace, or a level with no art: clear it, so the layer holds only what it
+          // draws and a re-run leaves nothing behind
           result.changed += grid->values[i].empty() ? 0U : 1U;
           grid->values[i] = level::kEmptyTile;
           continue;
@@ -542,7 +539,7 @@ StepFillResult tile_steps(
         // Ground dropping away that still comes out flat is a shape the table has no tile for: a
         // one-cell spur or a 45-degree edge, which tidy_levels is there to square off
         result.unexpressed += (drops and type == StepType::kFlat) ? 1U : 0U;
-        const TileRef tile = terrain.tiles[static_cast<std::size_t>(type)];
+        const TileRef tile = rules.terrains[id].tiles[static_cast<std::size_t>(type)];
         if (tile.empty())
         {
           ++result.missing;
