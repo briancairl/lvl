@@ -22,6 +22,7 @@
 #include <cstdint>
 
 // LVL
+#include "lvl/core/memory.hpp"
 #include "lvl/level/layer.hpp"
 #include "lvl/level/step_rules.hpp"
 #include "lvl/level/types.hpp"
@@ -72,6 +73,53 @@ struct TerraceResult
  */
 TerraceResult terrace(const level::ScalarGrid& height, const TerraceParams& params, level::IdGrid& levels);
 
+/// How a level layer is tidied so every terrace and every hole is at least so many cells across
+struct TidyParams
+{
+  /// Narrowest feature to keep, in cells. 2 is the one that matters (see <code>tidy_levels</code>)
+  int min_feature = 2;
+  /// Shave off spurs narrower than that (a morphological opening of each terrace)
+  bool remove_spurs = true;
+  /// Fill notches and holes narrower than that (a closing)
+  bool fill_notches = true;
+  /// Square off terraces that meet only at a corner, which would put a 45-degree edge in the map
+  bool square_corners = true;
+  /// Rounds of the three; it stops early as soon as a round changes nothing
+  int passes = 8;
+};
+
+struct TidyResult
+{
+  /// Cells whose level changed
+  std::size_t changed = 0;
+  /// Rounds actually run
+  int passes = 0;
+  /// Whether the last round changed nothing, so the result is settled
+  bool stable = false;
+};
+
+/**
+ * @brief Widens every terrace and every hole in a level layer to <code>min_feature</code> cells
+ *
+ * A one-cell spur or notch in the levels has no tile: gft's table names 20 of the 255 ways a cell's
+ * neighbors can stand below it, and *every* arrangement it does not name has some feature only one
+ * cell across. So a level layer whose terraces and holes are all at least two cells wide is exactly
+ * a level layer the step tiles can draw completely, and this is the pass that gets one there.
+ * <code>tile_steps</code> counts what is left over as <code>unexpressed</code>.
+ *
+ * The levels are ordered, so this works on the *upper sets* -- the cells at level k or above, for
+ * each k -- rather than on each level on its own: an opening shaves the spurs off a terrace, a
+ * closing fills its notches, and a cell's new level is the highest upper set it still belongs to.
+ * Going through the upper sets is what keeps the result a sensible heightmap instead of a patchwork
+ * of levels that disagree about who owns a cell.
+ *
+ * The two operations undo a little of each other's work, so they are run in rounds until a round
+ * changes nothing (<code>passes</code> caps it, and <code>stable</code> says whether it got there).
+ * Cells off the grid count as copies of the nearest cell on it, so nothing is shaved off the map's
+ * own edge. <code>scratch</code> holds a few planes over the grid, and is rewound.
+ */
+TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::Arena& scratch);
+
 /// What a step fill should do to the collision layer
 enum class StepCollision : std::uint8_t
 {
@@ -102,6 +150,9 @@ struct StepFillResult
   std::size_t missing = 0;
   /// Cells marked solid (0 unless <code>collision</code> asks for it)
   std::size_t blocked = 0;
+  /// Cells with ground below them and none above, that the table still has no tile for. These are
+  /// the one-cell spurs and notches <code>tidy_levels</code> exists to remove
+  std::size_t unexpressed = 0;
 };
 
 /**

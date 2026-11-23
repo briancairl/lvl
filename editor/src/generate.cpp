@@ -585,6 +585,35 @@ void steps_section(App& app)
   {
     ImGui::SetTooltip("Levels are held down to this, so one stray peak cannot run the count up");
   }
+  ImGui::Checkbox("Tidy the levels", &g.step_tidy);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Squares the terraces off so every one of them is a shape the step tiles can draw.\n"
+                      "Without it a terraced heightmap is full of one-cell spurs and 45-degree edges,\n"
+                      "and gft's table has no tile for any of those -- they come out flat.");
+  }
+  if (g.step_tidy)
+  {
+    ImGui::Indent();
+    ImGui::SetNextItemWidth(160.0F);
+    ImGui::SliderInt("Narrowest feature", &g.tidy.min_feature, 1, 6);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Terraces and holes narrower than this are smoothed away. 1 leaves the smoothing off "
+                        "and only squares off what has no tile.");
+    }
+    ImGui::Checkbox("Shave spurs", &g.tidy.remove_spurs);
+    ImGui::SameLine();
+    ImGui::Checkbox("Fill notches", &g.tidy.fill_notches);
+    ImGui::SameLine();
+    ImGui::Checkbox("Square off", &g.tidy.square_corners);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("The one that matters: it grows a terrace until every cell of it is a shape the table "
+                        "has a tile for. Turning it off will leave cells flat that should be cliffs.");
+    }
+    ImGui::Unindent();
+  }
   ImGui::Checkbox("Redraw the tiles too", &g.step_tile_after_terrace);
   ImGui::BeginDisabled(!has_height);
   if (ImGui::Button("Cut the heightmap into levels", ImVec2{-1, 0}))
@@ -599,6 +628,14 @@ void steps_section(App& app)
       g.terrace_result.top + 1,
       static_cast<double>(g.terrace_result.rate),
       g.terrace_result.changed);
+    if (g.step_tidy)
+    {
+      ImGui::TextDisabled("Tidying moved %zu more over %d round(s)", g.tidy_result.changed, g.tidy_result.passes);
+      if (!g.tidy_result.stable)
+      {
+        ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "The tidy did not settle; raise the rounds");
+      }
+    }
   }
 
   ImGui::SeparatorText("Tiles and collision");
@@ -647,6 +684,15 @@ void steps_section(App& app)
       ImGui::TextColored(
         ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "%zu cell(s) whose terrain has no tile for the shape", r.missing);
     }
+    if (r.unexpressed > 0)
+    {
+      ImGui::TextColored(
+        ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "%zu cell(s) drawn flat: no tile exists for their shape", r.unexpressed);
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("One-cell spurs or 45-degree edges in the levels. Tidy the levels to square them off.");
+      }
+    }
   }
 }
 
@@ -661,8 +707,15 @@ void apply_terrace(App& app)
     return;
   }
   app.undo.snapshot(lv, g.step_level_layer, "Cut levels");
-  g.terrace_result = procgen::terrace(
-    plane<ScalarGrid>(lv.layers[g.step_height_layer]), g.terrace, plane<IdGrid>(lv.layers[g.step_level_layer]));
+  auto& levels = plane<IdGrid>(lv.layers[g.step_level_layer]);
+  g.terrace_result = procgen::terrace(plane<ScalarGrid>(lv.layers[g.step_height_layer]), g.terrace, levels);
+  g.tidy_result = procgen::TidyResult{};
+  if (g.step_tidy)
+  {
+    g.tidy_result = procgen::tidy_levels(levels, g.tidy, app.memory.frame);
+    LVL_LOG_INFO() << "Tidy: " << g.tidy_result.changed << " cell(s) moved over " << g.tidy_result.passes << " round(s)"
+                   << (g.tidy_result.stable ? "" : " (not settled)");
+  }
   invalidate_layer(app, g.step_level_layer);
   app.modified = app.modified or (g.terrace_result.changed > 0);
   LVL_LOG_INFO() << "Terrace: " << (g.terrace_result.top + 1) << " level(s), " << g.terrace_result.changed

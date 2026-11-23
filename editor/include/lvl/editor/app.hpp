@@ -282,6 +282,10 @@ struct Generators
   std::size_t step_tile_layer = 0;
   std::size_t step_collision_layer = 0;
   procgen::TerraceParams terrace;
+  procgen::TidyParams tidy;
+  /// Whether cutting the levels tidies them straight after
+  bool step_tidy = true;
+  procgen::TidyResult tidy_result;
   procgen::StepCollision step_collision = procgen::StepCollision::kBelow;
   bool step_keep_untermed = true;
   /// Whether the tiles are redrawn whenever the levels are recut

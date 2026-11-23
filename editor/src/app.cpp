@@ -1255,6 +1255,8 @@ void smoke(App& app)
     g.step_tile_layer = tiles_layer;
     g.step_collision_layer = collision_layer;
     g.terrace = procgen::TerraceParams{.levels = 3};
+    g.step_tidy = true;
+    g.tidy = procgen::TidyParams{};
     g.step_collision = procgen::StepCollision::kBelow;
     g.step_tile_after_terrace = true;
     apply_terrace(app);
@@ -1270,6 +1272,17 @@ void smoke(App& app)
     if (g.step_result.tiled != grid.values.size() or g.step_result.missing != 0)
     {
       report(app, Status::error("drawing the steps left cells without a tile"));
+      break;
+    }
+    // Tidying is what makes every cell a shape the table can draw
+    if (!g.tidy_result.stable or g.tidy_result.changed == 0)
+    {
+      report(app, Status::error("tidying the levels did not settle, or found nothing to square off"));
+      break;
+    }
+    if (g.step_result.unexpressed != 0)
+    {
+      report(app, Status::error("tidied levels still hold a shape with no tile"));
       break;
     }
     // Every cell's tile is the step type its own neighborhood calls for, and the cells at the foot

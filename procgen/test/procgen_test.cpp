@@ -1320,3 +1320,121 @@ TEST_F(Procgen, TerraceHandlesFlatMapsAndGivenRanges)
     EXPECT_LE(v, 5);
   }
 }
+
+TEST_F(Procgen, TidyRemovesSpursAndNotches)
+{
+  // A plateau with a one-cell spur poking out of its east side and a one-cell bite out of its west
+  Grid<std::uint16_t> levels = levels_of(doc, {"0000000", "0111000", "0111100", "0011000", "0111000", "0000000"});
+  const TidyResult result = tidy_levels(levels, TidyParams{}, scratch);
+  EXPECT_TRUE(result.stable);
+  EXPECT_GT(result.changed, 0U);
+  // The spur is gone and the bite is filled
+  EXPECT_EQ(levels.at(4, 2), 0);
+  EXPECT_EQ(levels.at(2, 3), 1);
+  // The body of the plateau is untouched
+  EXPECT_EQ(levels.at(1, 1), 1);
+  EXPECT_EQ(levels.at(2, 2), 1);
+  // Running it again settles immediately and changes nothing
+  const TidyResult again = tidy_levels(levels, TidyParams{}, scratch);
+  EXPECT_EQ(again.changed, 0U);
+  EXPECT_TRUE(again.stable);
+}
+
+TEST_F(Procgen, TidyKeepsTheMapEdgeAndSeveralLevels)
+{
+  // Terraces running off the edge are not shaved back
+  Grid<std::uint16_t> levels = levels_of(doc, {"2211", "2211", "1111", "1111"});
+  tidy_levels(levels, TidyParams{}, scratch);
+  EXPECT_EQ(levels.at(0, 0), 2) << "a terrace running off the edge should not be shaved back";
+  EXPECT_EQ(levels.at(1, 1), 2);
+  EXPECT_EQ(levels.at(3, 3), 1);
+
+  // A single high cell on a middle terrace goes, and the level below it stays
+  Grid<std::uint16_t> stack = levels_of(doc, {"111111", "112111", "111111", "100001", "100001", "111111"});
+  tidy_levels(stack, TidyParams{}, scratch);
+  EXPECT_EQ(stack.at(2, 1), 1) << "the lone level-2 cell should be shaved off";
+  EXPECT_EQ(stack.at(2, 4), 0) << "the 4x2 hole is wide enough to keep";
+  // A lone high cell in a corner is squared off rather than left as a shape with no tile: the
+  // repair grows it until the table has an answer
+  Grid<std::uint16_t> corner = levels_of(doc, {"112", "111", "111"});
+  const TidyParams repair_only{.remove_spurs = false, .fill_notches = false};
+  EXPECT_GT(tidy_levels(corner, repair_only, scratch).changed, 0U);
+  EXPECT_EQ(corner.at(2, 0), 2) << "the repair only ever raises, so the high cell stays high";
+  EXPECT_EQ(tidy_levels(corner, repair_only, scratch).changed, 0U) << "and then it is settled";
+
+  // With every pass turned off nothing moves at all
+  Grid<std::uint16_t> untouched = levels_of(doc, {"112", "111", "111"});
+  const TidyParams nothing{.remove_spurs = false, .fill_notches = false, .square_corners = false};
+  EXPECT_EQ(tidy_levels(untouched, nothing, scratch).changed, 0U);
+  EXPECT_EQ(untouched.at(2, 0), 2);
+  EXPECT_EQ(untouched.at(0, 0), 1);
+}
+
+TEST_F(Procgen, TidyMakesEveryPatternOneTheTableCanDraw)
+{
+  // The point of the pass. gft's table names 20 of the 255 ways a cell can stand above its
+  // neighbors, so a terraced heightmap is full of shapes it cannot draw: one-cell spurs and
+  // notches, and 45-degree boundaries, which a staircase of single cells is. Tidying squares them
+  // off, and what is left is counted rather than guessed at.
+  const StepRules rules = all_levels_rules(doc);
+  for (const std::uint64_t seed : {1234U, 7U, 99U})
+  {
+    for (const int bands : {3, 5, 8})
+    {
+      Grid<float> height{doc};
+      height.assign(Extents{64, 64}, 0.0F);
+      generate_heightmap(HeightmapParams{}, seed, height, nullptr, 1);
+      Grid<std::uint16_t> levels{doc};
+      levels.assign(height.extents, std::uint16_t{0});
+      terrace(height, TerraceParams{.levels = bands}, levels);
+      Grid<TileRef> tiles{doc};
+      tiles.assign(height.extents, kEmptyTile);
+
+      const StepFillResult before = tile_steps(rules, levels, StepFillParams{}, tiles, nullptr);
+      EXPECT_GT(before.unexpressed, 0U) << "a raw terracing should hold shapes with no tile";
+
+      const TidyResult tidied = tidy_levels(levels, TidyParams{}, scratch);
+      EXPECT_TRUE(tidied.stable) << "seed " << seed << ", " << bands << " bands";
+      const StepFillResult after = tile_steps(rules, levels, StepFillParams{}, tiles, nullptr);
+      EXPECT_EQ(after.unexpressed, 0U) << "seed " << seed << ", " << bands << " bands";
+      EXPECT_EQ(after.missing, 0U);
+      // The repair on its own is a fixed point: there is nothing left for it to square off. The
+      // smoothing is not, because the repair may leave a one-cell notch -- which the inward corner
+      // tiles draw perfectly well -- and a two-cell smoothing would fill it again
+      const TidyParams repair_only{.remove_spurs = false, .fill_notches = false};
+      EXPECT_EQ(tidy_levels(levels, repair_only, scratch).changed, 0U) << "seed " << seed;
+      EXPECT_EQ(tile_steps(rules, levels, StepFillParams{}, tiles, nullptr).unexpressed, 0U);
+    }
+  }
+}
+
+TEST_F(Procgen, TidyLeavesTheShapeRecognisable)
+{
+  // Squaring a staircase off should not swallow the terrain: the levels still have to follow the
+  // heightmap, and the range it covers should not collapse
+  Grid<float> height{doc};
+  height.assign(Extents{64, 64}, 0.0F);
+  generate_heightmap(HeightmapParams{}, 1234, height, nullptr, 1);
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{0});
+  terrace(height, TerraceParams{.levels = 5}, levels);
+  auto before = memory::make_vector<std::uint16_t>(doc);
+  before.assign(levels.values.begin(), levels.values.end());
+
+  tidy_levels(levels, TidyParams{}, scratch);
+  int top_before = 0;
+  int top_after = 0;
+  std::size_t same = 0;
+  std::size_t raised = 0;
+  for (std::size_t i = 0; i < levels.values.size(); ++i)
+  {
+    top_before = std::max(top_before, static_cast<int>(before[i]));
+    top_after = std::max(top_after, static_cast<int>(levels.values[i]));
+    same += (before[i] == levels.values[i]) ? 1U : 0U;
+    raised += (levels.values[i] > before[i]) ? 1U : 0U;
+  }
+  EXPECT_EQ(top_after, top_before) << "the range of levels should survive";
+  EXPECT_GT(same * 2, levels.values.size()) << "most cells should keep the level they had";
+  // The repair only ever raises, so no cell is cut away by it
+  EXPECT_GT(raised, 0U);
+}
