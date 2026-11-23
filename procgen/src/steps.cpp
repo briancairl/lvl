@@ -425,18 +425,45 @@ TerraceResult terrace(const level::ScalarGrid& height, const TerraceParams& para
     }
     return result;
   }
-  const float rate = (params.mode == TerraceMode::kRate) ? std::max(params.rate, 1e-6F)
-                                                         : span / static_cast<float>(std::max(params.levels, 1));
-  result.rate = rate;
+  const int bands = std::max(params.levels, 1);
+  const float rate = (params.mode == TerraceMode::kRate) ? std::max(params.rate, 1e-6F) : span;
+  // Each band is `skew` times the one below it. At 1 they are equal and the sums below collapse to
+  // plain division, which is worth keeping exact rather than going through the logarithms
+  const float skew = std::clamp(params.skew, 0.05F, 20.0F);
+  const bool equal = std::abs(skew - 1.0F) < 1e-4F;
+  const float log_skew = equal ? 1.0F : std::log(skew);
+  // A geometric series of `bands` terms, as a fraction of the first: 1 + s + s^2 + ...
+  const float series =
+    equal ? static_cast<float>(bands) : (1.0F - std::pow(skew, static_cast<float>(bands))) / (1.0F - skew);
+  // The lowest band's height. By count it is whatever divides the range into `bands` of this
+  // shape; by rate it is given
+  const float first = (params.mode == TerraceMode::kRate) ? rate : span / series;
+
+  /// Which band a height this far above the bottom of the range falls in
+  const auto band_of = [&](float above) {
+    if (equal)
+    {
+      return static_cast<int>(std::floor(above / first));
+    }
+    // above = first * (1 - s^k) / (1 - s), inverted
+    const float arg = 1.0F - above * (1.0F - skew) / first;
+    if (!(arg > 0.0F))
+    {
+      // The bands converge before reaching this height, so there is no band for it
+      return ceiling;
+    }
+    return static_cast<int>(std::floor(std::log(arg) / log_skew));
+  };
+
+  // The top of the range belongs to the last band rather than to one of its own
+  const int top_band = (params.mode == TerraceMode::kRate) ? band_of(span * (1.0F - 1e-6F)) : bands - 1;
+  const int highest = std::clamp(top_band, 0, ceiling);
+  result.rate = first;
+  result.top_rate = equal ? first : (first * std::pow(skew, static_cast<float>(highest)));
   for (std::size_t i = 0; i < e.count(); ++i)
   {
-    const float above = height.values[i] - lo;
-    int level = static_cast<int>(std::floor(above / rate));
-    // The top of the range belongs to the last band rather than to one of its own, and a stray
-    // value outside [lo, hi] is clamped rather than making a band nothing else reaches
-    const int top_band = (params.mode == TerraceMode::kRate) ? static_cast<int>(std::floor(span / rate - 1e-6F))
-                                                             : std::max(params.levels, 1) - 1;
-    level = std::clamp(level, 0, std::min(top_band, ceiling));
+    const float above = std::clamp(height.values[i] - lo, 0.0F, span);
+    const int level = std::clamp(band_of(above), 0, highest);
     result.top = std::max(result.top, level);
     const auto value = static_cast<std::uint16_t>(level);
     result.changed += (levels.values[i] == value) ? 0U : 1U;

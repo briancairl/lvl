@@ -267,7 +267,12 @@ level really owes the game is the **levels**, not the tiles.
 - **`LayerKind::kLevel`** is the integer height level per cell, an `IdGrid` plane like the semantic
   and material layers. `procgen::terrace` cuts a heightmap into it, either into a given number of
   bands or into bands of a given height (`TerraceMode`), over the heightmap's own range unless one
-  is given. It is an ordinary layer, so the levels can be touched up by hand and are saved.
+  is given. `skew` makes the bands a geometric series rather than equal ones: below 1 each band is
+  thinner than the one below it, so the ground is cut finely towards the top and coarsely at the
+  bottom, which is what gives a skyline more steps as it rises. By count the bands still divide the
+  range exactly however they are skewed; by rate a skew below 1 makes them converge, so a tall
+  enough map runs into `max_level`. It is an ordinary layer, so the levels can be touched up by
+  hand and are saved.
 - **`level::StepType`** is the vocabulary: 18 tiles, in either of two block shapes
   (`level::StepLayout`). Three across and six down is how gft's own sheets hold them, an *outward*
   row and an *inward* row alternating; six across and three down is the same eighteen as two 3x3
@@ -514,7 +519,8 @@ one check to mark required:
   changing the art with height, a level with no terrain left undrawn and counted, a null layer
   skipped, collision staying one flat mask (set and cleared on either side of a cliff, and filled
   even with no tile layers at all)); terracing (by count and by rate, a flat map,
-  a given range, clamping and the ceiling); tidying (spurs and notches, the map edge kept, a lone
+  a given range, clamping and the ceiling, and the skew -- equal bands unchanged, each band a
+  fixed fraction of the last in either direction, and converging bands held at the ceiling); tidying (spurs and notches, the map edge kept, a lone
   high corner squared off rather than shaved, every pattern drawable afterwards across several
   seeds and band counts, the repair being a fixed point, and the terrain surviving it -- nine cells
   in ten unmoved, none by more than one level);

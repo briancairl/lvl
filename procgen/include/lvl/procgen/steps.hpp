@@ -44,8 +44,17 @@ struct TerraceParams
   TerraceMode mode = TerraceMode::kCount;
   /// Bands to cut the range into (kCount); at least 1
   int levels = 4;
-  /// Height per band (kRate); must be above 0
+  /// Height of the lowest band (kRate); must be above 0
   float rate = 0.25F;
+  /**
+   * @brief Each band's height against the one below it
+   *
+   * 1 leaves the bands equal. Below 1 makes each one thinner than the last, so the ground is cut
+   * finely towards the top and coarsely at the bottom -- a cliff face gains steps as it rises,
+   * which is usually what a skyline wants. Above 1 does the opposite. The bands are a geometric
+   * series, so with <code>kCount</code> they still divide the range exactly however it is skewed.
+   */
+  float skew = 1.0F;
   /// Height mapped to level 0, and the top of the range; equal values are taken from the data
   float lo = 0.0F;
   float hi = 0.0F;
@@ -59,8 +68,9 @@ struct TerraceResult
   int top = 0;
   /// Cells whose level changed
   std::size_t changed = 0;
-  /// Height the bands came out at
+  /// Height of the lowest band, and of the highest. They differ when the bands are skewed
   float rate = 0.0F;
+  float top_rate = 0.0F;
 };
 
 /**
@@ -69,7 +79,9 @@ struct TerraceResult
  * With <code>lo</code> and <code>hi</code> equal, the range is taken from the heightmap itself, so
  * a map terraces sensibly without anyone reading its numbers first. A cell exactly on a band's
  * boundary belongs to the upper band, and the very top of the range belongs to the last one rather
- * than to a band of its own.
+ * than to a band of its own. <code>skew</code> makes the bands a geometric series rather than
+ * equal ones; with <code>kRate</code> and a skew below 1 the bands converge, so a tall enough map
+ * runs into <code>max_level</code>, which is what that is for.
  */
 TerraceResult terrace(const level::ScalarGrid& height, const TerraceParams& params, level::IdGrid& levels);
 

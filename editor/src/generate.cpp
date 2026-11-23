@@ -580,6 +580,19 @@ void steps_section(App& app)
     }
   }
   ImGui::SetNextItemWidth(160.0F);
+  ImGui::SliderFloat("Skew", &g.terrace.skew, 0.25F, 2.0F, "%.2f");
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("How tall each band is against the one below it.\n"
+                      "1: every band the same. Below 1: each one thinner than the last, so the ground is cut\n"
+                      "finely towards the top and coarsely at the bottom. Above 1: the other way round.");
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Even"))
+  {
+    g.terrace.skew = 1.0F;
+  }
+  ImGui::SetNextItemWidth(160.0F);
   ImGui::DragInt("Level ceiling", &g.terrace.max_level, 1.0F, 1, 255);
   if (ImGui::IsItemHovered())
   {
@@ -624,9 +637,10 @@ void steps_section(App& app)
   if (g.terrace_result.rate > 0.0F)
   {
     ImGui::TextDisabled(
-      "Last cut: %d level(s), %.4f tall, %zu cell(s) moved",
+      "Last cut: %d level(s), %.4f tall at the bottom and %.4f at the top, %zu cell(s) moved",
       g.terrace_result.top + 1,
       static_cast<double>(g.terrace_result.rate),
+      static_cast<double>(g.terrace_result.top_rate),
       g.terrace_result.changed);
     if (g.step_tidy)
     {

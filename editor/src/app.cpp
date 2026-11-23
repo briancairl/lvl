@@ -1274,7 +1274,8 @@ void smoke(App& app)
     g.step_height_layer = height_layer;
     g.step_level_layer = level_layer;
     g.step_collision_layer = collision_layer;
-    g.terrace = procgen::TerraceParams{.levels = kBands};
+    // A skew below 1, so the bands thin out towards the top as well
+    g.terrace = procgen::TerraceParams{.levels = kBands, .skew = 0.75F};
     g.step_collision = procgen::StepCollision::kBelow;
     g.step_tile_after_terrace = true;
     g.step_tidy = true;
@@ -1291,6 +1292,11 @@ void smoke(App& app)
     if (g.terrace_result.top != kBands - 1)
     {
       report(app, Status::error("cutting the heightmap did not produce the levels asked for"));
+      break;
+    }
+    if (!(g.terrace_result.top_rate < g.terrace_result.rate))
+    {
+      report(app, Status::error("the skew did not make the upper bands thinner"));
       break;
     }
     if (!g.tidy_result.stable or g.tidy_result.changed == 0)

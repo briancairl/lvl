@@ -1522,3 +1522,85 @@ TEST_F(Procgen, TidyLeavesTheShapeRecognisable)
   EXPECT_LE(worst, 1);
   EXPECT_LT(static_cast<double>(total) / static_cast<double>(levels.values.size()), 0.15);
 }
+
+TEST_F(Procgen, TerraceSkewMakesTheUpperBandsThinner)
+{
+  // A ramp from 0 to 1, so the number of cells in a band is that band's height
+  Grid<float> height{doc};
+  height.assign(Extents{1000, 1}, 0.0F);
+  for (int x = 0; x < 1000; ++x)
+  {
+    height.at(x, 0) = static_cast<float>(x) / 999.0F;
+  }
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{0});
+
+  const auto widths = [&](float skew) {
+    const TerraceResult r = terrace(height, TerraceParams{.levels = 4, .skew = skew}, levels);
+    EXPECT_EQ(r.top, 3) << "skew " << skew;
+    std::array<int, 4> counts{};
+    for (const std::uint16_t v : levels.values)
+    {
+      counts[std::min<std::size_t>(v, 3)]++;
+    }
+    EXPECT_EQ(counts[0] + counts[1] + counts[2] + counts[3], 1000);
+    return counts;
+  };
+
+  // A skew of 1 is the equal bands it was before
+  const auto equal = widths(1.0F);
+  for (const int c : equal)
+  {
+    EXPECT_NEAR(c, 250, 2);
+  }
+
+  // Below 1, each band is thinner than the one below it, and they still divide the range exactly
+  const auto thinning = widths(0.5F);
+  for (std::size_t i = 1; i < thinning.size(); ++i)
+  {
+    EXPECT_LT(thinning[i], thinning[i - 1]) << "band " << i;
+    // Each one is about half the last
+    EXPECT_NEAR(static_cast<double>(thinning[i]) / thinning[i - 1], 0.5, 0.05) << "band " << i;
+  }
+
+  // Above 1 it is the other way round
+  const auto thickening = widths(2.0F);
+  for (std::size_t i = 1; i < thickening.size(); ++i)
+  {
+    EXPECT_GT(thickening[i], thickening[i - 1]) << "band " << i;
+  }
+
+  // The result says what the bands came out at, bottom and top
+  const TerraceResult r = terrace(height, TerraceParams{.levels = 4, .skew = 0.5F}, levels);
+  EXPECT_NEAR(static_cast<double>(r.rate), 1.0 / 1.875, 0.01) << "the lowest band";
+  EXPECT_NEAR(static_cast<double>(r.top_rate), 0.125 / 1.875, 0.01) << "and the highest";
+}
+
+TEST_F(Procgen, TerraceSkewByRateRunsIntoTheCeiling)
+{
+  Grid<float> height{doc};
+  height.assign(Extents{100, 1}, 0.0F);
+  for (int x = 0; x < 100; ++x)
+  {
+    height.at(x, 0) = static_cast<float>(x) / 99.0F;
+  }
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(height.extents, std::uint16_t{0});
+
+  // Bands of 0.2 that each shrink by a quarter sum to 0.8 at most, so the top of a range of 1
+  // is past where they converge. It is held at the ceiling rather than running away
+  const TerraceResult r =
+    terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.2F, .skew = 0.25F, .max_level = 6}, levels);
+  EXPECT_LE(r.top, 6);
+  EXPECT_GT(r.top, 0);
+  for (int x = 1; x < 100; ++x)
+  {
+    EXPECT_GE(levels.at(x, 0), levels.at(x - 1, 0)) << "levels should never fall as the ground rises";
+  }
+  EXPECT_EQ(levels.at(99, 0), r.top);
+  // A skew above 1 by rate simply gives fewer, fatter bands
+  const TerraceResult wide =
+    terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.1F, .skew = 1.5F}, levels);
+  const TerraceResult plain = terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.1F}, levels);
+  EXPECT_LT(wide.top, plain.top);
+}
