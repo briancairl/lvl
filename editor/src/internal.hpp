@@ -162,7 +162,20 @@ void selection_preview(const App& app, float thumb, int max_rows);
 /// Generate > Height steps: cuts the heightmap into whole levels (and redraws the tiles, if asked)
 void apply_terrace(App& app);
 
-/// Generate > Height steps: draws the cliffs between the levels, and blocks them if asked
+/// Index of the tile layer a step terrain draws into (the one named after it), or layers.size()
+std::size_t step_layer_of(const level::Level& level, std::string_view terrain);
+
+/// Adds a tile layer for every step terrain that has none, lowest terrace first
+void add_step_layers(App& app);
+
+/**
+ * @brief Generate > Height steps: draws the cliffs between the levels, and blocks them if asked
+ *
+ * One tile layer per terrain, found by <code>step_layer_of</code>: a cliff tile is transparent
+ * where the terrace below shows through it, so they are composited rather than flattened. The
+ * collision mask stays a single flat layer, since it comes from the levels and not from any one
+ * terrace.
+ */
 void apply_steps(App& app);
 
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count);

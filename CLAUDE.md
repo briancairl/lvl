@@ -307,12 +307,28 @@ level really owes the game is the **levels**, not the tiles.
   voted away -- `min_feature` is a preference, not a guarantee. And the four inward corner tiles
   draw a single-cell notch perfectly well, so the repair may leave one that a two-cell smoothing
   would fill again: the repair alone is a fixed point, the whole pass with smoothing on is not.
-- **`procgen::tile_steps`** draws a level layer with those tiles. A cell takes the first terrain
-  whose level band holds it, so a map can step from water through sand to rock and each band bring
-  its own cliff. Cells off the grid count as level with the cell being looked at, so the map's edge
-  is not a cliff.
-- **Collision** is optional and re-runnable: `StepCollision::kBelow` marks the cells at the foot of
-  every cliff solid (leaving the ground on top walkable), `kAbove` marks its edge instead. Either
+- **`procgen::tile_steps`** draws a level layer with those tiles, **one tile layer per terrain**.
+  They have to be separate: a cliff tile is transparent where the terrace below shows through it,
+  which is how these tilesets are cut, so the terraces are composited rather than flattened into
+  one plane. Stacked in order of `level_lo`, lowest at the bottom, they come out right.
+
+  Each terrain draws over its own **upper set** -- the cells at its `level_lo` or above -- taking
+  the tile for how that set lies around each cell: the middle of it flat, its rim edges and
+  corners. Outside the set its layer is cleared, so re-running after the levels change leaves
+  nothing behind. Within one layer the question is only whether a neighbor is in the same set, so
+  no cell is ever "above" another: that case is what the stacking of the layers expresses. Cells
+  off the grid count as inside, so the map's edge is not a cliff.
+
+  **Only the tile visual is split this way.** The collision mask -- and any other per-cell data a
+  level keeps, semantics and materials among them -- stays a single flat layer, because it follows
+  from the levels rather than from any one terrace.
+
+  In the editor a terrain's layer is the tile layer **named after it** (`editor::step_layer_of`),
+  and `editor::add_step_layers` adds the missing ones lowest terrace first. A terrain with no layer
+  is simply not drawn, and the panel says which.
+- **Collision** is one flat layer, optional and re-runnable: `StepCollision::kBelow` marks the cells
+  at the foot of every cliff solid (leaving the ground on top walkable), `kAbove` marks its edge
+  instead. Either
   way it sets `collision::kSolid` where a step is and clears it where there is none, leaving the
   other bits of the mask alone, so recutting the levels never leaves a wall where the cliff has
   gone.
@@ -489,8 +505,10 @@ one check to mark required:
   and staying put under a different mask, scatter weights deciding the shares (a weight of zero,
   negative weights, all-zero and equal weights coming to the same thing), regions and clipping,
   sparing what is drawn, no tiles); height steps (every case of gft's table and that anything else
-  is flat, a plateau's rim, inward corners, the map edge, terrains picked by level, collision on
-  either side of a cliff being set and cleared again); terracing (by count and by rate, a flat map,
+  is flat, a plateau's rim, inward corners, the map edge, terrains picked by level, a terrace drawing only its own
+  ground and its layer being cleared where that ground has gone, a terrain with no layer simply not
+  drawn, ground below every terrace reported, collision staying one flat mask (set and cleared on
+  either side of a cliff, and filled even with no tile layers at all)); terracing (by count and by rate, a flat map,
   a given range, clamping and the ceiling); tidying (spurs and notches, the map edge kept, a lone
   high corner squared off rather than shaved, every pattern drawable afterwards across several
   seeds and band counts, the repair being a fixed point, and the terrain surviving it -- nine cells
@@ -514,9 +532,10 @@ one check to mark required:
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
   multi-tile paint stamp, a thirteen-tile terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
-  weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn (every cell's
-  tile the one its own height pattern calls for, nothing left that the tiles cannot express, the
-  blocked cells the ones at the foot of a step, and redrawing changing nothing),
+  weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per terrace (each
+  layer holding its own ground and nothing below it, every cell's tile the one its terrace's shape
+  calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of
+  a step, and redrawing changing nothing),
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

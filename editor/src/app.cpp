@@ -1220,25 +1220,26 @@ void smoke(App& app)
     break;
   }
   case 25: {
-    // Height steps: the heightmap cut into levels, and the cliffs between them drawn
+    // Height steps: the heightmap cut into levels, tidied, and the cliffs between them drawn --
+    // each terrace onto its own tile layer, since a cliff tile is transparent where the terrace
+    // below shows through it
     level::Level& lv = *app.level;
     Generators& g = app.generators;
     const std::size_t height_layer = level::find_layer(lv, level::LayerKind::kHeight);
-    const std::size_t tiles_layer = level::find_layer(lv, level::LayerKind::kTiles);
     const std::size_t collision_layer = level::find_layer(lv, level::LayerKind::kCollision);
-    if (height_layer == lv.layers.size() or tiles_layer == lv.layers.size() or collision_layer == lv.layers.size())
+    if (height_layer == lv.layers.size() or collision_layer == lv.layers.size())
     {
       report(app, Status::error("the smoke level is missing a layer the height steps need"));
       break;
     }
-    // A level layer, as the panel's button adds one
     const std::size_t level_layer = level::add_layer(lv, level::LayerKind::kLevel, "levels");
 
-    // A step terrain per band, whose tiles are the step type itself, so the drawing can be read
+    // A step terrain per terrace, whose tiles are the step type itself, so the drawing can be read
     app.rules_mode = RulesMode::kSteps;
     lv.steps.terrains.clear();
     const auto tileset = static_cast<level::TileSetId>(app.tileset);
-    for (int band = 0; band < 3; ++band)
+    static constexpr int kBands = 3;
+    for (int band = 0; band < kBands; ++band)
     {
       level::StepTerrain& terrain = lv.steps.terrains[level::add_step_terrain(lv.steps, format<32>("band_%d", band))];
       terrain.level_lo = band;
@@ -1250,8 +1251,8 @@ void smoke(App& app)
       {
         for (int bx = 0; bx < level::kSideBySideWidth; ++bx)
         {
-          block.at(bx, by) = level::TileRef{
-            tileset, static_cast<level::TileIndex>(level::step_type_at(level::StepLayout::kSideBySide, bx, by))};
+          const std::size_t type = level::step_type_at(level::StepLayout::kSideBySide, bx, by);
+          block.at(bx, by) = level::TileRef{tileset, static_cast<level::TileIndex>(type)};
         }
       }
       if (level::learn_step_layout(terrain, block) != level::kStepTypeCount)
@@ -1269,73 +1270,98 @@ void smoke(App& app)
     }
     app.step_terrain = 0;
 
+    // A tile layer per terrain, as the panel's button adds them
+    add_step_layers(app);
+    for (const level::StepTerrain& terrain : lv.steps.terrains)
+    {
+      if (step_layer_of(lv, terrain.name.view()) >= lv.layers.size())
+      {
+        report(app, Status::error("a step terrain was left without a layer"));
+      }
+    }
+
     g.step_height_layer = height_layer;
     g.step_level_layer = level_layer;
-    g.step_tile_layer = tiles_layer;
     g.step_collision_layer = collision_layer;
-    g.terrace = procgen::TerraceParams{.levels = 3};
-    g.step_tidy = true;
-    g.tidy = procgen::TidyParams{};
+    g.terrace = procgen::TerraceParams{.levels = kBands};
     g.step_collision = procgen::StepCollision::kBelow;
     g.step_tile_after_terrace = true;
+    g.step_tidy = true;
+    g.tidy = procgen::TidyParams{};
     apply_terrace(app);
-    if (g.terrace_result.top != 2)
+    if (g.terrace_result.top != kBands - 1)
     {
       report(app, Status::error("cutting the heightmap did not produce the levels asked for"));
       break;
     }
-
-    const auto& levels = level::plane<level::IdGrid>(lv.layers[level_layer]);
-    const auto& grid = level::plane<level::TileGrid>(lv.layers[tiles_layer]);
-    const auto& mask = level::plane<level::MaskGrid>(lv.layers[collision_layer]);
-    if (g.step_result.tiled != grid.values.size() or g.step_result.missing != 0)
-    {
-      report(app, Status::error("drawing the steps left cells without a tile"));
-      break;
-    }
-    // Tidying is what makes every cell a shape the table can draw
     if (!g.tidy_result.stable or g.tidy_result.changed == 0)
     {
       report(app, Status::error("tidying the levels did not settle, or found nothing to square off"));
       break;
     }
-    if (g.step_result.unexpressed != 0)
+    if (g.step_result.missing != 0 or g.step_result.unexpressed != 0 or g.step_result.untermed != 0)
     {
-      report(app, Status::error("tidied levels still hold a shape with no tile"));
+      report(app, Status::error("drawing the steps left shapes it could not draw"));
       break;
     }
-    // Every cell's tile is the step type its own neighborhood calls for, and the cells at the foot
-    // of a cliff are the ones blocked
+
+    const auto& levels = level::plane<level::IdGrid>(lv.layers[level_layer]);
+    const auto& mask = level::plane<level::MaskGrid>(lv.layers[collision_layer]);
+    // Each terrace's layer holds its own ground and nothing else, and the tile of every cell is
+    // the one its own terrace's shape calls for
     std::size_t cliffs = 0;
     bool ok = true;
-    for (int y = 0; y < levels.extents.height and ok; ++y)
+    for (int band = 0; band < kBands and ok; ++band)
     {
-      for (int x = 0; x < levels.extents.width and ok; ++x)
+      const std::size_t at = step_layer_of(lv, lv.steps.terrains[band].name.view());
+      const auto& grid = level::plane<level::TileGrid>(lv.layers[at]);
+      for (int y = 0; y < levels.extents.height and ok; ++y)
+      {
+        for (int x = 0; x < levels.extents.width and ok; ++x)
+        {
+          const bool inside = static_cast<int>(levels.at(x, y)) >= band;
+          if (!inside)
+          {
+            if (!grid.at(x, y).empty())
+            {
+              report(app, Status::error("a terrace's layer holds a tile below its own ground"));
+              ok = false;
+            }
+            continue;
+          }
+          level::StepCode code = 0;
+          for (std::size_t n = 0; n < level::kStepNeighbors.size(); ++n)
+          {
+            const level::Cell c = level::step(level::Cell{x, y}, level::kStepNeighbors[n]);
+            const bool below = levels.extents.contains(c) and static_cast<int>(levels.at(c.x, c.y)) < band;
+            code = level::step_code_with(code, n, below ? level::StepRelation::kBelow : level::StepRelation::kLevel);
+          }
+          const auto expected = static_cast<level::TileIndex>(level::step_type_of(code));
+          if (grid.at(x, y) != level::TileRef{tileset, expected})
+          {
+            report(app, Status::error("a cell did not take the tile its terrace's shape calls for"));
+            ok = false;
+          }
+        }
+      }
+    }
+    if (!ok)
+    {
+      break;
+    }
+    // The collision mask stays one flat layer over the whole map, marking the foot of every step
+    for (int y = 0; y < levels.extents.height; ++y)
+    {
+      for (int x = 0; x < levels.extents.width; ++x)
       {
         const int here = static_cast<int>(levels.at(x, y));
-        level::StepCode code = 0;
         bool above = false;
-        for (std::size_t n = 0; n < level::kStepNeighbors.size(); ++n)
+        for (const level::Direction d : level::kStepNeighbors)
         {
-          const level::Cell c = level::step(level::Cell{x, y}, level::kStepNeighbors[n]);
-          const int there = levels.extents.contains(c) ? static_cast<int>(levels.at(c.x, c.y)) : here;
-          code = level::step_code_with(
-            code,
-            n,
-            (there == here)    ? level::StepRelation::kLevel
-              : (there < here) ? level::StepRelation::kBelow
-                               : level::StepRelation::kAbove);
-          above = above or (there > here);
+          const level::Cell c = level::step(level::Cell{x, y}, d);
+          above = above or (levels.extents.contains(c) and static_cast<int>(levels.at(c.x, c.y)) > here);
         }
-        const auto expected = static_cast<level::TileIndex>(level::step_type_of(code));
-        if (grid.at(x, y) != level::TileRef{tileset, expected})
-        {
-          report(app, Status::error("a cell did not take the tile its height pattern calls for"));
-          ok = false;
-          break;
-        }
-        const bool blocked = (mask.at(x, y) & level::collision::kSolid) != 0;
-        if (blocked != above)
+        if (((mask.at(x, y) & level::collision::kSolid) != 0) != above)
         {
           report(app, Status::error("the cells blocked are not the ones at the foot of a step"));
           ok = false;
@@ -1353,7 +1379,7 @@ void smoke(App& app)
       report(app, Status::error("the terraced heightmap has no steps at all"));
       break;
     }
-    // Drawing again changes nothing, and clearing the collision mode leaves the layer alone
+    // Drawing again changes nothing
     apply_steps(app);
     if (g.step_result.changed != 0)
     {

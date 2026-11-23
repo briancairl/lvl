@@ -7,6 +7,7 @@
 // C++ Standard Library
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // LVL
 #include "lvl/core/logging.hpp"
@@ -449,78 +450,108 @@ StepFillResult tile_steps(
   const level::StepRules& rules,
   const level::IdGrid& levels,
   const StepFillParams& params,
-  level::Grid<TileRef>& tiles,
+  level::Grid<TileRef>* const* layers,
+  std::size_t layer_count,
   level::MaskGrid* collision)
 {
   StepFillResult result;
-  const level::Extents e = tiles.extents;
+  const level::Extents e = levels.extents;
   if (e.count() == 0)
   {
     return result;
   }
-  LVL_ASSERT_TRUE(levels.extents == e) << "the level layer is a different size to the tile layer";
   LVL_ASSERT_TRUE(collision == nullptr or collision->extents == e) << "the collision layer is a different size";
-  for (int y = 0; y < e.height; ++y)
-  {
-    for (int x = 0; x < e.width; ++x)
-    {
-      const std::size_t i = e.index(x, y);
-      const int here = static_cast<int>(levels.values[i]);
-      // How this cell stands against each of its eight neighbors. Off the grid counts as level, so
-      // the map's edge is not read as a cliff
-      StepCode code = 0;
-      bool steps_down = false;
-      bool steps_up = false;
-      for (std::size_t n = 0; n < level::kStepNeighbors.size(); ++n)
-      {
-        const Cell c = step(Cell{x, y}, level::kStepNeighbors[n]);
-        const int there = e.contains(c) ? static_cast<int>(levels.values[e.index(c.x, c.y)]) : here;
-        const StepRelation relation = (there == here) ? StepRelation::kLevel
-          : (there < here)                            ? StepRelation::kBelow
-                                                      : StepRelation::kAbove;
-        code = level::step_code_with(code, n, relation);
-        steps_down = steps_down or (relation == StepRelation::kBelow);
-        steps_up = steps_up or (relation == StepRelation::kAbove);
-      }
 
-      if (collision != nullptr and params.collision != StepCollision::kNone)
+  // Collision comes from the levels themselves, not from any one terrace, so it stays a single
+  // flat mask however many layers the tiles are spread over
+  if (collision != nullptr and params.collision != StepCollision::kNone)
+  {
+    for (int y = 0; y < e.height; ++y)
+    {
+      for (int x = 0; x < e.width; ++x)
       {
+        const std::size_t i = e.index(x, y);
+        const int here = static_cast<int>(levels.values[i]);
+        bool down = false;
+        bool up = false;
+        for (const Direction d : level::kStepNeighbors)
+        {
+          const Cell c = step(Cell{x, y}, d);
+          const int there = e.contains(c) ? static_cast<int>(levels.values[e.index(c.x, c.y)]) : here;
+          down = down or (there < here);
+          up = up or (there > here);
+        }
         // Set where this cell is on the blocked side of a step, cleared where it is not, so a
         // re-run after the heightmap changes leaves no walls where the cliff has gone
-        const bool block = (params.collision == StepCollision::kAbove) ? steps_down : steps_up;
+        const bool block = (params.collision == StepCollision::kAbove) ? down : up;
         const std::uint8_t mask = collision->values[i];
         collision->values[i] =
           static_cast<std::uint8_t>(block ? (mask | level::collision::kSolid) : (mask & ~level::collision::kSolid));
         result.blocked += block ? 1U : 0U;
       }
+    }
+  }
 
-      const StepType type = level::step_type_of(code);
-      // A cell with ground below it that still came out flat is a shape the table has no tile for:
-      // a one-cell spur or notch, which tidy_levels is there to remove. A cell with ground *above*
-      // it is not one of those -- the table draws nothing on the lower side of a step by design
-      result.unexpressed += (steps_down and !steps_up and type == StepType::kFlat) ? 1U : 0U;
+  // A cell no terrain reaches gets nothing drawn at all
+  int lowest = std::numeric_limits<int>::max();
+  for (const StepTerrain& t : rules.terrains)
+  {
+    lowest = std::min(lowest, t.level_lo);
+  }
+  for (std::size_t i = 0; i < e.count(); ++i)
+  {
+    result.untermed += (static_cast<int>(levels.values[i]) < lowest) ? 1U : 0U;
+  }
 
-      const StepTerrainId id = level::step_terrain_at(rules, here);
-      if (id == level::kNoStepTerrain)
+  const std::size_t count = std::min(layer_count, rules.terrains.size());
+  for (std::size_t t = 0; t < count; ++t)
+  {
+    level::Grid<TileRef>* grid = layers[t];
+    if (grid == nullptr)
+    {
+      continue;
+    }
+    LVL_ASSERT_TRUE(grid->extents == e) << "a step layer is a different size to the level layer";
+    const StepTerrain& terrain = rules.terrains[t];
+    const int floor = terrain.level_lo;
+    const auto inside = [&](Cell c) {
+      // Off the grid counts as inside, so the map's edge is not drawn as a cliff
+      return !e.contains(c) or static_cast<int>(levels.values[e.index(c.x, c.y)]) >= floor;
+    };
+    for (int y = 0; y < e.height; ++y)
+    {
+      for (int x = 0; x < e.width; ++x)
       {
-        ++result.untermed;
-        if (!params.keep_untermed)
+        const std::size_t i = e.index(x, y);
+        if (static_cast<int>(levels.values[i]) < floor)
         {
-          result.changed += tiles.values[i].empty() ? 0U : 1U;
-          tiles.values[i] = level::kEmptyTile;
+          // Below this terrace: clear it, so the layer holds only what this terrain draws
+          result.changed += grid->values[i].empty() ? 0U : 1U;
+          grid->values[i] = level::kEmptyTile;
+          continue;
         }
-        continue;
+        level::StepCode code = 0;
+        bool drops = false;
+        for (std::size_t n = 0; n < level::kStepNeighbors.size(); ++n)
+        {
+          const bool below = !inside(step(Cell{x, y}, level::kStepNeighbors[n]));
+          code = level::step_code_with(code, n, below ? StepRelation::kBelow : StepRelation::kLevel);
+          drops = drops or below;
+        }
+        const StepType type = level::step_type_of(code);
+        // Ground dropping away that still comes out flat is a shape the table has no tile for: a
+        // one-cell spur or a 45-degree edge, which tidy_levels is there to square off
+        result.unexpressed += (drops and type == StepType::kFlat) ? 1U : 0U;
+        const TileRef tile = terrain.tiles[static_cast<std::size_t>(type)];
+        if (tile.empty())
+        {
+          ++result.missing;
+          continue;
+        }
+        ++result.tiled;
+        result.changed += (grid->values[i] == tile) ? 0U : 1U;
+        grid->values[i] = tile;
       }
-      const StepTerrain& terrain = rules.terrains[id];
-      const TileRef tile = terrain.tiles[static_cast<std::size_t>(type)];
-      if (tile.empty())
-      {
-        ++result.missing;
-        continue;
-      }
-      ++result.tiled;
-      result.changed += (tiles.values[i] == tile) ? 0U : 1U;
-      tiles.values[i] = tile;
     }
   }
   return result;

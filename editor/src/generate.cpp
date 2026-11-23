@@ -639,15 +639,39 @@ void steps_section(App& app)
   }
 
   ImGui::SeparatorText("Tiles and collision");
-  if (app.layer < lv.layers.size() and lv.layers[app.layer].kind == LayerKind::kTiles)
+  // A layer per terrain, named after it. The cliff tiles are transparent where the terrace below
+  // shows through, so they have to be composited rather than flattened into one plane
+  std::size_t missing_layers = 0;
+  for (const StepTerrain& terrain : lv.steps.terrains)
   {
-    g.step_tile_layer = app.layer;
+    missing_layers += (step_layer_of(lv, terrain.name.view()) < lv.layers.size()) ? 0U : 1U;
   }
-  if (!layer_combo("Target tile layer", lv, LayerKind::kTiles, g.step_tile_layer))
+  ImGui::TextDisabled("One tile layer per terrain, named after it, stacked lowest first.");
+  for (std::size_t t = 0; t < lv.steps.terrains.size(); ++t)
   {
-    return;
+    const StepTerrain& terrain = lv.steps.terrains[t];
+    const std::size_t at = step_layer_of(lv, terrain.name.view());
+    if (at < lv.layers.size())
+    {
+      ImGui::BulletText("%s -> layer %zu '%s'", terrain.name.c_str(), at, lv.layers[at].name.c_str());
+    }
+    else
+    {
+      ImGui::Bullet();
+      ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "%s has no layer", terrain.name.c_str());
+    }
   }
-  ImGui::Checkbox("Keep tiles at levels no terrain covers", &g.step_keep_untermed);
+  if (missing_layers > 0)
+  {
+    if (ImGui::Button(format<64>("Add the %zu missing layer(s)", missing_layers), ImVec2{-1, 0}))
+    {
+      add_step_layers(app);
+    }
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Adds a tile layer named after each terrain that has none, lowest terrace first");
+    }
+  }
   int collision = static_cast<int>(g.step_collision);
   ImGui::SetNextItemWidth(220.0F);
   if (ImGui::Combo("Block steps", &collision, "Don't touch collision\0Below the step\0Above the step\0"))
@@ -657,6 +681,7 @@ void steps_section(App& app)
   if (ImGui::IsItemHovered())
   {
     ImGui::SetTooltip("Marks the cells on one side of every cliff solid, so it cannot be walked through.\n"
+                      "This stays one flat mask over the whole map, whatever the tiles are spread over.\n"
                       "Below: the foot of the cliff, which leaves the ground on top walkable.\n"
                       "Above: its edge. Either way the mark is cleared again where the cliff has gone.");
   }
@@ -665,7 +690,7 @@ void steps_section(App& app)
   {
     has_collision = layer_combo("Collision layer", lv, LayerKind::kCollision, g.step_collision_layer);
   }
-  ImGui::BeginDisabled(!has_collision);
+  ImGui::BeginDisabled(!has_collision or missing_layers == lv.steps.terrains.size());
   if (ImGui::Button("Draw the steps", ImVec2{-1, 0}))
   {
     apply_steps(app);
@@ -697,6 +722,45 @@ void steps_section(App& app)
 }
 
 }  // namespace
+
+std::size_t step_layer_of(const Level& level, std::string_view terrain)
+{
+  for (std::size_t i = 0; i < level.layers.size(); ++i)
+  {
+    if (level.layers[i].kind == LayerKind::kTiles and level.layers[i].name == terrain)
+    {
+      return i;
+    }
+  }
+  return level.layers.size();
+}
+
+void add_step_layers(App& app)
+{
+  Level& lv = *app.level;
+  // Lowest terrace first, so the layers stack the way they are drawn: each cliff tile is
+  // transparent where the terrace below shows through it
+  memory::Scope scope{app.memory.frame};
+  auto order = memory::make_vector<std::size_t>(app.memory.frame);
+  for (std::size_t i = 0; i < lv.steps.terrains.size(); ++i)
+  {
+    order.push_back(i);
+  }
+  std::stable_sort(order.begin(), order.end(), [&lv](std::size_t a, std::size_t b) {
+    return lv.steps.terrains[a].level_lo < lv.steps.terrains[b].level_lo;
+  });
+  for (const std::size_t i : order)
+  {
+    const StepTerrain& terrain = lv.steps.terrains[i];
+    if (step_layer_of(lv, terrain.name.view()) < lv.layers.size())
+    {
+      continue;
+    }
+    const std::size_t at = add_layer(lv, LayerKind::kTiles, terrain.name.view());
+    LVL_LOG_INFO() << "Added step layer '" << lv.layers[at].name.view() << '\'';
+    app.modified = true;
+  }
+}
 
 void apply_terrace(App& app)
 {
@@ -730,21 +794,41 @@ void apply_steps(App& app)
 {
   Level& lv = *app.level;
   Generators& g = app.generators;
-  if (g.step_level_layer >= lv.layers.size() or g.step_tile_layer >= lv.layers.size())
+  if (g.step_level_layer >= lv.layers.size() or lv.steps.terrains.empty())
   {
     return;
   }
   const bool block = (g.step_collision != procgen::StepCollision::kNone) and
     (g.step_collision_layer < lv.layers.size()) and (lv.layers[g.step_collision_layer].kind == LayerKind::kCollision);
-  app.undo.snapshot(lv, g.step_tile_layer, "Draw steps");
+
+  // One tile layer per terrain, found by the terrain's name. A cliff tile is transparent where the
+  // terrace below shows through it, so the terraces cannot share a plane
+  memory::Scope scope{app.memory.frame};
+  auto targets = memory::make_vector<TileGrid*>(app.memory.frame, lv.steps.terrains.size(), nullptr);
+  for (std::size_t t = 0; t < lv.steps.terrains.size(); ++t)
+  {
+    const std::size_t at = step_layer_of(lv, lv.steps.terrains[t].name.view());
+    targets[t] = (at < lv.layers.size()) ? &plane<TileGrid>(lv.layers[at]) : nullptr;
+    if (at < lv.layers.size())
+    {
+      app.undo.snapshot(lv, at, "Draw steps");
+    }
+  }
   g.step_result = procgen::tile_steps(
     lv.steps,
     plane<IdGrid>(lv.layers[g.step_level_layer]),
-    procgen::StepFillParams{
-      .collision = block ? g.step_collision : procgen::StepCollision::kNone, .keep_untermed = g.step_keep_untermed},
-    plane<TileGrid>(lv.layers[g.step_tile_layer]),
+    procgen::StepFillParams{.collision = block ? g.step_collision : procgen::StepCollision::kNone},
+    targets.data(),
+    targets.size(),
     block ? &plane<MaskGrid>(lv.layers[g.step_collision_layer]) : nullptr);
-  invalidate_layer(app, g.step_tile_layer);
+  for (std::size_t t = 0; t < lv.steps.terrains.size(); ++t)
+  {
+    const std::size_t at = step_layer_of(lv, lv.steps.terrains[t].name.view());
+    if (at < lv.layers.size())
+    {
+      invalidate_layer(app, at);
+    }
+  }
   if (block)
   {
     invalidate_layer(app, g.step_collision_layer);

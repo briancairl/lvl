@@ -134,45 +134,57 @@ enum class StepCollision : std::uint8_t
 struct StepFillParams
 {
   StepCollision collision = StepCollision::kNone;
-  /// Whether a cell whose level has no terrain keeps its tile rather than being emptied
-  bool keep_untermed = true;
 };
 
 struct StepFillResult
 {
-  /// Cells given a tile
+  /// Cells given a tile, counted over every layer
   std::size_t tiled = 0;
   /// Cells whose tile changed
   std::size_t changed = 0;
-  /// Cells at a level no terrain covers
+  /// Cells no terrain reaches, so nothing is drawn there at all
   std::size_t untermed = 0;
   /// Cells whose terrain has no tile for the pattern they need
   std::size_t missing = 0;
   /// Cells marked solid (0 unless <code>collision</code> asks for it)
   std::size_t blocked = 0;
   /// Cells with ground below them and none above, that the table still has no tile for. These are
-  /// the one-cell spurs and notches <code>tidy_levels</code> exists to remove
+  /// the one-cell spurs and 45-degree edges <code>tidy_levels</code> exists to remove
   std::size_t unexpressed = 0;
 };
 
 /**
- * @brief Draws the steps between the levels, and optionally blocks them
+ * @brief Draws the terraces and the cliffs between them, a layer per terrain
  *
- * Every cell takes the tile its terrain gives for how it stands against its eight neighbors (see
- * lvl::level::step_type_of): the rim of a plateau gets edges and corners, the ground inside it the
- * flat tile, and the ground below it stays flat too, since only the higher side of a step is drawn.
- * Cells off the grid count as level with the cell being looked at, so the map's edge is not a cliff.
+ * <code>layers</code> holds one tile layer per terrain of <code>rules</code>, in the same order; a
+ * null entry leaves that terrain undrawn. **They have to be separate layers.** A cliff tile is
+ * drawn with transparency, because what shows through it is the ground of the terrace below -- that
+ * is how these tilesets are cut -- so the terraces have to sit one on top of another and be
+ * composited, not flattened into one plane. Stacked in order of <code>level_lo</code>, lowest at
+ * the bottom, they come out right.
  *
- * <code>collision</code>, when it is not <code>kNone</code>, sets or clears
- * <code>collision::kSolid</code> on every cell of the grid -- set where a step is, clear where it
- * is not -- and leaves the other bits of the mask as they are, so running it again after the
- * heightmap changes does not leave old walls behind.
+ * Each terrain draws over its **upper set**: the cells at <code>level_lo</code> or above, which is
+ * the ground that terrain is the surface of and everything standing on top of it. Within that set
+ * a cell takes the tile for how the set lies around it (lvl::level::step_type_of) -- the middle of
+ * it flat, its rim edges and corners -- and outside the set the layer is cleared, so re-running
+ * after the levels change leaves nothing behind. Since the question is only whether a neighbor is
+ * in the same set, no cell is ever "above" another here; that case belongs to the levels, which
+ * the stacking of the layers expresses instead.
+ *
+ * Cells off the grid count as inside the set, so the map's edge is not a cliff.
+ *
+ * Only the tile *visual* is split this way. <code>collision</code> -- and any other per-cell data a
+ * level keeps, semantics and materials among them -- stays a single flat layer, because it follows
+ * from the levels rather than from any one terrace. When it is not <code>kNone</code> this sets or
+ * clears <code>collision::kSolid</code> over the whole grid -- set where a step is, clear where it
+ * is not -- leaving the other bits of the mask alone.
  */
 StepFillResult tile_steps(
   const level::StepRules& rules,
   const level::IdGrid& levels,
   const StepFillParams& params,
-  level::Grid<level::TileRef>& tiles,
+  level::Grid<level::TileRef>* const* layers,
+  std::size_t layer_count,
   level::MaskGrid* collision);
 
 }  // namespace lvl::procgen
