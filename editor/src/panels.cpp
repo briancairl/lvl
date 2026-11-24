@@ -836,6 +836,22 @@ void catalogs_panel(App& app)
     for (std::size_t i = 1; i < catalog.size(); ++i)
     {
       ImGui::PushID(static_cast<int>(i));
+      // A retired entry is still listed, greyed, because its id is still reserved: hiding it would
+      // leave the user wondering why the ids below it never close up. "Restore" brings it back,
+      // which is what every cell still holding its id already says it means.
+      if (catalog[i].retired)
+      {
+        ImGui::TextDisabled("%s (removed)", catalog[i].name.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Restore"))
+        {
+          catalog[i].retired = false;
+          changed = true;
+          invalidate_view(app);
+        }
+        ImGui::PopID();
+        continue;
+      }
       if (delete_button(kind == DeleteKind::kSemantic ? "Delete semantic type" : "Delete material"))
       {
         const bool semantic = (kind == DeleteKind::kSemantic);
@@ -849,12 +865,15 @@ void catalogs_panel(App& app)
             .what = format<128>("%s '%s'", semantic ? "semantic type" : "material", catalog[i].name.c_str()),
             // The count is of this level only: the project's other levels are not loaded, so a
             // count of zero does not mean nothing anywhere uses the entry
-            .detail = (uses == 0)
-              ? FixedString<256>{"Nothing in this level uses it."}
-              : FixedString<256>{format<256>(
-                  "%zu cells, tiles%s in this level use it; they become 'none'. The undo history is cleared.",
-                  uses,
-                  semantic ? " and WFC rule tiles" : ", and seasonal variants")}});
+            // Its id stays reserved, because the project's other levels are not loaded and their
+            // cells would otherwise keep an id that had come to mean something else
+            .detail = (uses == 0) ? FixedString<256>{"Nothing in this level uses it. Its id stays reserved until the "
+                                                     "catalogs are compacted."}
+                                  : FixedString<256>{format<256>(
+                                      "%zu cells, tiles%s in this level use it; they become 'none'. Its id stays "
+                                      "reserved until the catalogs are compacted. The undo history is cleared.",
+                                      uses,
+                                      semantic ? " and WFC rule tiles" : ", and seasonal variants")}});
       }
       if (color_edit("##color", catalog[i].color))
       {
@@ -887,6 +906,33 @@ void catalogs_panel(App& app)
     ImGui::SetNextItemWidth(90.0F);
     changed |= input_text("sound", m.sound);
   });
+
+  // Compaction is the only thing that renumbers the catalogs, which is why it is a deliberate act
+  // rather than something a removal does: every level of the project has to be rewritten together.
+  if (project::needs_compaction(pr))
+  {
+    ImGui::Separator();
+    project::CatalogPlan plan{app.memory.frame};
+    project::plan_compaction(pr, plan);
+    ImGui::TextWrapped(
+      "%zu semantic type(s) and %zu material(s) are removed but still hold their ids.",
+      plan.retired_semantics,
+      plan.retired_materials);
+    if (pr.levels.size() > 1)
+    {
+      ImGui::TextDisabled("Compacting needs every level rewritten at once, which this build cannot do yet.");
+    }
+    else if (ImGui::Button("Compact catalogs"))
+    {
+      project::apply_compaction(plan, lv);
+      project::finish_compaction(pr, plan);
+      // Every id below a dropped entry has moved, so the snapshots in the ring no longer mean what
+      // their planes do
+      app.undo.clear();
+      invalidate_view(app);
+      changed = true;
+    }
+  }
   app.modified |= changed;
   ImGui::End();
 }

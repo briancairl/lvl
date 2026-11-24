@@ -151,13 +151,17 @@ void colorize(
       Rgba c{0, 0, 0, 0};
       if (id != 0)
       {
+        // A retired entry reads as "none", which is what makes retiring one safe: the cells of a
+        // level that is not resident keep its id until a compaction, and must not draw as it
         if (layer.kind == LayerKind::kSemantic)
         {
-          c = (id < project.semantics.size()) ? project.semantics[id].color : id_color(id);
+          const bool known = id < project.semantics.size();
+          c = known ? (project.semantics[id].retired ? Rgba{0, 0, 0, 0} : project.semantics[id].color) : id_color(id);
         }
         else
         {
-          c = (id < project.materials.size()) ? project.materials[id].color : id_color(id);
+          const bool known = id < project.materials.size();
+          c = known ? (project.materials[id].retired ? Rgba{0, 0, 0, 0} : project.materials[id].color) : id_color(id);
         }
       }
       out.pixels[i] = c;

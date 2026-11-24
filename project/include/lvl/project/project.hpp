@@ -312,6 +312,52 @@ void remove_semantic(Project& project, level::Level& level, level::SemanticId id
 void remove_material(Project& project, level::Level& level, level::MaterialId id);
 
 /**
+ * @brief Where every catalog entry goes when the retired ones are dropped
+ *
+ * One entry per current id, in id order: its new id, or <code>kRetiredEntry</code> for one that is
+ * going. A plan is made once and then applied to every level of the project, which is what makes
+ * compaction all-or-nothing rather than a renumbering each level does for itself.
+ */
+inline constexpr std::uint16_t kRetiredEntry = 0xFFFFU;
+
+struct CatalogPlan
+{
+  explicit CatalogPlan(memory::Arena& arena) :
+      semantics{memory::ArenaAllocator<std::uint16_t>{arena}}, materials{memory::ArenaAllocator<std::uint16_t>{arena}}
+  {}
+
+  memory::Vector<std::uint16_t> semantics;
+  memory::Vector<std::uint16_t> materials;
+  /// How many entries of each the compaction would drop
+  std::size_t retired_semantics = 0;
+  std::size_t retired_materials = 0;
+};
+
+/// True if either catalog holds a retired entry, so there is anything to compact
+[[nodiscard]] bool needs_compaction(const Project& project);
+
+/// Fills <code>out</code> with where every entry would go (allocated from <code>out</code>'s arena)
+void plan_compaction(const Project& project, CatalogPlan& out);
+
+/**
+ * @brief Renumbers one level's semantic and material cells by <code>plan</code>
+ *
+ * A cell holding a retired entry becomes "none". Every level of the project must go through this
+ * with the same plan, including the resident one, before <code>finish_compaction</code> drops the
+ * entries -- that is the whole point of planning first.
+ */
+void apply_compaction(const CatalogPlan& plan, level::Level& level);
+
+/**
+ * @brief Drops the retired entries and renumbers everything the project itself holds
+ *
+ * Tile metadata, seasonal variants and the rule sets' WFC tiles. Called last, once every level has
+ * been through <code>apply_compaction</code>, because until then the plan's old ids are what the
+ * project's own vectors are indexed by.
+ */
+void finish_compaction(Project& project, const CatalogPlan& plan);
+
+/**
  * @brief How many cells, tiles, seasonal variants and WFC tiles of <code>level</code> use an entry
  *
  * Counts the one level given, for the same reason: the project's other levels are not loaded, so a

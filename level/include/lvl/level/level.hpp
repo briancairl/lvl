@@ -106,16 +106,6 @@ std::size_t find_layer(const Level& level, LayerKind kind);
  */
 void clear_tileset_refs(Level& level, TileSetId id);
 
-/**
- * @brief New value of an id cell once catalog entry <code>removed</code> is erased
- *
- * 0 ("none") if it was that entry, one less if it was after it, unchanged otherwise.
- */
-constexpr std::uint16_t remap_id(std::uint16_t v, std::uint16_t removed)
-{
-  return (v == removed) ? 0 : (v > removed ? static_cast<std::uint16_t>(v - 1) : v);
-}
-
 /// Applies <code>fn(std::uint16_t&)</code> to every cell of every layer of <code>kind</code>
 template <typename Fn> void for_each_id_cell(Level& level, LayerKind kind, Fn&& fn)
 {

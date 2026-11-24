@@ -309,6 +309,10 @@ void semantic_combo(const char* label, const project::Project& pr, int& id)
   {
     for (std::size_t i = 0; i < pr.semantics.size(); ++i)
     {
+      if (pr.semantics[i].retired)
+      {
+        continue;
+      }
       if (ImGui::Selectable(format<96>("%s##%zu", pr.semantics[i].name.c_str(), i), static_cast<int>(i) == id))
       {
         id = static_cast<int>(i);

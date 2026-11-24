@@ -103,6 +103,24 @@ struct SemanticType
 {
   Name name;
   Color color = {200, 200, 200, 255};
+  /**
+   * @brief Removed, but its id is still reserved (see project::remove_semantic)
+   *
+   * Catalog ids are stored in millions of layer cells across a project's levels, only one of which
+   * is resident, so removing an entry cannot renumber the ones after it. A retired entry keeps its
+   * place and reads as "none" everywhere, until "Compact catalogs" renumbers every level at once.
+   *
+   * Project bookkeeping, not part of the entry as a file carries it: it is written and read by the
+   * manifest alone (<code>project::save_project</code>), never by the shared JSON or binary
+   * serializers below. A standalone level, tileset or rules file is a self-contained snapshot whose
+   * entries are interned by name into whatever project reads it, so whether that project has an
+   * entry of that name retired is the project's business and not the file's -- which is why
+   * <code>project::intern_semantic</code> gives such a file the retired entry's id without bringing
+   * the entry back. Keeping it out of those serializers is also what leaves every existing file
+   * readable: the binary ones are positional, so a new field in them would move every byte after
+   * it.
+   */
+  bool retired = false;
 };
 
 /// An entry of the material catalog ("dirt", "stone", "snow", ...)
@@ -116,6 +134,8 @@ struct Material
   float speed = 1.0F;
   /// Footstep / impact sound key for the game
   Name sound;
+  /// Removed, but its id is still reserved; see SemanticType::retired
+  bool retired = false;
 };
 
 /**

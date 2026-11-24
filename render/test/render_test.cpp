@@ -141,6 +141,29 @@ TEST_F(Render, ExportPngs)
   memory::pop(scratch, tmp);
 }
 
+TEST_F(Render, ARetiredCatalogEntryDrawsAsNothing)
+{
+  // A retired entry keeps its id so the cells of a level that is not resident still mean something,
+  // which only works if it draws as "none" rather than as itself
+  const SemanticId grass = project::intern_semantic(*pr, "grass");
+  pr->semantics[grass].color = image::Rgba{10, 200, 30, 255};
+  const auto sem = add_layer(*level, LayerKind::kSemantic, "semantics");
+  auto& g = plane<IdGrid>(level->layers[sem]);
+  g.at(0, 0) = grass;
+  g.at(1, 0) = grass;
+
+  image::Image out = image::create(scratch, 6, 4);
+  render::colorize(*pr, level->layers[sem], out);
+  EXPECT_EQ(out.at(0, 0), (image::Rgba{10, 200, 30, 255}));
+
+  pr->semantics[grass].retired = true;
+  render::colorize(*pr, level->layers[sem], out);
+  EXPECT_EQ(out.at(0, 0), (image::Rgba{0, 0, 0, 0}));
+  EXPECT_EQ(out.at(1, 0), (image::Rgba{0, 0, 0, 0}));
+  // An unused cell was already nothing, and still is
+  EXPECT_EQ(out.at(2, 0), (image::Rgba{0, 0, 0, 0}));
+}
+
 TEST(Preview, Ramps)
 {
   EXPECT_EQ(render::terrain_ramp(0.0F), (image::Rgba{20, 40, 110, 255}));

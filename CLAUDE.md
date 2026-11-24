@@ -99,7 +99,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `remap_id`/`for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
 | `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
@@ -585,15 +585,38 @@ Rows of layers, semantic types, materials, seasons, path graphs, portals/markers
 start with a delete button (`delete_button`). `request_delete` records a `PendingDelete`, and
 `process_deletes` (once per frame, after every panel has drawn and never while a job runs) shows a
 confirmation dialog listing what else changes, then applies it; Shift+click skips the dialog.
-Deleting a catalog entry (`project::remove_semantic`/`remove_material`) turns everything that used it
-into "none" and renumbers later ids. `project::remove_tileset` is the same shape -- it drops the
-tileset and calls all four `clear_tileset_refs` overloads, for the open level and the three rule
-kinds -- but it returns a `Status` and
-**refuses outright** once the project has more than one member level, since the others are not
-resident to renumber. **Catalog removal only remaps the resident level**, and
-`project::semantic_uses`/`material_uses` only count that level, so the confirmation says "in this
-level" rather than claiming to know the project. A project with more than one level should not remove
-an entry until the catalogs stop renumbering.
+**Deleting a catalog entry retires it; it does not renumber.** Catalog ids are stored in millions of
+cells across a project's levels, only one of which is resident, so erasing an entry and shifting the
+ids after it would silently turn every sibling level's cells into something else.
+`project::remove_semantic`/`remove_material` therefore set `retired` on the entry and leave its id
+where it is. Everything the project itself holds is resident, so tile metadata, seasonal variants
+and the rule sets' WFC tiles are cleared outright, as are the open level's cells; a sibling's cells
+keep the id, and a retired entry reads as "none" everywhere (`render::colorize` draws it
+transparent), which is what makes leaving them safe.
+
+`project::intern_semantic`/`intern_material` give a retired entry's name its id back, so a file
+naming it does not append a duplicate -- but they deliberately do **not** un-retire it. Interning is
+what reading a file does, and a file must not quietly undo the project's decision to remove an
+entry. The catalogs panel lists a retired entry greyed as "(removed)" with a **Restore** button
+beside it, which is the one way back; hiding it would leave the user wondering why the ids below it
+never close up. Every picker skips retired entries, since nothing new should be given one.
+
+**Compaction is the only thing that renumbers**, and it is a deliberate act. It is planned once
+(`project::plan_compaction` -> a `CatalogPlan`: the new id of every entry, or `kRetiredEntry`),
+applied to every level of the project (`apply_compaction`), and only then are the entries dropped
+and the project's own references rewritten (`finish_compaction`) -- in that order, because until
+the last step the plan's old ids are what the project's vectors are indexed by. The catalogs panel
+offers it when `needs_compaction` says there is something to do, and clears the undo history, since
+every id below a dropped entry has moved out from under the snapshots in the ring. It currently
+refuses while the project has more than one member level, because rewriting the others needs level
+I/O per member; that becomes a job in phase 4, where the three model functions are already the right
+shape for it.
+
+`project::remove_tileset` keeps erasing and renumbering -- it drops the tileset and calls all four
+`clear_tileset_refs` overloads, for the open level and the three rule kinds -- but it returns a
+`Status` and **refuses outright** once the project has more than one member level, since the others
+are not resident to renumber. `project::semantic_uses`/`material_uses` only count the resident
+level, so the confirmation says "in this level" rather than claiming to know the project.
 
 ### Undo
 
@@ -655,13 +678,16 @@ one check to mark required:
   rule tiles, tilesets (added, found, removed with the level's references following, and refused
   once the project holds several levels),
   rule sets (found, added, interned by name, a level resolving to the set it names and falling back
-  when it names none or one that has gone, removal keeping at least one),
+  when it names none or one that has gone, removal keeping at least one), catalog removal retiring
+  an entry rather than moving the ids after it (what the project holds and the open level's cells
+  cleared, a sibling's left, interning the name again giving its id back without bringing it back),
+  compaction planned once and applied to every level together,
   and the manifest (round trip carrying the tilesets' and rule sets' own files, several rule sets
   each getting their own file and coming back in the order the manifest lists them, a part keeping
   the file it was given across a rename and a new one getting its own, saving elsewhere moving the
   project there, a named tileset file that has gone refusing the project, stable when written twice,
-  missing level files flagged, create/open, named after its folder, and every malformed shape
-  refused).
+  missing level files flagged, create/open, named after its folder, which entries are retired, and
+  every malformed shape refused).
 - `//procgen`: masked fills (a height band, a ground type, the two together, the scatter being even
   and staying put under a different mask, scatter weights deciding the shares (a weight of zero,
   negative weights, all-zero and equal weights coming to the same thing), regions and clipping,
@@ -684,7 +710,8 @@ one check to mark required:
   fallback (edges around painted centers, a path drawn one cell at a time, stability once the rules
   hold, corner fills with `diagonals`, tiles the rules do not know, rules that cannot express the
   shape).
-- `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export.
+- `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export,
+  a retired catalog entry drawing as nothing.
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
   worker's scratch), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
@@ -697,7 +724,8 @@ one check to mark required:
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
   layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of
-  a step, and redrawing changing nothing),
+  a step, and redrawing changing nothing), deleting a catalog entry retiring it and the project then
+  saying it has something to compact, compacting dropping exactly those entries,
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

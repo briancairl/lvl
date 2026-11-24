@@ -833,12 +833,15 @@ void smoke(App& app)
     {
       report(app, Status::error("deletes did not apply"));
     }
-    for (const auto& m : pr.materials)
+    // Removal retires the entry rather than erasing it, so the name is still there and the id
+    // after it has not moved; step 26 compacts and checks it really goes
+    if (!pr.materials[material].retired or !pr.semantics[semantic].retired)
     {
-      if (m.name == std::string_view{"snow"})
-      {
-        report(app, Status::error("material was not deleted"));
-      }
+      report(app, Status::error("deleting a catalog entry did not retire it"));
+    }
+    if (!project::needs_compaction(pr))
+    {
+      report(app, Status::error("the project does not report that it has something to compact"));
     }
     break;
   }
@@ -1403,7 +1406,50 @@ void smoke(App& app)
     app.rules_mode = RulesMode::kWfc;
     break;
   }
-  case 26:
+  case 26: {
+    // The catalog entries deleted in step 14 were retired, not erased: their ids stay reserved
+    // because the project's other levels are not loaded. Compacting is the deliberate act that
+    // renumbers every level at once, and the only thing that moves a catalog id.
+    project::Project& pr = *app.project;
+    level::Level& lv = *app.level;
+    if (!project::needs_compaction(pr))
+    {
+      report(app, Status::error("the deleted catalog entries were not retired"));
+    }
+    std::size_t retired = 0;
+    for (const auto& e : pr.semantics)
+    {
+      retired += e.retired ? 1U : 0U;
+    }
+    for (const auto& e : pr.materials)
+    {
+      retired += e.retired ? 1U : 0U;
+    }
+    const std::size_t before = pr.semantics.size() + pr.materials.size();
+    project::CatalogPlan plan{app.memory.frame};
+    project::plan_compaction(pr, plan);
+    project::apply_compaction(plan, lv);
+    project::finish_compaction(pr, plan);
+    app.undo.clear();
+    invalidate_view(app);
+    if (pr.semantics.size() + pr.materials.size() + retired != before)
+    {
+      report(app, Status::error("compacting dropped the wrong number of catalog entries"));
+    }
+    if (project::needs_compaction(pr))
+    {
+      report(app, Status::error("compacting left a retired entry behind"));
+    }
+    for (const auto& e : pr.materials)
+    {
+      if (e.name == std::string_view{"snow"})
+      {
+        report(app, Status::error("the retired material survived compacting"));
+      }
+    }
+    break;
+  }
+  case 27:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -1412,7 +1458,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 27:
+  case 28:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

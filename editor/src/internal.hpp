@@ -275,6 +275,12 @@ template <typename CatalogT> bool catalog_combo(const char* label, const Catalog
   {
     for (std::size_t i = 0; i < catalog.size(); ++i)
     {
+      // A retired entry keeps its id so the cells still holding it mean something, but nothing new
+      // should be given it
+      if (catalog[i].retired)
+      {
+        continue;
+      }
       ImGui::PushID(static_cast<int>(i));
       const auto& c = catalog[i].color;
       ImGui::ColorButton(

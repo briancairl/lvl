@@ -262,6 +262,10 @@ level::SemanticId intern_semantic(Project& project, std::string_view name)
   {
     if (project.semantics[i].name == name)
     {
+      // A retired entry of that name is still the entry that name means, so its id comes back and
+      // no duplicate is appended. It is deliberately *not* un-retired: interning is what reading a
+      // file does, and a file should not quietly undo the project's decision to remove an entry.
+      // The catalogs panel lists it as removed, with a button to bring it back.
       return static_cast<level::SemanticId>(i);
     }
   }
@@ -275,6 +279,7 @@ level::MaterialId intern_material(Project& project, std::string_view name)
   {
     if (project.materials[i].name == name)
     {
+      // As above: the id comes back, the retirement stays
       return static_cast<level::MaterialId>(i);
     }
   }
@@ -402,41 +407,149 @@ void remove_semantic(Project& project, level::Level& level, level::SemanticId id
 {
   LVL_ASSERT_GT(id, level::kNoSemantic) << "the 'none' semantic type can't be removed";
   LVL_ASSERT_LT(id, project.semantics.size());
-  project.semantics.erase(project.semantics.begin() + static_cast<std::ptrdiff_t>(id));
-  level::for_each_id_cell(level, level::LayerKind::kSemantic, [id](std::uint16_t& v) { v = level::remap_id(v, id); });
+  // Retired, not erased: the ids after this one must not move, because the project's other levels
+  // are not resident and their cells would keep an id that meant something else
+  project.semantics[id].retired = true;
+  // Everything the project itself holds is resident, so it is cleared outright
   for (auto& ts : project.tilesets)
   {
     for (auto& t : ts.tiles)
     {
-      t.semantic = level::remap_id(t.semantic, id);
+      t.semantic = (t.semantic == id) ? level::kNoSemantic : t.semantic;
     }
   }
   for (RuleSet& set : project.rules)
   {
     for (auto& t : set.wfc.tiles)
     {
-      t.semantic = level::remap_id(t.semantic, id);
+      t.semantic = (t.semantic == id) ? level::kNoSemantic : t.semantic;
     }
   }
+  // So are the open level's cells. Its siblings' keep the id, which reads as "none" everywhere
+  // because the entry is retired, until a compaction renumbers them all together.
+  level::for_each_id_cell(
+    level, level::LayerKind::kSemantic, [id](std::uint16_t& v) { v = (v == id) ? level::kNoSemantic : v; });
 }
 
 void remove_material(Project& project, level::Level& level, level::MaterialId id)
 {
   LVL_ASSERT_GT(id, level::kNoMaterial) << "the 'none' material can't be removed";
   LVL_ASSERT_LT(id, project.materials.size());
-  project.materials.erase(project.materials.begin() + static_cast<std::ptrdiff_t>(id));
-  level::for_each_id_cell(level, level::LayerKind::kMaterial, [id](std::uint16_t& v) { v = level::remap_id(v, id); });
+  project.materials[id].retired = true;
   for (auto& ts : project.tilesets)
   {
     for (auto& t : ts.tiles)
     {
-      t.material = level::remap_id(t.material, id);
+      t.material = (t.material == id) ? level::kNoMaterial : t.material;
     }
     for (auto& v : ts.seasonal)
     {
-      v.material = level::remap_id(v.material, id);
+      v.material = (v.material == id) ? level::kNoMaterial : v.material;
     }
   }
+  level::for_each_id_cell(
+    level, level::LayerKind::kMaterial, [id](std::uint16_t& v) { v = (v == id) ? level::kNoMaterial : v; });
+}
+
+namespace
+{
+
+/// Fills <code>plan</code> for one catalog: the new id of each entry, or kRetiredEntry
+template <typename T> std::size_t plan_one(const memory::Vector<T>& catalog, memory::Vector<std::uint16_t>& plan)
+{
+  plan.clear();
+  plan.reserve(catalog.size());
+  std::size_t retired = 0;
+  for (const T& entry : catalog)
+  {
+    // "none" is never retired, so index 0 always maps to 0
+    if (entry.retired)
+    {
+      plan.push_back(kRetiredEntry);
+      ++retired;
+    }
+    else
+    {
+      plan.push_back(static_cast<std::uint16_t>(plan.size() - retired));
+    }
+  }
+  return retired;
+}
+
+/// The new id of <code>v</code> under <code>plan</code>; 0 for a retired entry or an id off the end
+std::uint16_t planned(const memory::Vector<std::uint16_t>& plan, std::uint16_t v)
+{
+  if (v >= plan.size() or plan[v] == kRetiredEntry)
+  {
+    return 0;
+  }
+  return plan[v];
+}
+
+/// Drops the entries <code>plan</code> retires, keeping the rest in order
+template <typename T> void drop_retired(memory::Vector<T>& catalog, const memory::Vector<std::uint16_t>& plan)
+{
+  std::size_t out = 0;
+  for (std::size_t i = 0; i < catalog.size(); ++i)
+  {
+    if (i < plan.size() and plan[i] == kRetiredEntry)
+    {
+      continue;
+    }
+    catalog[out] = catalog[i];
+    ++out;
+  }
+  catalog.resize(out);
+}
+
+}  // namespace
+
+bool needs_compaction(const Project& project)
+{
+  const auto any = [](const auto& catalog) {
+    return std::any_of(catalog.begin(), catalog.end(), [](const auto& e) { return e.retired; });
+  };
+  return any(project.semantics) or any(project.materials);
+}
+
+void plan_compaction(const Project& project, CatalogPlan& out)
+{
+  out.retired_semantics = plan_one(project.semantics, out.semantics);
+  out.retired_materials = plan_one(project.materials, out.materials);
+}
+
+void apply_compaction(const CatalogPlan& plan, level::Level& level)
+{
+  level::for_each_id_cell(
+    level, level::LayerKind::kSemantic, [&plan](std::uint16_t& v) { v = planned(plan.semantics, v); });
+  level::for_each_id_cell(
+    level, level::LayerKind::kMaterial, [&plan](std::uint16_t& v) { v = planned(plan.materials, v); });
+}
+
+void finish_compaction(Project& project, const CatalogPlan& plan)
+{
+  // Everything the project holds, before the vectors the plan is indexed by are rewritten
+  for (auto& ts : project.tilesets)
+  {
+    for (auto& t : ts.tiles)
+    {
+      t.semantic = planned(plan.semantics, t.semantic);
+      t.material = planned(plan.materials, t.material);
+    }
+    for (auto& v : ts.seasonal)
+    {
+      v.material = planned(plan.materials, v.material);
+    }
+  }
+  for (RuleSet& set : project.rules)
+  {
+    for (auto& t : set.wfc.tiles)
+    {
+      t.semantic = planned(plan.semantics, t.semantic);
+    }
+  }
+  drop_retired(project.semantics, plan.semantics);
+  drop_retired(project.materials, plan.materials);
 }
 
 std::size_t semantic_uses(const Project& project, const level::Level& level, level::SemanticId id)

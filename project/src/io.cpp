@@ -107,6 +107,29 @@ void save_list(Json& j, std::string_view key, const memory::Vector<T>& values, s
   j[JsonString{key}] = std::move(array);
 }
 
+/**
+ * @brief Writes a catalog from index 1, with the manifest-only "retired" flag
+ *
+ * Retirement is the project's bookkeeping about an id space it owns, so it is written here and
+ * nowhere else -- see <code>level::SemanticType::retired</code> for why it stays out of the shared
+ * serializers. Omitted when false, so a project with nothing retired writes what it always did.
+ */
+template <typename T> void save_catalog(Json& j, std::string_view key, const memory::Vector<T>& values)
+{
+  Json array = Json::array();
+  for (std::size_t i = 1; i < values.size(); ++i)
+  {
+    Json element;
+    json::write(element, values[i]);
+    if (values[i].retired)
+    {
+      json::write(element, "retired", true);
+    }
+    array.push_back(std::move(element));
+  }
+  j[JsonString{key}] = std::move(array);
+}
+
 /// Reads catalog entries, interning them by name (a new entry takes its properties from the file)
 template <typename T, typename InternFn>
 bool load_catalog(json::Reader& r, const Json& j, std::string_view key, memory::Vector<T>& catalog, InternFn&& intern)
@@ -124,6 +147,11 @@ bool load_catalog(json::Reader& r, const Json& j, std::string_view key, memory::
   {
     T entry;
     if (!r.convert(element, entry, key))
+    {
+      return false;
+    }
+    r.get_optional(element, "retired", entry.retired);
+    if (!r.ok())
     {
       return false;
     }
@@ -369,8 +397,8 @@ Status save_project(const char* path, Project& project, level::IoContext& ctx)
         j = Json::object();
         write_format(j);
         json::write(j, "name", project.name);
-        save_list(j, "semantics", project.semantics, 1);
-        save_list(j, "materials", project.materials, 1);
+        save_catalog(j, "semantics", project.semantics);
+        save_catalog(j, "materials", project.materials);
         save_list(j, "seasons", project.seasons);
         save_files(j, "tilesets", project.tileset_files);
         save_files(j, "rules", project.rule_files);

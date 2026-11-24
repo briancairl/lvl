@@ -423,7 +423,7 @@ TEST(Index, RemovingAMemberCompactsTheNameTable)
   EXPECT_EQ(project::portals_of(p, p.levels[0])[0], std::string_view{"b1"});
 }
 
-TEST(Catalogs, RemovingAnEntryRemapsEverythingInTheResidentLevelThatUsesIt)
+TEST(Catalogs, RemovingAnEntryRetiresItAndMovesNoOtherId)
 {
   Fixture f;
   project::Project p{f.project_arena};
@@ -460,21 +460,101 @@ TEST(Catalogs, RemovingAnEntryRemapsEverythingInTheResidentLevelThatUsesIt)
   EXPECT_EQ(project::material_uses(p, level, snow), 3UL);
 
   project::remove_semantic(p, level, road);
-  ASSERT_EQ(p.semantics.size(), 2UL);
-  EXPECT_EQ(p.semantics[1].name, std::string_view{"river"});
+  // The entry keeps its place, so nothing after it moves: the project's other levels are not
+  // resident, and their cells would otherwise keep an id that had come to mean something else
+  ASSERT_EQ(p.semantics.size(), 3UL);
+  EXPECT_TRUE(p.semantics[road].retired);
+  EXPECT_EQ(p.semantics[road].name, std::string_view{"road"});
+  EXPECT_FALSE(p.semantics[river].retired);
+  EXPECT_EQ(p.semantics[river].name, std::string_view{"river"});
+  // What the project and the open level hold is cleared outright
   EXPECT_EQ(level::plane<level::IdGrid>(level.layers[sem]).at(0, 0), level::kNoSemantic);
-  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[sem]).at(1, 0), 1);
-  EXPECT_EQ(ts.tiles[0].semantic, 1);
+  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[sem]).at(1, 0), river);
+  EXPECT_EQ(ts.tiles[0].semantic, river);
   EXPECT_EQ(ts.tiles[1].semantic, level::kNoSemantic);
-  EXPECT_EQ(p.rules[0].wfc.tiles[w].semantic, 1);
+  EXPECT_EQ(p.rules[0].wfc.tiles[w].semantic, river);
 
   project::remove_material(p, level, dirt);
-  ASSERT_EQ(p.materials.size(), 2UL);
+  ASSERT_EQ(p.materials.size(), 3UL);
+  EXPECT_TRUE(p.materials[dirt].retired);
   EXPECT_EQ(level::plane<level::IdGrid>(level.layers[mat]).at(0, 0), level::kNoMaterial);
-  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[mat]).at(1, 0), 1);
-  EXPECT_EQ(ts.tiles[0].material, 1);
-  EXPECT_EQ(ts.seasonal[0].material, 1);
-  EXPECT_EQ(project::material_uses(p, level, 1), 3UL);
+  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[mat]).at(1, 0), snow);
+  EXPECT_EQ(ts.tiles[0].material, snow);
+  EXPECT_EQ(ts.seasonal[0].material, snow);
+  EXPECT_EQ(project::material_uses(p, level, snow), 3UL);
+
+  // Interning the name again is that entry's id, not a duplicate -- and does not bring it back:
+  // reading a file is what interns, and a file must not undo the project's decision to remove it
+  EXPECT_EQ(project::intern_semantic(p, "road"), road);
+  EXPECT_TRUE(p.semantics[road].retired);
+  EXPECT_EQ(p.semantics.size(), 3UL);
+}
+
+TEST(Catalogs, CompactingRenumbersEveryLevelAtOnce)
+{
+  Fixture f;
+  project::Project p{f.project_arena};
+  project::create_default(p, "shoreline", "/p");
+  memory::Arena doc_a;
+  memory::Arena doc_b;
+  memory::push(f.shared, doc_a, 4UL << 20, "doc-a");
+  memory::push(f.shared, doc_b, 4UL << 20, "doc-b");
+  level::Level open{doc_a};
+  level::Level sibling{doc_b};
+  for (level::Level* l : {&open, &sibling})
+  {
+    level::create_default(*l, level::Settings{.extents = {3, 1}});
+    level::add_layer(*l, level::LayerKind::kSemantic, "semantics");
+  }
+
+  const level::SemanticId road = project::intern_semantic(p, "road");
+  const level::SemanticId river = project::intern_semantic(p, "river");
+  const level::SemanticId rock = project::intern_semantic(p, "rock");
+  const auto sem_of = [](level::Level& l) -> level::IdGrid& {
+    return level::plane<level::IdGrid>(l.layers[level::find_layer(l, level::LayerKind::kSemantic)]);
+  };
+  for (level::Level* l : {&open, &sibling})
+  {
+    sem_of(*l).at(0, 0) = road;
+    sem_of(*l).at(1, 0) = river;
+    sem_of(*l).at(2, 0) = rock;
+  }
+  const level::TileSetId id = project::add_tileset(p, "t");
+  p.tilesets[id].image_width = 32;
+  p.tilesets[id].image_height = 16;
+  level::reslice(p.tilesets[id]);
+  p.tilesets[id].tiles[0].semantic = rock;
+
+  EXPECT_FALSE(project::needs_compaction(p));
+  project::remove_semantic(p, open, river);
+  EXPECT_TRUE(project::needs_compaction(p));
+  // The sibling is not resident, so its cells still name the retired entry and the one after it
+  EXPECT_EQ(sem_of(sibling).at(1, 0), river);
+  EXPECT_EQ(sem_of(sibling).at(2, 0), rock);
+
+  // Planned once, then applied to every level, and only then do the entries go -- until then the
+  // plan's old ids are what the project's own vectors are indexed by
+  project::CatalogPlan plan{f.scratch};
+  project::plan_compaction(p, plan);
+  EXPECT_EQ(plan.retired_semantics, 1UL);
+  EXPECT_EQ(plan.retired_materials, 0UL);
+  project::apply_compaction(plan, open);
+  project::apply_compaction(plan, sibling);
+  project::finish_compaction(p, plan);
+
+  ASSERT_EQ(p.semantics.size(), 3UL);
+  EXPECT_EQ(p.semantics[1].name, std::string_view{"road"});
+  EXPECT_EQ(p.semantics[2].name, std::string_view{"rock"});
+  EXPECT_FALSE(project::needs_compaction(p));
+  // Both levels moved together, and the retired entry's cells are "none"
+  for (level::Level* l : {&open, &sibling})
+  {
+    EXPECT_EQ(sem_of(*l).at(0, 0), 1) << "road";
+    EXPECT_EQ(sem_of(*l).at(1, 0), level::kNoSemantic) << "the removed entry";
+    EXPECT_EQ(sem_of(*l).at(2, 0), 2) << "rock";
+  }
+  // As did what the project itself holds
+  EXPECT_EQ(p.tilesets[id].tiles[0].semantic, 2);
 }
 
 TEST(Catalogs, RemovingATilesetDoesBothHalvesAndRefusesAcrossSeveralLevels)
@@ -866,6 +946,52 @@ TEST(Manifest, ManyRuleSetsEachGetTheirOwnFile)
   EXPECT_EQ(read.rules[1].wfc.name, std::string_view{"cave"});
   EXPECT_EQ(read.rules[0].wfc.tiles.size(), 1U);
   EXPECT_EQ(read.rules[1].wfc.tiles.size(), 1U);
+}
+
+TEST(Manifest, CarriesWhichCatalogEntriesAreRetired)
+{
+  Fixture f;
+  const std::string root = temp_dir("manifest_retired");
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  const std::string manifest = root + "/project.json";
+
+  project::Project p{f.project_arena};
+  populate(p, f.scratch, root);
+  memory::Arena doc;
+  memory::push(f.shared, doc, 4UL << 20, "doc");
+  level::Level level{doc};
+  level::create_default(level, level::Settings{.extents = {1, 1}});
+  // Already there (populate interned it), so this finds it rather than adding one
+  const level::SemanticId grass = project::intern_semantic(p, "grass");
+  ASSERT_EQ(grass, 1);
+  project::remove_semantic(p, level, grass);
+  ASSERT_TRUE(project::save_project(manifest.c_str(), p, f.ctx).ok);
+
+  memory::Arena other;
+  memory::push(f.shared, other, 4UL << 20, "project-b");
+  project::Project read{other};
+  ASSERT_TRUE(project::load_project(manifest.c_str(), read, f.ctx).ok);
+  // The id is still reserved, and still says why
+  ASSERT_EQ(read.semantics.size(), p.semantics.size());
+  EXPECT_EQ(read.semantics[grass].name, std::string_view{"grass"});
+  EXPECT_TRUE(read.semantics[grass].retired);
+  EXPECT_FALSE(read.semantics[grass + 1].retired);
+  EXPECT_TRUE(project::needs_compaction(read));
+
+  // The key is written only for the entry that has it, so a project with nothing retired writes
+  // exactly what it always did
+  memory::Scope scope{f.scratch};
+  char* text = nullptr;
+  std::size_t size = 0;
+  ASSERT_TRUE(file::read(manifest.c_str(), f.scratch, text, size).ok);
+  const std::string_view written{text, size};
+  std::size_t occurrences = 0;
+  for (std::size_t at = written.find("\"retired\""); at != std::string_view::npos;
+       at = written.find("\"retired\"", at + 1))
+  {
+    ++occurrences;
+  }
+  EXPECT_EQ(occurrences, 1U);
 }
 
 TEST(Manifest, RefusesAProjectWhoseTilesetFileIsGone)
