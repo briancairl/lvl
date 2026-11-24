@@ -57,6 +57,8 @@ enum class Kind : std::uint32_t
   kTileSet = 2,
   kWfcRules = 3,
   kPathGraph = 4,
+  /// A level whose shared data (catalogs, seasons, tilesets, rule sets) lives in its project
+  kProjectLevel = 5,
   kTest = 0xFFFF,
 };
 

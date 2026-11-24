@@ -1,6 +1,7 @@
 // C++ Standard Library
 #include <cmath>
 #include <cstdint>
+#include <new>
 #include <string>
 
 // GTest
@@ -8,6 +9,7 @@
 
 // LVL
 #include "lvl/editor/jobs.hpp"
+#include "lvl/project/project.hpp"
 
 using namespace lvl;
 using namespace lvl::level;
@@ -44,26 +46,25 @@ protected:
   void SetUp() override
   {
     memory::create(root, 768UL << 20, "root");
-    memory::push(root, doc, 16UL << 20, "doc");
+    memory::push(root, proj, 16UL << 20, "proj");
     memory::push(root, assets, 64UL << 20, "assets");
     memory::push(root, work, 256UL << 20, "work");
-    level = new (storage) Level{doc};
-    create_default(*level, Settings{});
+    pr = new (storage) project::Project{proj};
     write_png(big, 2048, 1700, work);
     write_png(small_a, 64, 32, work);
     write_png(small_b, 48, 48, work);
     for (const auto* p : {&big, &small_a, &small_b})
     {
-      const TileSetId id = add_tileset(*level, "ts");
-      level->tilesets[id].image.assign(*p);
+      const TileSetId id = project::add_tileset(*pr, "ts");
+      pr->tilesets[id].image.assign(*p);
     }
-    add_tileset(*level, "no image");
-    const TileSetId missing = add_tileset(*level, "missing");
-    level->tilesets[missing].image.assign("/nonexistent/atlas.png");
+    project::add_tileset(*pr, "no image");
+    const TileSetId missing = project::add_tileset(*pr, "missing");
+    pr->tilesets[missing].image.assign("/nonexistent/atlas.png");
   }
   void TearDown() override
   {
-    level->~Level();
+    pr->~Project();
     memory::destroy(root);
   }
 
@@ -78,13 +79,13 @@ protected:
   }
 
   memory::Arena root;
-  memory::Arena doc;
+  memory::Arena proj;
   memory::Arena assets;
   memory::Arena work;
   memory::Arena jobs;
   editor::JobMemory memory;
-  alignas(Level) unsigned char storage[sizeof(Level)];
-  Level* level = nullptr;
+  alignas(project::Project) unsigned char storage[sizeof(project::Project)] = {};
+  project::Project* pr = nullptr;
   const std::string big = temp("big_atlas.png");
   const std::string small_a = temp("small_a.png");
   const std::string small_b = temp("small_b.png");
@@ -99,14 +100,20 @@ protected:
     memory::create(root, 512UL << 20, "root");
     memory::push(root, doc_a, 48UL << 20, "doc_a");
     memory::push(root, doc_b, 48UL << 20, "doc_b");
-    memory::push(root, work, 384UL << 20, "work");
+    memory::push(root, proj_a, 8UL << 20, "proj_a");
+    memory::push(root, proj_b, 8UL << 20, "proj_b");
+    memory::push(root, work, 376UL << 20, "work");
     source = new (storage_a) Level{doc_a};
     target = new (storage_b) Level{doc_b};
+    pr_a = new (project_storage_a) project::Project{proj_a};
+    pr_b = new (project_storage_b) project::Project{proj_b};
   }
   void TearDown() override
   {
     source->~Level();
     target->~Level();
+    pr_a->~Project();
+    pr_b->~Project();
     memory::destroy(root);
   }
 
@@ -122,12 +129,18 @@ protected:
   memory::Arena root;
   memory::Arena doc_a;
   memory::Arena doc_b;
+  memory::Arena proj_a;
+  memory::Arena proj_b;
   memory::Arena work;
   editor::JobMemory memory;
   alignas(Level) unsigned char storage_a[sizeof(Level)];
   alignas(Level) unsigned char storage_b[sizeof(Level)];
+  alignas(project::Project) unsigned char project_storage_a[sizeof(project::Project)] = {};
+  alignas(project::Project) unsigned char project_storage_b[sizeof(project::Project)] = {};
   Level* source = nullptr;
   Level* target = nullptr;
+  project::Project* pr_a = nullptr;
+  project::Project* pr_b = nullptr;
 };
 
 }  // namespace
@@ -161,10 +174,10 @@ TEST_F(LevelJobs, SavesAndLoadsLayersBiggerThanAWorkersScratch)
     ASSERT_EQ(ctx.shared, &memory.general);
 
     const auto path = temp("job_level.json");
-    const auto saved = save_level(path.c_str(), *source, ctx);
+    const auto saved = save_level(path.c_str(), *pr_a, *source, ctx);
     ASSERT_TRUE(saved.ok) << saved;
 
-    const auto status = load_level(path.c_str(), *target, ctx);
+    const auto status = load_level(path.c_str(), *pr_b, *target, ctx);
     ASSERT_TRUE(status.ok) << status;
     ASSERT_EQ(target->layers.size(), source->layers.size());
     const auto& reloaded = plane<ScalarGrid>(target->layers[0]);
@@ -185,7 +198,7 @@ TEST_F(AtlasLoading, LargeAtlasLoadsDespiteSmallWorkerArenas)
   jobs::Progress progress;
   progress.reset(1);
   progress.advance();  // as when a level load came first
-  editor::load_atlases(*level, assets, memory, out, &progress);
+  editor::load_atlases(*pr, assets, memory, out, &progress);
   ASSERT_EQ(out.count, 5UL);
   EXPECT_TRUE(out.status[0].ok) << out.status[0];
   EXPECT_EQ(out.images[0].width, 2048);
@@ -208,7 +221,7 @@ TEST_F(AtlasLoading, TooLittleJobMemoryIsReportedPerAtlas)
   // The general arena can't hold the big atlas's decode buffers: an error for it, the rest load
   partition_jobs(40UL << 20);
   editor::AtlasImages out;
-  editor::load_atlases(*level, assets, memory, out, nullptr);
+  editor::load_atlases(*pr, assets, memory, out, nullptr);
   EXPECT_FALSE(out.status[0].ok);
   EXPECT_NE(out.status[0].message.view().find("--memory"), std::string_view::npos) << out.status[0];
   EXPECT_TRUE(out.images[0].empty());
@@ -222,7 +235,7 @@ TEST_F(AtlasLoading, TooLittleAssetMemoryIsReportedPerAtlas)
   memory::Arena small_assets;
   memory::push(work, small_assets, 1UL << 20, "small-assets");
   editor::AtlasImages out;
-  editor::load_atlases(*level, small_assets, memory, out, nullptr);
+  editor::load_atlases(*pr, small_assets, memory, out, nullptr);
   EXPECT_FALSE(out.status[0].ok);
   EXPECT_NE(out.status[0].message.view().find("asset memory"), std::string_view::npos) << out.status[0];
   EXPECT_TRUE(out.status[1].ok) << out.status[1];

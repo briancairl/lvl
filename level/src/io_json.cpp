@@ -234,7 +234,7 @@ bool load_collision(json::Reader& r, const Json& j, std::uint8_t& mask)
   return true;
 }
 
-void save_tileset(Json& j, const Level& level, const TileSet& ts)
+void save_tileset(Json& j, const project::Project& project, const TileSet& ts)
 {
   j = Json::object();
   json::write(j, "name", ts.name);
@@ -262,11 +262,11 @@ void save_tileset(Json& j, const Level& level, const TileSet& ts)
     }
     if (info.semantic != kNoSemantic)
     {
-      json::write(t, "semantic", level.semantics[info.semantic].name);
+      json::write(t, "semantic", project.semantics[info.semantic].name);
     }
     if (info.material != kNoMaterial)
     {
-      json::write(t, "material", level.materials[info.material].name);
+      json::write(t, "material", project.materials[info.material].name);
     }
     if (info.collision != collision::kNone)
     {
@@ -304,14 +304,14 @@ void save_tileset(Json& j, const Level& level, const TileSet& ts)
     json::write(e, "alternate", v.alternate);
     if (v.material != kNoMaterial)
     {
-      json::write(e, "material", level.materials[v.material].name);
+      json::write(e, "material", project.materials[v.material].name);
     }
     seasonal.push_back(std::move(e));
   }
   j["seasonal"] = std::move(seasonal);
 }
 
-bool load_tileset(json::Reader& r, const Json& j, Level& level, TileSet& ts)
+bool load_tileset(json::Reader& r, const Json& j, project::Project& project, TileSet& ts)
 {
   r.object(j, "tileset");
   r.get(j, "name", ts.name);
@@ -339,8 +339,8 @@ bool load_tileset(json::Reader& r, const Json& j, Level& level, TileSet& ts)
     }
     return 0;
   };
-  const auto semantic = [&level](std::string_view name) { return intern_semantic(level, name); };
-  const auto material = [&level](std::string_view name) { return intern_material(level, name); };
+  const auto semantic = [&project](std::string_view name) { return project::intern_semantic(project, name); };
+  const auto material = [&project](std::string_view name) { return project::intern_material(project, name); };
 
   const Json empty = Json::array();
   const auto list = [&](std::string_view key) -> const Json& {
@@ -414,9 +414,8 @@ bool load_tileset(json::Reader& r, const Json& j, Level& level, TileSet& ts)
 // WFC rules (tiles referenced by tileset name)
 // -------------------------------------------------------------------------------------------------
 
-void save_wfc(Json& j, const Level& level)
+void save_wfc(Json& j, const project::Project& project, const WfcRules& rules)
 {
-  const WfcRules& rules = level.wfc;
   j = Json::object();
   json::write(j, "name", rules.name);
   json::write(j, "diagonals", rules.diagonals);
@@ -424,14 +423,14 @@ void save_wfc(Json& j, const Level& level)
   for (const auto& t : rules.tiles)
   {
     Json e = Json::object();
-    json::write(e, "tileset", level.tilesets[t.tile.tileset].name);
+    json::write(e, "tileset", project.tilesets[t.tile.tileset].name);
     json::write(e, "tile", t.tile.tile);
     json::write(e, "weight", t.weight);
     json::write(e, "height", std::array<float, 2>{t.height_min, t.height_max});
     json::write(e, "water", t.water);
     if (t.semantic != kNoSemantic)
     {
-      json::write(e, "semantic", level.semantics[t.semantic].name);
+      json::write(e, "semantic", project.semantics[t.semantic].name);
     }
     tiles.push_back(std::move(e));
   }
@@ -448,9 +447,8 @@ void save_wfc(Json& j, const Level& level)
   j["adjacency"] = std::move(adjacency);
 }
 
-bool load_wfc(json::Reader& r, const Json& j, Level& level)
+bool load_wfc(json::Reader& r, const Json& j, project::Project& project, WfcRules& rules)
 {
-  WfcRules& rules = level.wfc;
   rules.tiles.clear();
   rules.adjacency.clear();
   r.object(j, "wfc");
@@ -484,15 +482,15 @@ bool load_wfc(json::Reader& r, const Json& j, Level& level)
       return false;
     }
     const auto ts = std::find_if(
-      level.tilesets.begin(), level.tilesets.end(), [&tileset](const TileSet& s) { return s.name == tileset; });
-    if (ts == level.tilesets.end())
+      project.tilesets.begin(), project.tilesets.end(), [&tileset](const TileSet& s) { return s.name == tileset; });
+    if (ts == project.tilesets.end())
     {
       return r.fail("WFC tile refers to unknown tileset '%s'", tileset.c_str());
     }
-    t.tile.tileset = static_cast<TileSetId>(ts - level.tilesets.begin());
+    t.tile.tileset = static_cast<TileSetId>(ts - project.tilesets.begin());
     t.height_min = band[0];
     t.height_max = band[1];
-    t.semantic = semantic.empty() ? kNoSemantic : intern_semantic(level, semantic.view());
+    t.semantic = semantic.empty() ? kNoSemantic : project::intern_semantic(project, semantic.view());
     rules.tiles.push_back(t);
   }
   for (const auto& e : *adjacency)
@@ -523,11 +521,11 @@ bool load_wfc(json::Reader& r, const Json& j, Level& level)
 // -------------------------------------------------------------------------------------------------
 
 /// Index of the tileset named <code>name</code>, or kNoTileSet
-TileSetId tileset_named(const Level& level, const Name& name)
+TileSetId tileset_named(const TileSets& tilesets, const Name& name)
 {
-  for (std::size_t i = 0; i < level.tilesets.size(); ++i)
+  for (std::size_t i = 0; i < tilesets.size(); ++i)
   {
-    if (level.tilesets[i].name == name)
+    if (tilesets[i].name == name)
     {
       return static_cast<TileSetId>(i);
     }
@@ -535,10 +533,10 @@ TileSetId tileset_named(const Level& level, const Name& name)
   return kNoTileSet;
 }
 
-void save_auto_tiles(Json& j, const Level& level)
+void save_auto_tiles(Json& j, const TileSets& tilesets, const AutoTileRules& rules)
 {
   j = Json::array();
-  for (const AutoTerrain& terrain : level.auto_tiles.terrains)
+  for (const AutoTerrain& terrain : rules.terrains)
   {
     Json t = Json::object();
     json::write(t, "name", terrain.name);
@@ -558,7 +556,7 @@ void save_auto_tiles(Json& j, const Level& level)
         }
       }
       e["neighbors"] = std::move(neighbors);
-      json::write(e, "tileset", level.tilesets[v.tile.tileset].name);
+      json::write(e, "tileset", tilesets[v.tile.tileset].name);
       json::write(e, "tile", v.tile.tile);
       variants.push_back(std::move(e));
     }
@@ -567,9 +565,14 @@ void save_auto_tiles(Json& j, const Level& level)
   }
 }
 
-bool load_auto_tiles(json::Reader& r, const Json& j, Level& level)
+bool load_auto_tiles(
+  json::Reader& r,
+  const Json& j,
+  const TileSets& tilesets,
+  memory::Arena& arena,
+  AutoTileRules& rules)
 {
-  level.auto_tiles.terrains.clear();
+  rules.terrains.clear();
   if (!r.array(j, "auto_tiles"))
   {
     return false;
@@ -582,7 +585,7 @@ bool load_auto_tiles(json::Reader& r, const Json& j, Level& level)
     {
       return false;
     }
-    AutoTerrain& terrain = level.auto_tiles.terrains[add_terrain(level.auto_tiles, *level.arena, name.view())];
+    AutoTerrain& terrain = rules.terrains[add_terrain(rules, arena, name.view())];
     r.get_optional(t, "neighborhood", terrain.neighborhood);
     r.get_optional(t, "expand", terrain.expand);
     if (!r.ok())
@@ -624,7 +627,7 @@ bool load_auto_tiles(json::Reader& r, const Json& j, Level& level)
         r.convert(n, d, "neighbors");
         mask = static_cast<NeighborMask>(mask | mask_of(d));
       }
-      tile.tileset = tileset_named(level, tileset);
+      tile.tileset = tileset_named(tilesets, tileset);
       if (!r.ok())
       {
         return false;
@@ -639,10 +642,10 @@ bool load_auto_tiles(json::Reader& r, const Json& j, Level& level)
   return r.ok();
 }
 
-void save_steps(Json& j, const Level& level)
+void save_steps(Json& j, const TileSets& tilesets, const StepRules& rules)
 {
   j = Json::array();
-  for (const StepTerrain& terrain : level.steps.terrains)
+  for (const StepTerrain& terrain : rules.terrains)
   {
     Json t = Json::object();
     json::write(t, "name", terrain.name);
@@ -660,7 +663,7 @@ void save_steps(Json& j, const Level& level)
       }
       Json e = Json::object();
       json::write(e, "type", static_cast<StepType>(i));
-      json::write(e, "tileset", level.tilesets[tile.tileset].name);
+      json::write(e, "tileset", tilesets[tile.tileset].name);
       json::write(e, "tile", tile.tile);
       tiles.push_back(std::move(e));
     }
@@ -669,9 +672,9 @@ void save_steps(Json& j, const Level& level)
   }
 }
 
-bool load_steps(json::Reader& r, const Json& j, Level& level)
+bool load_steps(json::Reader& r, const Json& j, const TileSets& tilesets, StepRules& rules)
 {
-  level.steps.terrains.clear();
+  rules.terrains.clear();
   if (!r.array(j, "steps"))
   {
     return false;
@@ -684,7 +687,7 @@ bool load_steps(json::Reader& r, const Json& j, Level& level)
     {
       return false;
     }
-    StepTerrain& terrain = level.steps.terrains[add_step_terrain(level.steps, name.view())];
+    StepTerrain& terrain = rules.terrains[add_step_terrain(rules, name.view())];
     r.get_optional(t, "level_lo", terrain.level_lo);
     r.get_optional(t, "level_hi", terrain.level_hi);
     if (!r.ok())
@@ -708,7 +711,7 @@ bool load_steps(json::Reader& r, const Json& j, Level& level)
       r.get(e, "type", type);
       r.get(e, "tileset", tileset);
       r.get(e, "tile", tile.tile);
-      tile.tileset = tileset_named(level, tileset);
+      tile.tileset = tileset_named(tilesets, tileset);
       if (!r.ok())
       {
         return false;
@@ -897,15 +900,15 @@ bool load_objects(json::Reader& r, const Json& j, ObjectRecords& records)
 // -------------------------------------------------------------------------------------------------
 
 /// Widest text one cell of a layer of <code>kind</code> encodes to, comma included
-std::size_t cell_width(const Level& level, LayerKind kind)
+std::size_t cell_width(const TileSets& tilesets, LayerKind kind)
 {
   switch (plane_index(kind))
   {
   case 0: {
     // "-1" for an empty cell, else tileset * 65536 + tile, so as wide as the last tileset's cells
-    const std::int64_t widest = level.tilesets.empty()
+    const std::int64_t widest = tilesets.empty()
       ? 0
-      : static_cast<std::int64_t>(level.tilesets.size() - 1) * 65536 + std::numeric_limits<TileIndex>::max();
+      : static_cast<std::int64_t>(tilesets.size() - 1) * 65536 + std::numeric_limits<TileIndex>::max();
     std::size_t digits = 1;
     for (std::int64_t v = widest; v >= 10; v /= 10)
     {
@@ -933,9 +936,9 @@ std::size_t cell_width(const Level& level, LayerKind kind)
  * punctuation run to a little over 300 bytes with every field at its widest, and a name's every
  * character could need escaping.
  */
-std::size_t encoded_bound(const Level& level, const Layer& layer)
+std::size_t encoded_bound(const TileSets& tilesets, const Layer& layer)
 {
-  return 512 + 6 * layer.name.size() + extents(layer).count() * cell_width(level, layer.kind);
+  return 512 + 6 * layer.name.size() + extents(layer).count() * cell_width(tilesets, layer.kind);
 }
 
 /**
@@ -1364,7 +1367,8 @@ template <typename ReadFn> Status read_document(const char* path, IoContext& ctx
 // Level
 // -------------------------------------------------------------------------------------------------
 
-Status save_level_json(const char* path, const Level& level, IoContext& ctx)
+Status
+save_level_json(const char* path, const project::Project& project, const Level& level, IoContext& ctx, LevelScope scope)
 {
   const std::size_t layer_count = level.layers.size();
   progress_reset(ctx, layer_count * 2 + 2);
@@ -1379,24 +1383,34 @@ Status save_level_json(const char* path, const Level& level, IoContext& ctx)
   file::Writer writer;
   LVL_RETURN_IF_ERROR(writer.open(path));
   LVL_RETURN_IF_ERROR(with_json(main, [&](IoWorker&) -> Status {
-    json::Scope scope;
+    json::Scope json_scope;
     Json j = Json::object();
     write_format(j, kLevelFormat);
     json::write(j, "settings", level.settings);
-    save_list(j, "semantics", level.semantics, 1);
-    save_list(j, "materials", level.materials, 1);
-    save_list(j, "seasons", level.seasons);
-    Json tilesets = Json::array();
-    for (const auto& ts : level.tilesets)
+    const project::RuleSet& rules = project.rules[project::rules_of(project, level)];
+    if (scope == LevelScope::kStandalone)
     {
-      Json e;
-      save_tileset(e, level, ts);
-      tilesets.push_back(std::move(e));
+      save_list(j, "semantics", project.semantics, 1);
+      save_list(j, "materials", project.materials, 1);
+      save_list(j, "seasons", project.seasons);
+      Json tilesets = Json::array();
+      for (const auto& ts : project.tilesets)
+      {
+        Json e;
+        save_tileset(e, project, ts);
+        tilesets.push_back(std::move(e));
+      }
+      j["tilesets"] = std::move(tilesets);
+      // The one set this level uses, which names itself, so the file need not say which it is
+      save_wfc(j["wfc"], project, rules.wfc);
+      save_auto_tiles(j["auto_tiles"], project.tilesets, rules.auto_tiles);
+      save_steps(j["steps"], project.tilesets, rules.steps);
     }
-    j["tilesets"] = std::move(tilesets);
-    save_wfc(j["wfc"], level);
-    save_auto_tiles(j["auto_tiles"], level);
-    save_steps(j["steps"], level);
+    else
+    {
+      // Nothing here names the set, so the level has to
+      json::write(j, "rules", rules.wfc.name);
+    }
     save_paths(j["paths"], level, records);
     save_objects(j, records);
     const JsonString text = json::dump(j, 2);
@@ -1422,7 +1436,7 @@ Status save_level_json(const char* path, const Level& level, IoContext& ctx)
     std::size_t count = 0;
     while (count < workers and first + count < layer_count)
     {
-      const std::size_t bound = encoded_bound(level, level.layers[first + count]);
+      const std::size_t bound = encoded_bound(project.tilesets, level.layers[first + count]);
       if (bound + 2UL * memory::kSubArenaAlignment > memory::available(shared))
       {
         break;
@@ -1472,7 +1486,7 @@ Status save_level_json(const char* path, const Level& level, IoContext& ctx)
   return status;
 }
 
-Status load_level_json(const char* path, Level& level, IoContext& ctx)
+Status load_level_json(const char* path, project::Project& project, Level& level, IoContext& ctx)
 {
   IoWorker& main = ctx.workers[0];
   memory::Arena& shared = shared_arena(ctx);
@@ -1515,46 +1529,63 @@ Status load_level_json(const char* path, Level& level, IoContext& ctx)
     json::Reader r;
     check_format(r, j, kLevelFormat);
     r.get(j, "settings", level.settings);
-    load_catalog(
-      r, j, "semantics", level.semantics, [&level](std::string_view n) { return intern_semantic(level, n); });
-    load_catalog(
-      r, j, "materials", level.materials, [&level](std::string_view n) { return intern_material(level, n); });
+    load_catalog(r, j, "semantics", project.semantics, [&project](std::string_view n) {
+      return project::intern_semantic(project, n);
+    });
+    load_catalog(r, j, "materials", project.materials, [&project](std::string_view n) {
+      return project::intern_material(project, n);
+    });
     if (const auto seasons = j.find("seasons"); r.ok() and seasons != j.end() and r.array(*seasons, "seasons"))
     {
-      level.seasons.clear();
+      project.seasons.clear();
       for (const auto& e : *seasons)
       {
         Season season;
         r.convert(e, season, "seasons");
-        level.seasons.push_back(season);
+        project.seasons.push_back(season);
       }
-      if (level.seasons.empty())
+      if (project.seasons.empty())
       {
-        level.seasons.push_back(Season{.name = "default"});
+        project.seasons.push_back(Season{.name = "default"});
       }
     }
     if (const auto tilesets = j.find("tilesets"); r.ok() and tilesets != j.end() and r.array(*tilesets, "tilesets"))
     {
+      // A level file that carries tilesets carries all of them, so it replaces the project's rather
+      // than adding to them -- as the seasons and the rule sets already do, and as binary does
+      project.tilesets.clear();
       for (const auto& e : *tilesets)
       {
-        const TileSetId id = add_tileset(level, "");
-        if (!load_tileset(r, e, level, level.tilesets[id]))
+        const TileSetId id = project::add_tileset(project, "");
+        if (!load_tileset(r, e, project, project.tilesets[id]))
         {
           break;
         }
       }
     }
+    // A file that carries its rules carries exactly one set, the one its cells were tiled with, so
+    // it replaces the project's sets as the tilesets and seasons above do. One that does not names
+    // the set it means, which must already be there.
     if (const auto wfc = j.find("wfc"); r.ok() and wfc != j.end())
     {
-      load_wfc(r, *wfc, level);
+      project.rules.clear();
+      project::add_rules(project, "");
+      project::RuleSet& rules = project.rules[0];
+      load_wfc(r, *wfc, project, rules.wfc);
+      if (const auto terrains = j.find("auto_tiles"); r.ok() and terrains != j.end())
+      {
+        load_auto_tiles(r, *terrains, project.tilesets, *project.arena, rules.auto_tiles);
+      }
+      if (const auto steps = j.find("steps"); r.ok() and steps != j.end())
+      {
+        load_steps(r, *steps, project.tilesets, rules.steps);
+      }
+      // The set names itself, so the level takes its name from what it carried
+      level.rules = rules.wfc.name;
     }
-    if (const auto terrains = j.find("auto_tiles"); r.ok() and terrains != j.end())
+    else
     {
-      load_auto_tiles(r, *terrains, level);
-    }
-    if (const auto steps = j.find("steps"); r.ok() and steps != j.end())
-    {
-      load_steps(r, *steps, level);
+      r.get_optional(j, "rules", level.rules);
     }
     if (const auto paths = j.find("paths"); r.ok() and paths != j.end())
     {
@@ -1621,75 +1652,88 @@ Status load_level_json(const char* path, Level& level, IoContext& ctx)
 // Standalone files
 // -------------------------------------------------------------------------------------------------
 
-Status save_tileset_json(const char* path, const Level& level, TileSetId id, IoContext& ctx)
+Status save_tileset_json(const char* path, const project::Project& project, TileSetId id, IoContext& ctx)
 {
   return write_document(path, ctx, [&](Json& j) {
     j = Json::object();
     write_format(j, kTileSetFormat);
     // The catalog entries the tileset references, so another level can intern them
-    save_list(j, "semantics", level.semantics, 1);
-    save_list(j, "materials", level.materials, 1);
-    save_tileset(j["tileset"], level, level.tilesets[id]);
+    save_list(j, "semantics", project.semantics, 1);
+    save_list(j, "materials", project.materials, 1);
+    save_tileset(j["tileset"], project, project.tilesets[id]);
   });
 }
 
-Status load_tileset_json(const char* path, Level& level, IoContext& ctx, TileSetId& id)
+Status load_tileset_json(const char* path, project::Project& project, IoContext& ctx, TileSetId& id)
 {
   id = kNoTileSet;
   return read_document(path, ctx, [&](json::Reader& r, const Json& j) {
     check_format(r, j, kTileSetFormat);
-    load_catalog(
-      r, j, "semantics", level.semantics, [&level](std::string_view n) { return intern_semantic(level, n); });
-    load_catalog(
-      r, j, "materials", level.materials, [&level](std::string_view n) { return intern_material(level, n); });
+    load_catalog(r, j, "semantics", project.semantics, [&project](std::string_view n) {
+      return project::intern_semantic(project, n);
+    });
+    load_catalog(r, j, "materials", project.materials, [&project](std::string_view n) {
+      return project::intern_material(project, n);
+    });
     const auto ts = j.find("tileset");
     if (!r.ok() or ts == j.end())
     {
       r.fail("missing 'tileset'");
       return;
     }
-    id = add_tileset(level, "");
-    if (!load_tileset(r, *ts, level, level.tilesets[id]))
+    id = project::add_tileset(project, "");
+    if (!load_tileset(r, *ts, project, project.tilesets[id]))
     {
-      level.tilesets.pop_back();
+      project.tilesets.pop_back();
       id = kNoTileSet;
     }
   });
 }
 
-Status save_wfc_json(const char* path, const Level& level, IoContext& ctx)
+Status save_wfc_json(const char* path, const project::Project& project, std::size_t index, IoContext& ctx)
 {
+  const project::RuleSet& rules = project.rules[index];
   return write_document(path, ctx, [&](Json& j) {
     j = Json::object();
     write_format(j, kWfcFormat);
-    save_list(j, "semantics", level.semantics, 1);
-    save_wfc(j["wfc"], level);
-    save_auto_tiles(j["auto_tiles"], level);
-    save_steps(j["steps"], level);
+    save_list(j, "semantics", project.semantics, 1);
+    save_wfc(j["wfc"], project, rules.wfc);
+    save_auto_tiles(j["auto_tiles"], project.tilesets, rules.auto_tiles);
+    save_steps(j["steps"], project.tilesets, rules.steps);
   });
 }
 
-Status load_wfc_json(const char* path, Level& level, IoContext& ctx)
+Status load_wfc_json(const char* path, project::Project& project, IoContext& ctx, std::size_t& index)
 {
+  index = project::kNoRules;
   return read_document(path, ctx, [&](json::Reader& r, const Json& j) {
     check_format(r, j, kWfcFormat);
-    load_catalog(
-      r, j, "semantics", level.semantics, [&level](std::string_view n) { return intern_semantic(level, n); });
+    load_catalog(r, j, "semantics", project.semantics, [&project](std::string_view n) {
+      return project::intern_semantic(project, n);
+    });
     const auto wfc = j.find("wfc");
     if (!r.ok() or wfc == j.end())
     {
       r.fail("missing 'wfc'");
       return;
     }
-    load_wfc(r, *wfc, level);
+    // The file carries one set, named; it replaces the project's set of that name or becomes a new
+    // one, so importing the same file twice does not leave two
+    Name name;
+    r.get_optional(*wfc, "name", name);
+    index = project::intern_rules(project, name.view());
+    project::RuleSet& rules = project.rules[index];
+    load_wfc(r, *wfc, project, rules.wfc);
     // Auto-tiling terrains travel in the same file; older ones have none
+    rules.auto_tiles.terrains.clear();
     if (const auto terrains = j.find("auto_tiles"); r.ok() and terrains != j.end())
     {
-      load_auto_tiles(r, *terrains, level);
+      load_auto_tiles(r, *terrains, project.tilesets, *project.arena, rules.auto_tiles);
     }
+    rules.steps.terrains.clear();
     if (const auto steps = j.find("steps"); r.ok() and steps != j.end())
     {
-      load_steps(r, *steps, level);
+      load_steps(r, *steps, project.tilesets, rules.steps);
     }
   });
 }

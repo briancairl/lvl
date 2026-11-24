@@ -42,6 +42,7 @@ void drop_stale_selection(App& app)
 void apply(App& app, const PendingDelete& d)
 {
   Level& lv = *app.level;
+  project::Project& pr = *app.project;
   switch (d.kind)
   {
   case DeleteKind::kNone:
@@ -58,45 +59,45 @@ void apply(App& app, const PendingDelete& d)
     app.undo.clear();
     break;
   case DeleteKind::kSemantic:
-    if (d.index == 0 or d.index >= lv.semantics.size())
+    if (d.index == 0 or d.index >= pr.semantics.size())
     {
       return;
     }
-    remove_semantic(lv, static_cast<SemanticId>(d.index));
+    project::remove_semantic(pr, lv, static_cast<SemanticId>(d.index));
     app.paint.semantic = remap(app.paint.semantic, static_cast<std::uint16_t>(d.index));
     app.undo.clear();
     break;
   case DeleteKind::kMaterial:
-    if (d.index == 0 or d.index >= lv.materials.size())
+    if (d.index == 0 or d.index >= pr.materials.size())
     {
       return;
     }
-    remove_material(lv, static_cast<MaterialId>(d.index));
+    project::remove_material(pr, lv, static_cast<MaterialId>(d.index));
     app.paint.material = remap(app.paint.material, static_cast<std::uint16_t>(d.index));
     app.undo.clear();
     break;
   case DeleteKind::kSeason:
-    if (d.index >= lv.seasons.size() or lv.seasons.size() <= 1)
+    if (d.index >= pr.seasons.size() or pr.seasons.size() <= 1)
     {
       return;
     }
-    remove_season(lv, static_cast<SeasonId>(d.index));
+    project::remove_season(pr, static_cast<SeasonId>(d.index));
     app.view.season = 0;
     break;
   case DeleteKind::kTerrain:
-    if (d.index >= lv.auto_tiles.terrains.size())
+    if (d.index >= rule_set(app).auto_tiles.terrains.size())
     {
       return;
     }
-    remove_terrain(lv.auto_tiles, static_cast<TerrainId>(d.index));
+    remove_terrain(rule_set(app).auto_tiles, static_cast<TerrainId>(d.index));
     app.terrain = 0;
     break;
   case DeleteKind::kStepTerrain:
-    if (d.index >= lv.steps.terrains.size())
+    if (d.index >= rule_set(app).steps.terrains.size())
     {
       return;
     }
-    remove_step_terrain(lv.steps, static_cast<StepTerrainId>(d.index));
+    remove_step_terrain(rule_set(app).steps, static_cast<StepTerrainId>(d.index));
     app.step_terrain = 0;
     break;
   case DeleteKind::kGraph:
@@ -124,12 +125,12 @@ void apply(App& app, const PendingDelete& d)
     drop_stale_selection(app);
     break;
   case DeleteKind::kProperty:
-    if (d.owner >= lv.tilesets.size() or d.index >= lv.tilesets[d.owner].properties.size())
+    if (d.owner >= pr.tilesets.size() or d.index >= pr.tilesets[d.owner].properties.size())
     {
       return;
     }
-    lv.tilesets[d.owner].properties.erase(
-      lv.tilesets[d.owner].properties.begin() + static_cast<std::ptrdiff_t>(d.index));
+    pr.tilesets[d.owner].properties.erase(
+      pr.tilesets[d.owner].properties.begin() + static_cast<std::ptrdiff_t>(d.index));
     break;
   }
   LVL_LOG_INFO() << "Deleted " << d.what;

@@ -222,6 +222,9 @@ StepTerrainId step_terrain_of(const StepRules& rules, TileRef tile);
  */
 std::size_t learn_step_layout(StepTerrain& terrain, const Grid<TileRef>& layout);
 
+/// Empties the slots naming tileset <code>id</code> in place and renumbers the rest
+void clear_tileset_refs(StepRules& rules, TileSetId id);
+
 }  // namespace lvl::level
 
 template <> struct lvl::EnumNames<lvl::level::StepType>

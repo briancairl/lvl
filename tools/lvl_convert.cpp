@@ -28,6 +28,7 @@
 #include "lvl/core/logging.hpp"
 #include "lvl/core/memory.hpp"
 #include "lvl/level/io.hpp"
+#include "lvl/project/project.hpp"
 #include "lvl/render/compose.hpp"
 
 namespace
@@ -132,7 +133,7 @@ bool parse(int argc, char** argv, Options& o)
     (o.png == nullptr or o.png != o.minimap);
 }
 
-void print_info(const level::Level& lv)
+void print_info(const project::Project& pr, const level::Level& lv)
 {
   std::printf("name: %s\n", lv.settings.name.c_str());
   std::printf(
@@ -143,12 +144,12 @@ void print_info(const level::Level& lv)
     lv.settings.cell_height);
   std::printf("seed: %llu\n", static_cast<unsigned long long>(lv.settings.seed));
   std::printf("seasons:");
-  for (const auto& s : lv.seasons)
+  for (const auto& s : pr.seasons)
   {
     std::printf(" %s(%ud)", s.name.c_str(), s.duration_days);
   }
-  std::printf("\ncatalogs: %zu semantic types, %zu materials\n", lv.semantics.size() - 1, lv.materials.size() - 1);
-  for (const auto& ts : lv.tilesets)
+  std::printf("\ncatalogs: %zu semantic types, %zu materials\n", pr.semantics.size() - 1, pr.materials.size() - 1);
+  for (const auto& ts : pr.tilesets)
   {
     std::printf(
       "tileset: %s (%s, %zu tiles, %zu seasonal variants)\n",
@@ -162,7 +163,8 @@ void print_info(const level::Level& lv)
     std::printf(
       "layer: %-20s %-10s%s\n", layer.name.c_str(), enum_name(layer.kind).data(), layer.visible ? "" : " (hidden)");
   }
-  std::printf("wfc: %zu tiles, %zu adjacencies\n", lv.wfc.tiles.size(), lv.wfc.adjacency.size());
+  const level::WfcRules& wfc = pr.rules[project::rules_of(pr, lv)].wfc;
+  std::printf("wfc: %zu tiles, %zu adjacencies\n", wfc.tiles.size(), wfc.adjacency.size());
   std::printf(
     "objects: %zu portals, %zu markers, %zu path graphs (%zu nodes, %zu edges)\n",
     lv.registry.view<level::Portal>().size(),
@@ -189,8 +191,11 @@ int main(int argc, char** argv)
   memory::Arena root;
   memory::create(root, total, "lvl_convert");
   memory::Arena document;
+  memory::Arena project_arena;
   memory::Arena render_scratch;
   memory::push(root, document, total / 4, "document");
+  // The catalogs, seasons, tilesets and rule sets the level draws on (see //project)
+  memory::push(root, project_arena, total / 20, "project");
   memory::push(root, render_scratch, total / 4, "render");
   // Half of what is left is shared by the workers, for the buffers sized by the level (a whole
   // file's bytes, a layer's encoded text); the rest is split between them
@@ -208,19 +213,22 @@ int main(int argc, char** argv)
 
   int rc = EXIT_SUCCESS;
   {
+    project::Project project{project_arena};
     level::Level level{document};
-    if (const Status s = level::load_level(o.input, level, ctx); !s.ok)
+    if (const Status s = level::load_level(o.input, project, level, ctx); !s.ok)
     {
       std::fprintf(stderr, "error: %s\n", s.message.c_str());
       rc = EXIT_FAILURE;
     }
     if (rc == EXIT_SUCCESS and o.info)
     {
-      print_info(level);
+      print_info(project, level);
     }
     if (rc == EXIT_SUCCESS and o.output != nullptr)
     {
-      if (const Status s = level::save_level(o.output, level, ctx); !s.ok)
+      // Always self-contained: a converted file has no project beside it, so it carries the
+      // catalogs, seasons, tilesets and rules its cells reference
+      if (const Status s = level::save_level(o.output, project, level, ctx, level::LevelScope::kStandalone); !s.ok)
       {
         std::fprintf(stderr, "error: %s\n", s.message.c_str());
         rc = EXIT_FAILURE;
@@ -231,22 +239,22 @@ int main(int argc, char** argv)
       // Atlases are decoded into the render scratch, below the image
       image::Image atlases[64];
       memory::Vector<image::Rgba> colors[64];
-      const std::size_t count = std::min<std::size_t>(level.tilesets.size(), 64);
+      const std::size_t count = std::min<std::size_t>(project.tilesets.size(), 64);
       memory::Arena atlas_arena;
       memory::push(render_scratch, atlas_arena, memory::available(render_scratch) / 2, "atlases");
       for (std::size_t i = 0; i < count; ++i)
       {
         new (&colors[i]) memory::Vector<image::Rgba>{memory::ArenaAllocator<image::Rgba>{atlas_arena}};
-        if (const Status s = image::load(level.tilesets[i].image.c_str(), atlas_arena, atlases[i]); !s.ok)
+        if (const Status s = image::load(project.tilesets[i].image.c_str(), atlas_arena, atlases[i]); !s.ok)
         {
           std::fprintf(
             stderr,
             "warning: tileset '%s': %s (drawn as flat colors)\n",
-            level.tilesets[i].name.c_str(),
+            project.tilesets[i].name.c_str(),
             s.message.c_str());
           continue;
         }
-        render::average_tile_colors(level.tilesets[i], atlases[i], colors[i]);
+        render::average_tile_colors(project.tilesets[i], atlases[i], colors[i]);
       }
       const render::Atlases set{.images = atlases, .tile_colors = colors, .count = count};
       const render::ComposeOptions options{
@@ -256,11 +264,11 @@ int main(int argc, char** argv)
       Status s = Status::okay();
       if (o.png != nullptr)
       {
-        s = render::export_png(o.png, level, set, options, work, workers);
+        s = render::export_png(o.png, project, level, set, options, work, workers);
       }
       if (s.ok and o.minimap != nullptr)
       {
-        s = render::export_minimap_png(o.minimap, level, set, options, o.size, work);
+        s = render::export_minimap_png(o.minimap, project, level, set, options, o.size, work);
       }
       memory::pop(render_scratch, work);
       memory::pop(render_scratch, atlas_arena);

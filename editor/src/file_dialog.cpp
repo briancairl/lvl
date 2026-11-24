@@ -86,6 +86,7 @@ Path project_directory(const App& app)
 
 Setup setup(const App& app, FileAction action)
 {
+  const project::Project& pr = *app.project;
   const level::Level& lv = *app.level;
   switch (action)
   {
@@ -109,7 +110,7 @@ Setup setup(const App& app, FileAction action)
       .save = true,
       .project = true,
       .name = format<160>(
-        "%s.tileset.json", app.tileset < lv.tilesets.size() ? lv.tilesets[app.tileset].name.c_str() : "tileset")};
+        "%s.tileset.json", app.tileset < pr.tilesets.size() ? pr.tilesets[app.tileset].name.c_str() : "tileset")};
   case FileAction::kAtlasImage:
     return Setup{.title = "Choose atlas image", .filters = kImageFilters, .project = true};
   case FileAction::kSeedImage:

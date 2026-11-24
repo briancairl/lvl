@@ -45,6 +45,10 @@ namespace lvl::project
 /// File name of a project's manifest, in its root folder
 inline constexpr std::string_view kManifestName = "project.json";
 
+/// What a project names its own tileset and rule-set files, after the tileset or rule set itself
+inline constexpr std::string_view kTileSetSuffix = ".tileset.json";
+inline constexpr std::string_view kRuleSetSuffix = ".rules.json";
+
 /// One of the folders a project owns
 enum class Folder : std::uint8_t
 {
@@ -106,6 +110,16 @@ Status resolve(std::string_view root, std::string_view relative, Path& out);
  * absolute is one the user chose to keep outside the project.
  */
 Status relativize(std::string_view root, std::string_view path, Path& out);
+
+/**
+ * @brief A root-relative path in <code>folder</code> for a part of the project named <code>name</code>
+ *
+ * "forest" in kTileSets with ".tileset.json" gives "tilesets/forest.tileset.json". A name is the
+ * user's, so anything a file name should not hold becomes '-' and an empty one becomes "unnamed":
+ * the path a project stores for one of its own parts is always a legal file name, whatever the part
+ * is called.
+ */
+Status project_file(Folder folder, std::string_view name, std::string_view suffix, Path& out);
 
 /// Creates the root and every folder of the tree that is not there yet (idempotent)
 Status ensure_tree(std::string_view root);

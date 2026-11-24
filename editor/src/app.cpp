@@ -40,8 +40,11 @@ void reserve_memory(App& app)
   Memory& m = app.memory;
   const std::size_t total = app.config.total;
   memory::create(m.root, total, "editor");
-  memory::push(m.root, m.documents[0], total / 100 * 18, "document-a");
-  memory::push(m.root, m.documents[1], total / 100 * 18, "document-b");
+  memory::push(m.root, m.documents[0], total / 100 * 15, "document-a");
+  memory::push(m.root, m.documents[1], total / 100 * 15, "document-b");
+  // The catalogs, seasons, tilesets and rule sets the levels share (paired like the documents)
+  memory::push(m.root, m.projects[0], total / 100 * 3, "project-a");
+  memory::push(m.root, m.projects[1], total / 100 * 3, "project-b");
   memory::push(m.root, m.assets[0], total / 100 * 7, "assets-a");
   memory::push(m.root, m.assets[1], total / 100 * 7, "assets-b");
   memory::push(m.root, m.undo, total / 100 * 8, "undo");
@@ -58,14 +61,14 @@ void apply_atlases(App& app, AtlasImages& atlases, std::size_t index)
   memory::Arena& arena = app.memory.assets[index];
   for (std::size_t i = 0; i < kMaxTileSets; ++i)
   {
-    const bool present = i < atlases.count and i < app.level->tilesets.size();
+    const bool present = i < atlases.count and i < app.project->tilesets.size();
     app.assets.images[i] = present ? atlases.images[i] : image::Image{};
     app.assets.status[i] = present ? atlases.status[i] : Status::okay();
     app.assets.tile_colors[i] = memory::make_vector<image::Rgba>(arena);
     if (present and !atlases.images[i].empty())
     {
       upload(app.assets.textures[i], atlases.images[i]);
-      level::TileSet& ts = app.level->tilesets[i];
+      level::TileSet& ts = app.project->tilesets[i];
       // The atlas defines the slicing grid
       if (ts.image_width != atlases.images[i].width or ts.image_height != atlases.images[i].height)
       {
@@ -113,7 +116,9 @@ void finish_job(App& app)
         if (job.result.ok)
         {
           std::swap(app.level, app.spare);
+          std::swap(app.project, app.spare_project);
           level::reset(*app.spare);
+          project::reset(*app.spare_project);
           apply_atlases(app, job.atlases, 1 - app.assets.current);
           app.path = job.path;
           app.modified = false;
@@ -128,6 +133,7 @@ void finish_job(App& app)
         else
         {
           level::reset(*app.spare);
+          project::reset(*app.spare_project);
           // A level that could not be loaded does not belong in the recent list
           forget_recent_file(app, job.path.view());
           report(app, job.result);
@@ -541,7 +547,7 @@ void main_menu(App& app)
       }
       if (ImGui::BeginMenu("Export"))
       {
-        if (ImGui::MenuItem("Tileset...", nullptr, false, app.tileset < app.level->tilesets.size()))
+        if (ImGui::MenuItem("Tileset...", nullptr, false, app.tileset < app.project->tilesets.size()))
         {
           open_file_dialog(app, FileAction::kSaveTileSet);
         }
@@ -610,7 +616,7 @@ void main_menu(App& app)
           c = level::add_layer(*app.level, level::LayerKind::kCollision, "collision");
         }
         app.undo.snapshot(*app.level, c, "Derive collision");
-        level::derive_collision(*app.level, c, view_season(app));
+        level::derive_collision(app.project->tilesets, *app.level, c, view_season(app));
         invalidate_layer(app, c);
         app.modified = true;
       }
@@ -622,7 +628,7 @@ void main_menu(App& app)
           m = level::add_layer(*app.level, level::LayerKind::kMaterial, "materials");
         }
         app.undo.snapshot(*app.level, m, "Derive materials");
-        level::derive_materials(*app.level, m, view_season(app));
+        level::derive_materials(app.project->tilesets, *app.level, m, view_season(app));
         invalidate_layer(app, m);
         app.modified = true;
       }
@@ -655,7 +661,7 @@ void main_menu(App& app)
     // Season selector, right of the menus
     ImGui::Separator();
     ImGui::SetNextItemWidth(140.0F);
-    const auto& seasons = app.level->seasons;
+    const auto& seasons = app.project->seasons;
     app.view.season = std::min(app.view.season, seasons.size() - 1);
     if (ImGui::BeginCombo("##season", seasons[app.view.season].name.c_str()))
     {
@@ -787,9 +793,9 @@ void smoke(App& app)
     // derived from the sides
     app.panels.adjacency = true;
     app.panels.neighbors = true;
-    app.level->wfc.diagonals = true;
-    level::derive_diagonals(app.level->wfc, app.memory.frame);
-    if (level::diagonal_count(app.level->wfc) == 0)
+    rule_set(app).wfc.diagonals = true;
+    level::derive_diagonals(rule_set(app).wfc, app.memory.frame);
+    if (level::diagonal_count(rule_set(app).wfc) == 0)
     {
       report(app, Status::error("no corner rules were derived"));
     }
@@ -801,11 +807,12 @@ void smoke(App& app)
   case 14: {
     // Deletes (confirmed, as with Shift+click): a material and a semantic type in use, a portal, a graph
     level::Level& lv = *app.level;
-    const auto material = std::min<std::size_t>(level::intern_material(lv, "snow"), lv.materials.size() - 1);
+    project::Project& pr = *app.project;
+    const auto material = std::min<std::size_t>(project::intern_material(pr, "snow"), pr.materials.size() - 1);
     app.pending_delete =
       PendingDelete{.kind = DeleteKind::kMaterial, .index = material, .what = "material 'snow'", .confirmed = true};
     process_deletes(app);
-    const auto semantic = level::intern_semantic(lv, "tunnel");
+    const auto semantic = project::intern_semantic(pr, "tunnel");
     app.pending_delete = PendingDelete{
       .kind = DeleteKind::kSemantic, .index = semantic, .what = "semantic type 'tunnel'", .confirmed = true};
     process_deletes(app);
@@ -826,7 +833,7 @@ void smoke(App& app)
     {
       report(app, Status::error("deletes did not apply"));
     }
-    for (const auto& m : lv.materials)
+    for (const auto& m : pr.materials)
     {
       if (m.name == std::string_view{"snow"})
       {
@@ -837,7 +844,7 @@ void smoke(App& app)
   }
   case 19: {
     // A batch metadata edit over a palette selection (which the tile panel then draws)
-    level::TileSet& ts = app.level->tilesets[app.tileset];
+    level::TileSet& ts = app.project->tilesets[app.tileset];
     app.selection.retarget(app.tileset);
     app.selection.clear();
     for (std::size_t t = 0; t < std::min<std::size_t>(4, ts.tiles.size()); ++t)
@@ -866,7 +873,7 @@ void smoke(App& app)
   }
   case 20: {
     // WFC rules from the palette layout: the three tiles may only meet as the palette lays them out
-    level::WfcRules& rules = app.level->wfc;
+    level::WfcRules& rules = rule_set(app).wfc;
     const level::Extents grid = palette_grid(app, app.tileset);
     app.selection.retarget(app.tileset);
     app.selection.clear();
@@ -964,6 +971,7 @@ void smoke(App& app)
     // Auto-tiled painting from a terrain: the adjacency rules window's auto-tiling tab, a terrain
     // taken from a 3x3 palette block, and one painted cell laying down the whole nine-slice
     level::Level& lv = *app.level;
+    project::Project& pr = *app.project;
     app.tool = Tool::kAutoTile;
     app.panels.adjacency = true;
     app.rules_mode = RulesMode::kAutoTile;
@@ -1009,8 +1017,9 @@ void smoke(App& app)
       report(app, Status::error("the palette selection is not the two blocks"));
       break;
     }
-    level::AutoTerrain& terrain = lv.auto_tiles.terrains[add_terrain(lv.auto_tiles, *lv.arena, "demo_path")];
-    app.terrain = level::find_terrain(lv.auto_tiles, "demo_path");
+    level::AutoTerrain& terrain =
+      rule_set(app).auto_tiles.terrains[add_terrain(rule_set(app).auto_tiles, *pr.arena, "demo_path")];
+    app.terrain = level::find_terrain(rule_set(app).auto_tiles, "demo_path");
     if (level::learn_from_layout(terrain, layout) != 13)
     {
       report(app, Status::error("the terrain did not take all thirteen tiles of the palette selection"));
@@ -1031,10 +1040,10 @@ void smoke(App& app)
     auto& grid = level::plane<level::TileGrid>(lv.layers[layer]);
     const auto tileset = static_cast<level::TileSetId>(app.tileset);
     const auto background =
-      level::TileRef{tileset, static_cast<level::TileIndex>(lv.tilesets[app.tileset].tiles.size() - 1)};
+      level::TileRef{tileset, static_cast<level::TileIndex>(pr.tilesets[app.tileset].tiles.size() - 1)};
     grid.fill(background);
     app.paint.tile = level::resolve(terrain, level::kAllNeighbors);
-    if (level::terrain_of(lv.auto_tiles, app.paint.tile) != app.terrain)
+    if (level::terrain_of(rule_set(app).auto_tiles, app.paint.tile) != app.terrain)
     {
       report(app, Status::error("the terrain's middle tile does not belong to it"));
       break;
@@ -1236,13 +1245,14 @@ void smoke(App& app)
 
     // A step terrain per terrace, whose tiles are the step type itself, so the drawing can be read
     app.rules_mode = RulesMode::kSteps;
-    lv.steps.terrains.clear();
+    rule_set(app).steps.terrains.clear();
     const auto tileset = static_cast<level::TileSetId>(app.tileset);
     static constexpr int kBands = 3;
     // One terrain covering every level: the ordinary case, where every terrace is drawn in the
     // same eighteen tiles and it is the levels, not the terrains, that make the layers
     {
-      level::StepTerrain& terrain = lv.steps.terrains[level::add_step_terrain(lv.steps, "ground")];
+      level::StepTerrain& terrain =
+        rule_set(app).steps.terrains[level::add_step_terrain(rule_set(app).steps, "ground")];
       terrain.level_lo = 0;
       terrain.level_hi = 255;
       // Through the side-by-side block, so the layout the palette offers is covered too
@@ -1461,8 +1471,8 @@ void start_job(App& app)
 
 std::string_view view_season(const App& app)
 {
-  return (app.view.season < app.level->seasons.size()) ? app.level->seasons[app.view.season].name.view()
-                                                       : std::string_view{};
+  return (app.view.season < app.project->seasons.size()) ? app.project->seasons[app.view.season].name.view()
+                                                         : std::string_view{};
 }
 
 void report(App& app, const Status& status)
@@ -1492,6 +1502,8 @@ void invalidate_layer(App& app, std::size_t layer)
 
 void new_level(App& app, const level::Settings& settings)
 {
+  // The new level shares nothing with the old one, so its project starts empty too
+  project::reset(*app.project);
   level::create_default(*app.level, settings);
   app.undo.clear();
   app.path.clear();
@@ -1510,7 +1522,7 @@ void reload_atlases(App& app)
 {
   if (auto* job = prepare_job<ReloadAtlasesJob>(app); job != nullptr)
   {
-    job->level = app.level;
+    job->project = app.project;
     job->assets = &app.memory.assets[1 - app.assets.current];
     start_job(app);
   }
@@ -1523,6 +1535,8 @@ Status initialize(App& app, const MemoryConfig& config, const char* path)
   json::install(app.memory.json);
   app.level = new (app.level_storage[0]) level::Level{app.memory.documents[0]};
   app.spare = new (app.level_storage[1]) level::Level{app.memory.documents[1]};
+  app.project = new (app.project_storage[0]) project::Project{app.memory.projects[0]};
+  app.spare_project = new (app.project_storage[1]) project::Project{app.memory.projects[1]};
   app.undo.initialize(app.memory.undo);
   app.generators.heightmap.layer_count = 2;
   app.generators.heightmap.layers[1] = procgen::NoiseLayer{
@@ -1583,6 +1597,8 @@ void shutdown(App& app)
   save_file_dialog_places(app);
   app.level->~Level();
   app.spare->~Level();
+  app.project->~Project();
+  app.spare_project->~Project();
   json::uninstall();
   LVL_LOG_INFO() << app.memory.documents[0];
   LVL_LOG_INFO() << app.memory.jobs;
@@ -1744,6 +1760,7 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kOpenLevel:
     if (auto* job = prepare_job<LoadLevelJob>(app); job != nullptr)
     {
+      job->project = app.spare_project;
       job->level = app.spare;
       job->assets = &app.memory.assets[1 - app.assets.current];
       job->path.assign(path);
@@ -1753,6 +1770,7 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kSaveLevel:
     if (auto* job = prepare_job<SaveLevelJob>(app); job != nullptr)
     {
+      job->project = app.project;
       job->level = app.level;
       job->path.assign(path);
       start_job(app);
@@ -1761,7 +1779,7 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kLoadTileSet:
     small_io([&](level::IoContext& ctx) {
       level::TileSetId id = level::kNoTileSet;
-      Status s = level::load_tileset(path, *app.level, ctx, id);
+      Status s = level::load_tileset(path, *app.project, ctx, id);
       if (s.ok)
       {
         app.tileset = id;
@@ -1773,7 +1791,7 @@ void file_action(App& app, FileAction action, const char* path)
     break;
   case FileAction::kSaveTileSet:
     small_io([&](level::IoContext& ctx) {
-      Status s = level::save_tileset(path, *app.level, static_cast<level::TileSetId>(app.tileset), ctx);
+      Status s = level::save_tileset(path, *app.project, static_cast<level::TileSetId>(app.tileset), ctx);
       if (s.ok)
       {
         web::offer_download(path);
@@ -1784,12 +1802,20 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kLoadWfc:
     small_io([&](level::IoContext& ctx) {
       app.modified = true;
-      return level::load_wfc_rules(path, *app.level, ctx);
+      // The file names the set it holds, so it may be a new one; the open level switches to it,
+      // since importing rules is how you say what this level should tile with
+      std::size_t index = project::kNoRules;
+      const Status s = level::load_wfc_rules(path, *app.project, ctx, index);
+      if (s.ok)
+      {
+        app.level->rules = app.project->rules[index].wfc.name;
+      }
+      return s;
     });
     break;
   case FileAction::kSaveWfc:
     small_io([&](level::IoContext& ctx) {
-      Status s = level::save_wfc_rules(path, *app.level, ctx);
+      Status s = level::save_wfc_rules(path, *app.project, project::rules_of(*app.project, *app.level), ctx);
       if (s.ok)
       {
         web::offer_download(path);
@@ -1817,9 +1843,9 @@ void file_action(App& app, FileAction action, const char* path)
     });
     break;
   case FileAction::kAtlasImage:
-    if (app.tileset < app.level->tilesets.size())
+    if (app.tileset < app.project->tilesets.size())
     {
-      app.level->tilesets[app.tileset].image.assign(path);
+      app.project->tilesets[app.tileset].image.assign(path);
       app.modified = true;
       reload_atlases(app);
     }
@@ -1831,8 +1857,9 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kExportMinimap:
     if (auto* job = prepare_job<ExportJob>(app); job != nullptr)
     {
+      job->project = app.project;
       job->level = app.level;
-      job->atlases = app.assets.atlases(app.level->tilesets.size());
+      job->atlases = app.assets.atlases(app.project->tilesets.size());
       job->options = app.export_options;
       job->options.season = view_season(app);
       job->options.tint = app.view.tint;
@@ -1981,10 +2008,11 @@ void demo_level(App& app)
 
   new_level(app, Settings{.name = "demo", .extents = {96, 64}, .cell_width = kTile, .cell_height = kTile, .seed = 7});
   Level& lv = *app.level;
-  lv.seasons[0] = Season{.name = "summer", .duration_days = 90, .temperature = 22.0F, .precipitation = 1.5F};
-  lv.seasons.push_back(Season{
+  project::Project& pr = *app.project;
+  pr.seasons[0] = Season{.name = "summer", .duration_days = 90, .temperature = 22.0F, .precipitation = 1.5F};
+  pr.seasons.push_back(Season{
     .name = "autumn", .duration_days = 60, .temperature = 10.0F, .precipitation = 4.0F, .tint = {255, 225, 190, 255}});
-  lv.seasons.push_back(Season{
+  pr.seasons.push_back(Season{
     .name = "winter",
     .duration_days = 90,
     .temperature = -6.0F,
@@ -2006,18 +2034,18 @@ void demo_level(App& app)
     {120, 60, 160, 255}};
   for (std::size_t i = 0; i < std::size(semantic_names); ++i)
   {
-    lv.semantics[intern_semantic(lv, semantic_names[i])].color = semantic_colors[i];
+    pr.semantics[project::intern_semantic(pr, semantic_names[i])].color = semantic_colors[i];
   }
   const char* material_names[] = {"water", "sand", "grass", "dirt", "stone", "snow", "ice", "wood"};
   for (const char* m : material_names)
   {
-    lv.materials[intern_material(lv, m)].color = render::id_color(intern_material(lv, m) * 7U);
+    pr.materials[project::intern_material(pr, m)].color = render::id_color(project::intern_material(pr, m) * 7U);
   }
-  lv.materials[intern_material(lv, "ice")].friction = 0.15F;
-  lv.materials[intern_material(lv, "snow")].speed = 0.7F;
+  pr.materials[project::intern_material(pr, "ice")].friction = 0.15F;
+  pr.materials[project::intern_material(pr, "snow")].speed = 0.7F;
 
-  const TileSetId ts_id = add_tileset(lv, "demo");
-  TileSet& ts = lv.tilesets[ts_id];
+  const TileSetId ts_id = project::add_tileset(pr, "demo");
+  TileSet& ts = pr.tilesets[ts_id];
   ts.image = atlas_path;
   ts.slice = SliceParams{.tile_width = kTile, .tile_height = kTile};
   ts.image_width = atlas.width;
@@ -2029,11 +2057,11 @@ void demo_level(App& app)
   for (TileIndex t = 0; t < 8; ++t)
   {
     ts.tiles[t].name.assign(tile_names[t]);
-    ts.tiles[t].semantic = intern_semantic(lv, tile_semantics[t]);
-    ts.tiles[t].material = intern_material(lv, tile_materials[t]);
+    ts.tiles[t].semantic = project::intern_semantic(pr, tile_semantics[t]);
+    ts.tiles[t].material = project::intern_material(pr, tile_materials[t]);
     ts.tiles[8 + t].name.assign(format<64>("%s_winter", tile_names[t]));
     ts.tiles[8 + t].semantic = ts.tiles[t].semantic;
-    ts.tiles[8 + t].material = intern_material(lv, t < 2 ? "ice" : "snow");
+    ts.tiles[8 + t].material = project::intern_material(pr, t < 2 ? "ice" : "snow");
     set_seasonal_variant(
       ts,
       SeasonalVariant{
@@ -2045,15 +2073,15 @@ void demo_level(App& app)
   ts.tiles[0].collision = collision::kSolid;
   ts.tiles[6].collision = collision::kSolid;
   ts.tiles[16].name.assign("road");
-  ts.tiles[16].semantic = intern_semantic(lv, "road");
-  ts.tiles[16].material = intern_material(lv, "dirt");
+  ts.tiles[16].semantic = project::intern_semantic(pr, "road");
+  ts.tiles[16].material = project::intern_material(pr, "dirt");
   ts.tiles[17].name.assign("wall");
   ts.tiles[17].collision = collision::kSolid | collision::kSightBlocker;
-  ts.tiles[17].material = intern_material(lv, "stone");
+  ts.tiles[17].material = project::intern_material(pr, "stone");
   ts.tiles[18].name.assign("door");
   ts.tiles[18].collision = collision::kTrigger;
   ts.tiles[19].name.assign("bridge");
-  ts.tiles[19].material = intern_material(lv, "wood");
+  ts.tiles[19].material = project::intern_material(pr, "wood");
   ts.properties.push_back(TileProperty{.tile = 18, .key = "sound", .value = "door_open"});
   for (TileIndex t = 20; t < ts.tiles.size(); ++t)
   {
@@ -2061,7 +2089,7 @@ void demo_level(App& app)
   }
 
   // WFC rules: elevation bands; neighbors only one band apart (meadow/grass/forest interchangeable)
-  WfcRules& rules = lv.wfc;
+  WfcRules& rules = rule_set(app).wfc;
   rules.name.assign("demo terrain");
   const float bands[8][2] = {
     {0.0F, 0.32F},

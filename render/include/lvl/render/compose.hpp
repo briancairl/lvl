@@ -18,6 +18,7 @@
 #include "lvl/core/memory.hpp"
 #include "lvl/core/status.hpp"
 #include "lvl/level/level.hpp"
+#include "lvl/project/project.hpp"
 #include "lvl/render/preview.hpp"
 
 namespace lvl::render
@@ -51,6 +52,7 @@ constexpr std::size_t image_bytes(std::size_t width, std::size_t height)
  * Fails (rather than asserts) if the image would not fit in <code>dest</code>.
  */
 Status compose(
+  const project::Project& project,
   const level::Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,
@@ -65,6 +67,7 @@ Status compose(
  * Each cell is drawn as its tiles' average colors with overlays, then the result is resampled.
  */
 Status minimap(
+  const project::Project& project,
   const level::Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,
@@ -76,6 +79,7 @@ Status minimap(
 /// Renders and saves the full map as PNG
 Status export_png(
   const char* path,
+  const project::Project& project,
   const level::Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,
@@ -86,6 +90,7 @@ Status export_png(
 /// Renders and saves the mini-preview as PNG
 Status export_minimap_png(
   const char* path,
+  const project::Project& project,
   const level::Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,

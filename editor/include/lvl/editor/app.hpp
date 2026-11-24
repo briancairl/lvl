@@ -52,6 +52,14 @@ struct Memory
 {
   memory::Arena root;
   std::array<memory::Arena, 2> documents;
+  /**
+   * @brief The open project and a spare, paired with the documents
+   *
+   * A load interns the file's catalogs, seasons, tilesets and rule sets into the project, so a
+   * failed load would leave it half-filled. The spare is swapped in on success, exactly as the
+   * documents are.
+   */
+  std::array<memory::Arena, 2> projects;
   std::array<memory::Arena, 2> assets;
   memory::Arena undo;
   memory::Arena frame;
@@ -396,6 +404,11 @@ struct App
   level::Level* level = nullptr;
   level::Level* spare = nullptr;
   alignas(level::Level) unsigned char level_storage[2][sizeof(level::Level)];
+
+  /// The open level's project, and its spare; swapped together with the document
+  project::Project* project = nullptr;
+  project::Project* spare_project = nullptr;
+  alignas(project::Project) unsigned char project_storage[2][sizeof(project::Project)];
 
   Path path;
   bool modified = false;

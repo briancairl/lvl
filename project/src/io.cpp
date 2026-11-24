@@ -22,6 +22,12 @@
  * As in the level files, catalog entries are written from index 1 (the reserved "none" is implied)
  * and are interned by name on load, so a manifest can be merged into a project that already has
  * entries of those names.
+ *
+ * The tilesets and rule sets are files of their own, named here and written and read through
+ * <code>level::save_tileset</code>/<code>save_wfc_rules</code> in the standalone formats. They are
+ * read in the order the manifest lists them, because each one appends and so takes the next id --
+ * the ids the member levels' cells hold. A tileset file that will not load therefore fails the whole
+ * project rather than being skipped: skipping it would shift every id after it.
  */
 
 // C++ Standard Library
@@ -34,6 +40,7 @@
 #include "lvl/core/file.hpp"
 #include "lvl/core/json.hpp"
 #include "lvl/core/logging.hpp"
+#include "lvl/core/memory.hpp"
 #include "lvl/project/io.hpp"
 #include "lvl/project/paths.hpp"
 
@@ -294,13 +301,68 @@ bool load_levels(json::Reader& r, const Json& j, Project& project)
 
 }  // namespace
 
-Status save_project(const char* path, const Project& project, level::IoContext& ctx)
+Status tileset_file(const Project& project, level::TileSetId id, Path& out)
+{
+  LVL_ASSERT_LT(id, project.tilesets.size());
+  if (id < project.tileset_files.size() and !project.tileset_files[id].empty())
+  {
+    out = project.tileset_files[id];
+    return Status::okay();
+  }
+  return project_file(Folder::kTileSets, project.tilesets[id].name.view(), kTileSetSuffix, out);
+}
+
+Status rule_set_file(const Project& project, std::size_t index, Path& out)
+{
+  LVL_ASSERT_LT(index, project.rules.size());
+  if (index < project.rule_files.size() and !project.rule_files[index].empty())
+  {
+    out = project.rule_files[index];
+    return Status::okay();
+  }
+  // A rule set's name is its WFC rules' name; one that was never named falls back to the project's
+  const Name& named = project.rules[index].wfc.name;
+  const std::string_view name = named.empty() ? project.name.view() : named.view();
+  return project_file(Folder::kRules, name, kRuleSetSuffix, out);
+}
+
+Status save_project(const char* path, Project& project, level::IoContext& ctx)
 {
   if (level::format_of(path) == level::FileFormat::kBinary)
   {
     return Status::error("a project manifest is always JSON; '%s' names a binary file", path);
   }
-  return with_json(ctx, [&] {
+  // A project is where its manifest is, on the way out as on the way in: writing the manifest
+  // somewhere else moves the project there, and its parts are written beside it
+  const std::string_view folder = parent_path(std::string_view{path});
+  project.root.assign(folder.empty() ? std::string_view{"."} : folder);
+  LVL_RETURN_IF_ERROR(ensure_tree(project.root.view()));
+
+  // Each part to its own file, and the paths chosen recorded, so the manifest names what was really
+  // written and the next save reuses the same files
+  project.tileset_files.resize(project.tilesets.size());
+  for (std::size_t i = 0; i < project.tilesets.size(); ++i)
+  {
+    const auto id = static_cast<level::TileSetId>(i);
+    Path file;
+    LVL_RETURN_IF_ERROR(tileset_file(project, id, file));
+    Path absolute;
+    LVL_RETURN_IF_ERROR(resolve(project.root.view(), file.view(), absolute));
+    LVL_RETURN_IF_ERROR(level::save_tileset(absolute.c_str(), project, id, ctx));
+    project.tileset_files[i] = file;
+  }
+  project.rule_files.resize(project.rules.size());
+  for (std::size_t i = 0; i < project.rules.size(); ++i)
+  {
+    Path file;
+    LVL_RETURN_IF_ERROR(rule_set_file(project, i, file));
+    Path absolute;
+    LVL_RETURN_IF_ERROR(resolve(project.root.view(), file.view(), absolute));
+    LVL_RETURN_IF_ERROR(level::save_wfc_rules(absolute.c_str(), project, i, ctx));
+    project.rule_files[i] = file;
+  }
+
+  LVL_RETURN_IF_ERROR(with_json(ctx, [&] {
     return json::write_file(
       path,
       [&](Json& j) {
@@ -315,7 +377,9 @@ Status save_project(const char* path, const Project& project, level::IoContext& 
         save_levels(j, project);
       },
       2);
-  });
+  }));
+  LVL_LOG_INFO() << "Saved project '" << path << "'";
+  return Status::okay();
 }
 
 Status load_project(const char* path, Project& project, level::IoContext& ctx)
@@ -377,6 +441,54 @@ Status load_project(const char* path, Project& project, level::IoContext& ctx)
   {
     return status;
   }
+
+  // The parts, in the order the manifest lists them: each tileset appends, so its position in the
+  // list is the id the levels' cells hold. One that will not load fails the project.
+  for (std::size_t i = 0; i < project.tileset_files.size(); ++i)
+  {
+    Path absolute;
+    LVL_RETURN_IF_ERROR(resolve(project.root.view(), project.tileset_files[i].view(), absolute));
+    level::TileSetId id = level::kNoTileSet;
+    LVL_RETURN_IF_ERROR(level::load_tileset(absolute.c_str(), project, ctx, id));
+    if (id != static_cast<level::TileSetId>(i))
+    {
+      return Status::error(
+        "'%s' is the project's tileset %zu but read back as %u", absolute.c_str(), i, static_cast<unsigned>(id));
+    }
+  }
+  // The rule sets, each in the file that holds it. A manifest that names none leaves the project
+  // with the blank set it is created with, which is what a level naming nothing resolves to.
+  if (!project.rule_files.empty())
+  {
+    // Each file names its set, and intern_rules decides where that set goes, so the list is rebuilt
+    // from where the sets actually landed rather than assumed to come back in order. Copying it
+    // first costs a few hundred bytes of the project arena, which was just reset.
+    memory::Vector<Path> listed = memory::make_vector<Path>(*project.arena);
+    listed.assign(project.rule_files.begin(), project.rule_files.end());
+    project.rules.clear();
+    project.rule_files.clear();
+    project.rule_files.resize(listed.size());
+    for (std::size_t i = 0; i < listed.size(); ++i)
+    {
+      Path absolute;
+      LVL_RETURN_IF_ERROR(resolve(project.root.view(), listed[i].view(), absolute));
+      std::size_t index = kNoRules;
+      LVL_RETURN_IF_ERROR(level::load_wfc_rules(absolute.c_str(), project, ctx, index));
+      LVL_ASSERT_LT(index, project.rules.size());
+      project.rule_files[index] = listed[i];
+    }
+    if (project.rules.size() != listed.size())
+    {
+      // Two of the files hold a set of the same name, so one has replaced the other and the
+      // manifest's list no longer says where each set lives
+      return Status::error(
+        "'%s' names %zu rule files but they hold only %zu sets; two of them have the same name",
+        path,
+        listed.size(),
+        project.rules.size());
+    }
+  }
+
   check_level_files(project);
   return Status::okay();
 }

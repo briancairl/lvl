@@ -224,22 +224,32 @@ inline void progress_advance(IoContext& ctx)
 }
 
 // JSON format (io_json.cpp)
-Status save_level_json(const char* path, const Level& level, IoContext& ctx);
-Status load_level_json(const char* path, Level& level, IoContext& ctx);
-Status save_tileset_json(const char* path, const Level& level, TileSetId id, IoContext& ctx);
-Status load_tileset_json(const char* path, Level& level, IoContext& ctx, TileSetId& id);
-Status save_wfc_json(const char* path, const Level& level, IoContext& ctx);
-Status load_wfc_json(const char* path, Level& level, IoContext& ctx);
+Status save_level_json(
+  const char* path,
+  const project::Project& project,
+  const Level& level,
+  IoContext& ctx,
+  LevelScope scope);
+Status load_level_json(const char* path, project::Project& project, Level& level, IoContext& ctx);
+Status save_tileset_json(const char* path, const project::Project& project, TileSetId id, IoContext& ctx);
+Status load_tileset_json(const char* path, project::Project& project, IoContext& ctx, TileSetId& id);
+Status save_wfc_json(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
+Status load_wfc_json(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
 Status save_paths_json(const char* path, const Level& level, IoContext& ctx);
 Status load_paths_json(const char* path, Level& level, IoContext& ctx);
 
 // Binary format (io_binary.cpp)
-Status save_level_binary(const char* path, const Level& level, IoContext& ctx);
-Status load_level_binary(const char* path, Level& level, IoContext& ctx);
-Status save_tileset_binary(const char* path, const Level& level, TileSetId id, IoContext& ctx);
-Status load_tileset_binary(const char* path, Level& level, IoContext& ctx, TileSetId& id);
-Status save_wfc_binary(const char* path, const Level& level, IoContext& ctx);
-Status load_wfc_binary(const char* path, Level& level, IoContext& ctx);
+Status save_level_binary(
+  const char* path,
+  const project::Project& project,
+  const Level& level,
+  IoContext& ctx,
+  LevelScope scope);
+Status load_level_binary(const char* path, project::Project& project, Level& level, IoContext& ctx);
+Status save_tileset_binary(const char* path, const project::Project& project, TileSetId id, IoContext& ctx);
+Status load_tileset_binary(const char* path, project::Project& project, IoContext& ctx, TileSetId& id);
+Status save_wfc_binary(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
+Status load_wfc_binary(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
 Status save_paths_binary(const char* path, const Level& level, IoContext& ctx);
 Status load_paths_binary(const char* path, Level& level, IoContext& ctx);
 

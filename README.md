@@ -118,4 +118,11 @@ seasons and tilesets are referenced **by name**, so standalone tileset/WFC/path 
 levels. Tile cells are `-1` (empty) or `tileset * 65536 + tile`. Binary files (`.lvlb`/`.bin`) carry
 the same data, checksummed per layer.
 
+A level can also leave the shared sections out and let its project carry them, which is what a
+level saved inside a project does. A **project** is a folder with a fixed sub-folder tree and a
+`project.json` manifest in its root: the project's name, the catalogs and seasons its levels share,
+the files its tilesets and rule sets live in (`tilesets/forest.tileset.json`,
+`rules/forest.rules.json` — the same standalone formats, one file each), and an index of its member
+levels. A file handed to someone on its own still carries everything it needs.
+
 See [CLAUDE.md](CLAUDE.md) for the design tenets and code layout.

@@ -19,6 +19,7 @@
 // LVL
 #include "lvl/core/file.hpp"
 #include "lvl/core/json.hpp"
+#include "lvl/level/level.hpp"
 #include "lvl/project/io.hpp"
 #include "lvl/project/paths.hpp"
 #include "lvl/project/project.hpp"
@@ -140,6 +141,27 @@ TEST(Paths, JoinRefusesToTruncate)
   const Status s = project::join("/p", long_name, out);
   EXPECT_FALSE(s.ok);
   EXPECT_FALSE(s.message.empty());
+}
+
+TEST(Paths, ProjectFileMakesALegalNameFromAnyName)
+{
+  Path out;
+  ASSERT_TRUE(project::project_file(project::Folder::kTileSets, "forest", project::kTileSetSuffix, out).ok);
+  EXPECT_EQ(out, std::string_view{"tilesets/forest.tileset.json"});
+  ASSERT_TRUE(project::project_file(project::Folder::kRules, "forest", project::kRuleSetSuffix, out).ok);
+  EXPECT_EQ(out, std::string_view{"rules/forest.rules.json"});
+  // The name is the user's: a run of characters a file name should not hold collapses to one '-',
+  // and a leading or trailing one is dropped
+  ASSERT_TRUE(project::project_file(project::Folder::kTileSets, " cliffs / rock! ", ".json", out).ok);
+  EXPECT_EQ(out, std::string_view{"tilesets/cliffs-rock.json"});
+  // Nothing usable left, so the file is still a legal one
+  ASSERT_TRUE(project::project_file(project::Folder::kTileSets, "///", ".json", out).ok);
+  EXPECT_EQ(out, std::string_view{"tilesets/unnamed.json"});
+  ASSERT_TRUE(project::project_file(project::Folder::kTileSets, "", ".json", out).ok);
+  EXPECT_EQ(out, std::string_view{"tilesets/unnamed.json"});
+  // A name longer than a Name is cut to one rather than refused
+  ASSERT_TRUE(project::project_file(project::Folder::kRoot, std::string(200, 'a'), ".json", out).ok);
+  EXPECT_EQ(out.size(), Name::kMaxLength + 5);
 }
 
 TEST(Paths, ResolveAndRelativize)
@@ -401,6 +423,113 @@ TEST(Index, RemovingAMemberCompactsTheNameTable)
   EXPECT_EQ(project::portals_of(p, p.levels[0])[0], std::string_view{"b1"});
 }
 
+TEST(Catalogs, RemovingAnEntryRemapsEverythingInTheResidentLevelThatUsesIt)
+{
+  Fixture f;
+  project::Project p{f.project_arena};
+  project::create_default(p, "shoreline", "/p");
+  memory::Arena doc;
+  memory::push(f.shared, doc, 4UL << 20, "doc");
+  level::Level level{doc};
+  level::create_default(level, level::Settings{.extents = {2, 1}});
+
+  const level::SemanticId road = project::intern_semantic(p, "road");
+  const level::SemanticId river = project::intern_semantic(p, "river");
+  const level::MaterialId dirt = project::intern_material(p, "dirt");
+  const level::MaterialId snow = project::intern_material(p, "snow");
+  const auto sem = level::add_layer(level, level::LayerKind::kSemantic, "semantics");
+  const auto mat = level::add_layer(level, level::LayerKind::kMaterial, "materials");
+  level::plane<level::IdGrid>(level.layers[sem]).at(0, 0) = road;
+  level::plane<level::IdGrid>(level.layers[sem]).at(1, 0) = river;
+  level::plane<level::IdGrid>(level.layers[mat]).at(0, 0) = dirt;
+  level::plane<level::IdGrid>(level.layers[mat]).at(1, 0) = snow;
+  const level::TileSetId id = project::add_tileset(p, "t");
+  auto& ts = p.tilesets[id];
+  ts.image_width = 32;
+  ts.image_height = 16;
+  level::reslice(ts);
+  ts.tiles[0] = level::TileInfo{.semantic = river, .material = snow};
+  ts.tiles[1] = level::TileInfo{.semantic = road, .material = dirt};
+  level::set_seasonal_variant(
+    ts, level::SeasonalVariant{.tile = 0, .season = "winter", .alternate = 1, .material = snow});
+  const level::WfcTileId w = level::add_tile(p.rules[0].wfc, level::TileRef{id, 0});
+  p.rules[0].wfc.tiles[w].semantic = river;
+
+  EXPECT_EQ(project::semantic_uses(p, level, road), 2UL);
+  EXPECT_EQ(project::semantic_uses(p, level, river), 3UL);
+  EXPECT_EQ(project::material_uses(p, level, snow), 3UL);
+
+  project::remove_semantic(p, level, road);
+  ASSERT_EQ(p.semantics.size(), 2UL);
+  EXPECT_EQ(p.semantics[1].name, std::string_view{"river"});
+  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[sem]).at(0, 0), level::kNoSemantic);
+  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[sem]).at(1, 0), 1);
+  EXPECT_EQ(ts.tiles[0].semantic, 1);
+  EXPECT_EQ(ts.tiles[1].semantic, level::kNoSemantic);
+  EXPECT_EQ(p.rules[0].wfc.tiles[w].semantic, 1);
+
+  project::remove_material(p, level, dirt);
+  ASSERT_EQ(p.materials.size(), 2UL);
+  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[mat]).at(0, 0), level::kNoMaterial);
+  EXPECT_EQ(level::plane<level::IdGrid>(level.layers[mat]).at(1, 0), 1);
+  EXPECT_EQ(ts.tiles[0].material, 1);
+  EXPECT_EQ(ts.seasonal[0].material, 1);
+  EXPECT_EQ(project::material_uses(p, level, 1), 3UL);
+}
+
+TEST(Catalogs, RemovingATilesetDoesBothHalvesAndRefusesAcrossSeveralLevels)
+{
+  Fixture f;
+  project::Project p{f.project_arena};
+  project::create_default(p, "shoreline", "/p");
+  memory::Arena doc;
+  memory::push(f.shared, doc, 4UL << 20, "doc");
+  level::Level level{doc};
+  level::create_default(level, level::Settings{.extents = {2, 1}});
+
+  ASSERT_EQ(project::add_tileset(p, "a"), 0);
+  ASSERT_EQ(project::add_tileset(p, "b"), 1);
+  EXPECT_EQ(project::find_tileset(p, "b"), 1U);
+  EXPECT_EQ(project::find_tileset(p, "nowhere"), p.tilesets.size());
+  auto& ground = level::plane<level::TileGrid>(level.layers[1]);
+  ground.at(0, 0) = level::TileRef{0, 3};
+  ground.at(1, 0) = level::TileRef{1, 4};
+
+  // The tileset leaves the project and the level's references follow
+  ASSERT_TRUE(project::remove_tileset(p, level, 0).ok);
+  ASSERT_EQ(p.tilesets.size(), 1U);
+  EXPECT_EQ(p.tilesets[0].name, std::string_view{"b"});
+  EXPECT_TRUE(ground.at(0, 0).empty());
+  EXPECT_EQ(ground.at(1, 0), (level::TileRef{0, 4}));
+
+  // With several member levels only the open one could be renumbered, so it is refused outright
+  project::add_level(p, "one", "levels/one.json");
+  project::add_level(p, "two", "levels/two.json");
+  const Status s = project::remove_tileset(p, level, 0);
+  EXPECT_FALSE(s.ok);
+  EXPECT_EQ(p.tilesets.size(), 1U);
+}
+
+TEST(Index, SeasonsAreAddedFoundAndRemoved)
+{
+  Fixture f;
+  project::Project p{f.project_arena};
+  project::create_default(p, "shoreline", "/p");
+  // A project starts with one season, as a level used to
+  ASSERT_EQ(p.seasons.size(), 1U);
+  EXPECT_EQ(p.seasons[0].name, std::string_view{"default"});
+
+  const level::SeasonId winter = project::add_season(p, "winter");
+  EXPECT_EQ(winter, 1);
+  EXPECT_EQ(project::find_season(p, "winter"), winter);
+
+  project::remove_season(p, 0);
+  ASSERT_EQ(p.seasons.size(), 1U);
+  EXPECT_EQ(p.seasons[0].name, std::string_view{"winter"});
+  // The cycle must not become empty
+  EXPECT_DEATH(project::remove_season(p, 0), "at least one season");
+}
+
 TEST(Index, InternsCatalogEntriesByName)
 {
   Fixture f;
@@ -448,8 +577,18 @@ void populate(project::Project& p, memory::Arena& scratch, const std::string& ro
   p.seasons.clear();
   p.seasons.push_back(level::Season{.name = "summer", .duration_days = 120, .temperature = 24.0F});
   p.seasons.push_back(level::Season{.name = "winter", .duration_days = 60, .temperature = -4.0F});
-  p.tileset_files.push_back(Path{"tilesets/forest.tileset.json"});
-  p.rule_files.push_back(Path{"rules/forest.rules.json"});
+  // A real tileset and a real rule set: the manifest names their files, and saving the project
+  // writes each one through the standalone format it already had
+  const level::TileSetId ts = project::add_tileset(p, "forest");
+  p.tilesets[ts].image.assign("assets/atlases/forest.png");
+  p.tilesets[ts].image_width = 32;
+  p.tilesets[ts].image_height = 16;
+  level::reslice(p.tilesets[ts]);
+  p.tilesets[ts].tiles[1].name.assign("cobble");
+  p.tilesets[ts].tiles[1].semantic = project::intern_semantic(p, "road");
+  p.rules[0].wfc.name = "forest";
+  level::add_tile(p.rules[0].wfc, level::TileRef{ts, 1});
+  level::set_allowed(p.rules[0].wfc, 0, 0, level::Direction::kEast, true);
 
   const std::size_t over = project::add_level(p, "overworld", "levels/overworld.json");
   const std::size_t cave = project::add_level(p, "cave", "levels/cave.lvlb");
@@ -503,10 +642,20 @@ TEST(Manifest, RoundTrips)
   ASSERT_EQ(read.seasons.size(), 2U);
   EXPECT_EQ(read.seasons[0].name, std::string_view{"summer"});
   EXPECT_EQ(read.seasons[1].duration_days, 60U);
+  // The parts are files of their own, named after themselves, and their contents came back
   ASSERT_EQ(read.tileset_files.size(), 1U);
   EXPECT_EQ(read.tileset_files[0], std::string_view{"tilesets/forest.tileset.json"});
   ASSERT_EQ(read.rule_files.size(), 1U);
   EXPECT_EQ(read.rule_files[0], std::string_view{"rules/forest.rules.json"});
+  ASSERT_EQ(read.tilesets.size(), 1U);
+  EXPECT_EQ(read.tilesets[0].name, std::string_view{"forest"});
+  EXPECT_EQ(read.tilesets[0].image, std::string_view{"assets/atlases/forest.png"});
+  ASSERT_GT(read.tilesets[0].tiles.size(), 1U);
+  EXPECT_EQ(read.tilesets[0].tiles[1].name, std::string_view{"cobble"});
+  EXPECT_EQ(read.semantics[read.tilesets[0].tiles[1].semantic].name, std::string_view{"road"});
+  EXPECT_EQ(read.rules[0].wfc.name, std::string_view{"forest"});
+  ASSERT_EQ(read.rules[0].wfc.tiles.size(), 1U);
+  EXPECT_TRUE(level::allowed(read.rules[0].wfc, 0, 0, level::Direction::kEast));
 
   ASSERT_EQ(read.levels.size(), 2U);
   EXPECT_EQ(read.levels[0].name, std::string_view{"overworld"});
@@ -647,6 +796,147 @@ TEST(Manifest, RejectsBadFiles)
   const Status missing = project::load_project((root + "/not_there.json").c_str(), p, f.ctx);
   EXPECT_FALSE(missing.ok);
   EXPECT_FALSE(project::open_project(temp_dir("no_manifest").c_str(), p, f.ctx).ok);
+}
+
+TEST(Project, RuleSetsAreFoundAddedAndInternedByName)
+{
+  Fixture f;
+  project::Project p{f.project_arena};
+  memory::Arena doc;
+  memory::push(f.shared, doc, 4UL << 20, "doc");
+  level::Level level{doc};
+
+  // A project always holds one, as it always holds one season, so a level always has rules
+  ASSERT_EQ(p.rules.size(), 1U);
+  EXPECT_EQ(project::rules_of(p, level), 0U);
+
+  const std::size_t cave = project::add_rules(p, "cave");
+  EXPECT_EQ(cave, 1U);
+  EXPECT_EQ(project::find_rules(p, "cave"), 1U);
+  EXPECT_EQ(project::find_rules(p, "nowhere"), project::kNoRules);
+  // Interning finds the set of that name rather than adding a second
+  EXPECT_EQ(project::intern_rules(p, "cave"), 1U);
+  EXPECT_EQ(project::intern_rules(p, "cliffs"), 2U);
+  ASSERT_EQ(p.rules.size(), 3U);
+
+  // A level names the set it uses; one naming nothing, or a set that has gone, takes the first
+  level.rules = "cave";
+  EXPECT_EQ(project::rules_of(p, level), 1U);
+  level.rules = "never_existed";
+  EXPECT_EQ(project::rules_of(p, level), 0U);
+  level.rules.clear();
+  EXPECT_EQ(project::rules_of(p, level), 0U);
+
+  level.rules = "cliffs";
+  project::remove_rules(p, 1);
+  ASSERT_EQ(p.rules.size(), 2U);
+  EXPECT_EQ(p.rules[1].wfc.name, std::string_view{"cliffs"});
+  EXPECT_EQ(project::rules_of(p, level), 1U);
+  // A project keeps at least one, so removing the last is a no-op
+  project::remove_rules(p, 1);
+  project::remove_rules(p, 0);
+  EXPECT_EQ(p.rules.size(), 1U);
+}
+
+TEST(Manifest, ManyRuleSetsEachGetTheirOwnFile)
+{
+  Fixture f;
+  const std::string root = temp_dir("manifest_rule_sets");
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  const std::string manifest = root + "/project.json";
+
+  project::Project p{f.project_arena};
+  populate(p, f.scratch, root);
+  // A second set, so the levels of one project can differ by biome
+  const std::size_t cave = project::add_rules(p, "cave");
+  level::add_tile(p.rules[cave].wfc, level::TileRef{0, 0});
+  ASSERT_TRUE(project::save_project(manifest.c_str(), p, f.ctx).ok);
+  ASSERT_EQ(p.rule_files.size(), 2U);
+  EXPECT_EQ(p.rule_files[0], std::string_view{"rules/forest.rules.json"});
+  EXPECT_EQ(p.rule_files[1], std::string_view{"rules/cave.rules.json"});
+
+  memory::Arena other;
+  memory::push(f.shared, other, 4UL << 20, "project-b");
+  project::Project read{other};
+  const Status s = project::load_project(manifest.c_str(), read, f.ctx);
+  ASSERT_TRUE(s.ok) << s.message.c_str();
+  // Read in the order the manifest lists them, so each set keeps the index its levels name
+  ASSERT_EQ(read.rules.size(), 2U);
+  EXPECT_EQ(read.rules[0].wfc.name, std::string_view{"forest"});
+  EXPECT_EQ(read.rules[1].wfc.name, std::string_view{"cave"});
+  EXPECT_EQ(read.rules[0].wfc.tiles.size(), 1U);
+  EXPECT_EQ(read.rules[1].wfc.tiles.size(), 1U);
+}
+
+TEST(Manifest, RefusesAProjectWhoseTilesetFileIsGone)
+{
+  Fixture f;
+  const std::string root = temp_dir("manifest_lost_tileset");
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  // A tileset's place in the list is the id the levels' cells hold, so a file that will not load
+  // cannot be skipped: that would shift every tileset after it
+  write_text_file(
+    root + "/project.json", R"({"format": "lvl-project", "version": 100, "tilesets": ["tilesets/gone.tileset.json"]})");
+
+  project::Project p{f.project_arena};
+  const Status s = project::load_project((root + "/project.json").c_str(), p, f.ctx);
+  EXPECT_FALSE(s.ok);
+  EXPECT_FALSE(s.message.empty());
+}
+
+TEST(Manifest, APartKeepsTheFileItWasGiven)
+{
+  Fixture f;
+  const std::string root = temp_dir("manifest_part_files");
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  const std::string manifest = root + "/project.json";
+
+  project::Project p{f.project_arena};
+  populate(p, f.scratch, root);
+  ASSERT_TRUE(project::save_project(manifest.c_str(), p, f.ctx).ok);
+  ASSERT_EQ(p.tileset_files.size(), 1U);
+  EXPECT_EQ(p.tileset_files[0], std::string_view{"tilesets/forest.tileset.json"});
+  EXPECT_TRUE(file::exists((root + "/tilesets/forest.tileset.json").c_str()));
+  EXPECT_TRUE(file::exists((root + "/rules/forest.rules.json").c_str()));
+
+  // Renaming the tileset does not move its file: the project remembers where it put it, so a
+  // rename never orphans the file the manifest already names
+  p.tilesets[0].name.assign("woods");
+  ASSERT_TRUE(project::save_project(manifest.c_str(), p, f.ctx).ok);
+  EXPECT_EQ(p.tileset_files[0], std::string_view{"tilesets/forest.tileset.json"});
+  EXPECT_FALSE(file::exists((root + "/tilesets/woods.tileset.json").c_str()));
+
+  // A tileset added later gets a file of its own, from its own name
+  project::add_tileset(p, "cliffs");
+  ASSERT_TRUE(project::save_project(manifest.c_str(), p, f.ctx).ok);
+  ASSERT_EQ(p.tileset_files.size(), 2U);
+  EXPECT_EQ(p.tileset_files[1], std::string_view{"tilesets/cliffs.tileset.json"});
+  EXPECT_TRUE(file::exists((root + "/tilesets/cliffs.tileset.json").c_str()));
+}
+
+TEST(Manifest, SavingElsewhereMovesTheProjectThere)
+{
+  Fixture f;
+  const std::string root = temp_dir("manifest_from");
+  const std::string elsewhere = temp_dir("manifest_to");
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+
+  project::Project p{f.project_arena};
+  populate(p, f.scratch, root);
+  ASSERT_TRUE(project::save_project((root + "/project.json").c_str(), p, f.ctx).ok);
+  // A project is where its manifest is, writing as well as reading, so its parts follow it and the
+  // tree is created on the way
+  ASSERT_TRUE(project::save_project((elsewhere + "/project.json").c_str(), p, f.ctx).ok);
+  EXPECT_EQ(p.root, std::string_view{elsewhere});
+  EXPECT_TRUE(file::exists((elsewhere + "/tilesets/forest.tileset.json").c_str()));
+  EXPECT_TRUE(is_directory(elsewhere + "/levels"));
+
+  memory::Arena other;
+  memory::push(f.shared, other, 4UL << 20, "project-b");
+  project::Project read{other};
+  ASSERT_TRUE(project::open_project(elsewhere.c_str(), read, f.ctx).ok);
+  ASSERT_EQ(read.tilesets.size(), 1U);
+  EXPECT_EQ(read.tilesets[0].name, std::string_view{"forest"});
 }
 
 TEST(Manifest, RefusesToWriteABinaryManifest)

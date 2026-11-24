@@ -30,10 +30,10 @@ Rgba multiply(Rgba c, Rgba tint)
     c.a};
 }
 
-const Season* find(const Level& level, std::string_view name)
+const Season* find(const project::Project& project, std::string_view name)
 {
-  const SeasonId id = find_season(level, name);
-  return (id < level.seasons.size()) ? &level.seasons[id] : nullptr;
+  const SeasonId id = project::find_season(project, name);
+  return (id < project.seasons.size()) ? &project.seasons[id] : nullptr;
 }
 
 /// Draws a line (Bresenham) into an image
@@ -110,6 +110,7 @@ struct Overlays
 };
 
 void build_overlays(
+  const project::Project& project,
   const Level& level,
   const Atlases& atlases,
   std::string_view season,
@@ -123,7 +124,7 @@ void build_overlays(
       continue;
     }
     image::Image img = image::create(arena, level.settings.extents.width, level.settings.extents.height);
-    colorize(level, layer, img, &atlases, season);
+    colorize(project, layer, img, &atlases, season);
     out.layers[out.count] = &layer;
     out.images[out.count] = img;
     ++out.count;
@@ -133,6 +134,7 @@ void build_overlays(
 }  // namespace
 
 Status compose(
+  const project::Project& project,
   const Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,
@@ -159,9 +161,9 @@ Status compose(
   Overlays overlays;
   if (options.overlays)
   {
-    build_overlays(level, atlases, options.season, dest, overlays);
+    build_overlays(project, level, atlases, options.season, dest, overlays);
   }
-  const Season* season = options.tint ? find(level, options.season) : nullptr;
+  const Season* season = options.tint ? find(project, options.season) : nullptr;
 
   if (progress != nullptr)
   {
@@ -207,11 +209,11 @@ Status compose(
       for (int cx = 0; cx < e.width; ++cx)
       {
         const TileRef t = g.at(cx, cy);
-        if (t.empty() or t.tileset >= level.tilesets.size())
+        if (t.empty() or t.tileset >= project.tilesets.size())
         {
           continue;
         }
-        const TileSet& ts = level.tilesets[t.tileset];
+        const TileSet& ts = project.tilesets[t.tileset];
         const TileIndex drawn = seasonal_tile(ts, t.tile, options.season);
         const image::Image* atlas = (t.tileset < atlases.count) ? &atlases.images[t.tileset] : nullptr;
         if (atlas == nullptr or atlas->empty())
@@ -268,6 +270,7 @@ Status compose(
 }
 
 Status minimap(
+  const project::Project& project,
   const Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,
@@ -291,7 +294,7 @@ Status minimap(
     {
       continue;
     }
-    colorize(level, layer, layer_img, &atlases, options.season);
+    colorize(project, layer, layer_img, &atlases, options.season);
     for (std::size_t i = 0; i < cells.size(); ++i)
     {
       cells.pixels[i] = image::blend(cells.pixels[i], layer_img.pixels[i], layer.opacity);
@@ -299,7 +302,7 @@ Status minimap(
   }
   if (options.tint)
   {
-    if (const Season* season = find(level, options.season); season != nullptr)
+    if (const Season* season = find(project, options.season); season != nullptr)
     {
       for (std::size_t i = 0; i < cells.size(); ++i)
       {
@@ -326,6 +329,7 @@ Status minimap(
 
 Status export_png(
   const char* path,
+  const project::Project& project,
   const Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,
@@ -336,7 +340,7 @@ Status export_png(
   memory::Scope scope{scratch};
   // The image comes from the bottom of scratch; PNG encoding works above it (in a sub-arena)
   image::Image img;
-  LVL_RETURN_IF_ERROR(compose(level, atlases, options, scratch, img, workers, progress));
+  LVL_RETURN_IF_ERROR(compose(project, level, atlases, options, scratch, img, workers, progress));
   if (progress != nullptr)
   {
     progress->stage("Encoding PNG");
@@ -350,6 +354,7 @@ Status export_png(
 
 Status export_minimap_png(
   const char* path,
+  const project::Project& project,
   const Level& level,
   const Atlases& atlases,
   const ComposeOptions& options,
@@ -362,7 +367,7 @@ Status export_minimap_png(
   memory::push(scratch, result, memory::available(scratch) / 4, "minimap-result");
   memory::push(scratch, work, "minimap-work");
   image::Image img;
-  Status status = minimap(level, atlases, options, max_size, result, work, img);
+  Status status = minimap(project, level, atlases, options, max_size, result, work, img);
   if (status.ok)
   {
     status = image::save_png(path, img, work);

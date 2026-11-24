@@ -16,6 +16,7 @@ cc_binary(
         "//core:logging",
         "//core:memory",
         "//level:io",
+        "//project:model",
         "//render",
     ],
 )

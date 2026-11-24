@@ -215,6 +215,45 @@ Status relativize(std::string_view root, std::string_view path, Path& out)
   return Status::okay();
 }
 
+Status project_file(Folder folder, std::string_view name, std::string_view suffix, Path& out)
+{
+  // The name is the user's, so the file name is built a character at a time: anything a file name
+  // should not hold becomes '-', a run of them collapses, and a leading or trailing one is dropped,
+  // so "a / b" gives "a-b" rather than "a---b-"
+  char slug[Name::capacity()] = {};
+  std::size_t n = 0;
+  for (const char c : name)
+  {
+    if (n + 1 >= sizeof(slug))
+    {
+      break;
+    }
+    const bool keep =
+      (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '-' or c == '_' or c == '.';
+    if (keep)
+    {
+      slug[n++] = c;
+    }
+    else if (n > 0 and slug[n - 1] != '-')
+    {
+      slug[n++] = '-';
+    }
+  }
+  while (n > 0 and slug[n - 1] == '-')
+  {
+    --n;
+  }
+  const std::string_view stem = (n > 0) ? std::string_view{slug, n} : std::string_view{"unnamed"};
+  if (stem.size() + suffix.size() > Path::kMaxLength)
+  {
+    return Status::error(
+      "'%.*s' names a file too long for a project's tree", static_cast<int>(name.size()), name.data());
+  }
+  const Path tail = format<Path::capacity()>(
+    "%.*s%.*s", static_cast<int>(stem.size()), stem.data(), static_cast<int>(suffix.size()), suffix.data());
+  return join(folder_path(folder), tail.view(), out);
+}
+
 Status ensure_tree(std::string_view root)
 {
   if (root.empty())

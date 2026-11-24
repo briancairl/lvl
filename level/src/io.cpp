@@ -47,66 +47,67 @@ Status logged(const char* what, const char* path, Status status)
 
 }  // namespace
 
-Status save_level(const char* path, const Level& level, IoContext& ctx)
+Status
+save_level(const char* path, const project::Project& project, const Level& level, IoContext& ctx, LevelScope scope)
 {
   check_context(ctx);
   return logged(
     "Saved level",
     path,
-    format_of(path) == FileFormat::kBinary ? io::save_level_binary(path, level, ctx)
-                                           : io::save_level_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::save_level_binary(path, project, level, ctx, scope)
+                                           : io::save_level_json(path, project, level, ctx, scope));
 }
 
-Status load_level(const char* path, Level& level, IoContext& ctx)
+Status load_level(const char* path, project::Project& project, Level& level, IoContext& ctx)
 {
   check_context(ctx);
   reset(level);
   return logged(
     "Loaded level",
     path,
-    format_of(path) == FileFormat::kBinary ? io::load_level_binary(path, level, ctx)
-                                           : io::load_level_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::load_level_binary(path, project, level, ctx)
+                                           : io::load_level_json(path, project, level, ctx));
 }
 
-Status save_tileset(const char* path, const Level& level, TileSetId id, IoContext& ctx)
+Status save_tileset(const char* path, const project::Project& project, TileSetId id, IoContext& ctx)
 {
   check_context(ctx);
-  LVL_ASSERT_LT(id, level.tilesets.size());
+  LVL_ASSERT_LT(id, project.tilesets.size());
   return logged(
     "Saved tileset",
     path,
-    format_of(path) == FileFormat::kBinary ? io::save_tileset_binary(path, level, id, ctx)
-                                           : io::save_tileset_json(path, level, id, ctx));
+    format_of(path) == FileFormat::kBinary ? io::save_tileset_binary(path, project, id, ctx)
+                                           : io::save_tileset_json(path, project, id, ctx));
 }
 
-Status load_tileset(const char* path, Level& level, IoContext& ctx, TileSetId& id)
+Status load_tileset(const char* path, project::Project& project, IoContext& ctx, TileSetId& id)
 {
   check_context(ctx);
   return logged(
     "Loaded tileset",
     path,
-    format_of(path) == FileFormat::kBinary ? io::load_tileset_binary(path, level, ctx, id)
-                                           : io::load_tileset_json(path, level, ctx, id));
+    format_of(path) == FileFormat::kBinary ? io::load_tileset_binary(path, project, ctx, id)
+                                           : io::load_tileset_json(path, project, ctx, id));
 }
 
-Status save_wfc_rules(const char* path, const Level& level, IoContext& ctx)
+Status save_wfc_rules(const char* path, const project::Project& project, std::size_t index, IoContext& ctx)
 {
   check_context(ctx);
   return logged(
     "Saved WFC rules",
     path,
-    format_of(path) == FileFormat::kBinary ? io::save_wfc_binary(path, level, ctx)
-                                           : io::save_wfc_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::save_wfc_binary(path, project, index, ctx)
+                                           : io::save_wfc_json(path, project, index, ctx));
 }
 
-Status load_wfc_rules(const char* path, Level& level, IoContext& ctx)
+Status load_wfc_rules(const char* path, project::Project& project, IoContext& ctx, std::size_t& index)
 {
   check_context(ctx);
   return logged(
     "Loaded WFC rules",
     path,
-    format_of(path) == FileFormat::kBinary ? io::load_wfc_binary(path, level, ctx)
-                                           : io::load_wfc_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::load_wfc_binary(path, project, ctx, index)
+                                           : io::load_wfc_json(path, project, ctx, index));
 }
 
 Status save_paths(const char* path, const Level& level, IoContext& ctx)

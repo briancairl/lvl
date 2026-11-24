@@ -29,8 +29,12 @@
 #include "lvl/core/fixed_string.hpp"
 #include "lvl/core/memory.hpp"
 #include "lvl/core/status.hpp"
-#include "lvl/level/grid.hpp"
+#include "lvl/level/auto_tile_rules.hpp"
+#include "lvl/level/level.hpp"
+#include "lvl/level/step_rules.hpp"
+#include "lvl/level/tileset.hpp"
 #include "lvl/level/types.hpp"
+#include "lvl/level/wfc_rules.hpp"
 
 namespace lvl::project
 {
@@ -49,6 +53,37 @@ inline constexpr std::size_t kMaxObjectNames = 4096;
 
 /// Returned by the lookups when there is no such member level
 inline constexpr std::size_t kNoLevel = static_cast<std::size_t>(-1);
+
+/// Returned by <code>find_rules</code> when there is no rule set of that name
+inline constexpr std::size_t kNoRules = static_cast<std::size_t>(-1);
+
+/**
+ * @brief The three kinds of tile rules that go together, as one set
+ *
+ * They are one set because they are used as one: a terrain's border tiles, a cliff's step tiles and
+ * the WFC tiles they sit beside all come from the same tileset. The set's name is
+ * <code>wfc.name</code>, which is what the rules file already carries and what the adjacency window
+ * shows -- there is no second name to keep in step with it.
+ *
+ * A project holds a list of them and a level names the one it uses (<code>level::Level::rules</code>),
+ * because its levels differ by biome: a cave tileset and an overworld tileset want separate
+ * adjacency graphs, separate terrains and separate cliff art. One global set would force every tile
+ * of every tileset into one WFC graph, and "only what the layout shows" would then forbid
+ * cross-biome neighbours between levels that never touch.
+ *
+ * A project always holds at least one, as it always holds at least one season, so a level always
+ * has rules to resolve to and no caller has an empty case to handle.
+ */
+struct RuleSet
+{
+  explicit RuleSet(memory::Arena& arena) : wfc{arena}, auto_tiles{arena}, steps{arena} {}
+
+  level::WfcRules wfc;
+  /// Auto-tiling terrains (see level/auto_tile_rules.hpp)
+  level::AutoTileRules auto_tiles;
+  /// Height-step terrains, keyed on the difference in level between cells (see level/step_rules.hpp)
+  level::StepRules steps;
+};
 
 /**
  * @brief A member level: enough to list, link and validate it without loading it
@@ -108,12 +143,19 @@ struct Project
   memory::Vector<level::Material> materials;
   /// Seasons, in yearly order (at least one)
   memory::Vector<level::Season> seasons;
+  /// The tilesets its levels draw from, indexed by <code>level::TileSetId</code>
+  level::TileSets tilesets;
+  /// The tile rules its levels auto-tile with; at least one, each named by its <code>wfc.name</code>
+  memory::Vector<RuleSet> rules;
 
   /**
-   * @brief The tileset and rule-set files the project owns, relative to the root
+   * @brief Where each tileset's and rule set's own file lives, relative to the root
    *
-   * Their contents are loaded into the project alongside the level model move; until then these are
-   * the lists the manifest round-trips, so a project written now still names its parts.
+   * Parallel to <code>tilesets</code> and to the rule sets: entry <i>i</i> is where that one is
+   * written and where it was read from. An entry that is empty, or missing because the vector is
+   * shorter, has not been given a file yet; <code>save_project</code> gives it one made from its
+   * name (<code>project_file</code>) and records it here, so a part keeps the file it was loaded
+   * from rather than being renamed under the user.
    */
   memory::Vector<Path> tileset_files;
   memory::Vector<Path> rule_files;
@@ -201,11 +243,95 @@ enum class LinkState : std::uint8_t
 
 [[nodiscard]] LinkState portal_link(const Project& project, std::string_view level, std::string_view portal);
 
+/// Appends a tileset; returns its id
+level::TileSetId add_tileset(Project& project, std::string_view name);
+
+/// Index of the rule set named <code>name</code>, or <code>kNoRules</code>
+[[nodiscard]] std::size_t find_rules(const Project& project, std::string_view name);
+
+/// Appends a rule set named <code>name</code>; returns its index
+std::size_t add_rules(Project& project, std::string_view name);
+
+/**
+ * @brief Index of the rule set named <code>name</code>, adding it if there is none
+ *
+ * How a rule-set file is read in, so reading the same one twice does not leave two sets.
+ *
+ * A project's blank starting set is <b>not</b> taken over by the first set read in, which was
+ * tried: "one empty set" cannot tell that set apart from one the user just added and has not filled
+ * yet, so the second rules file read into a project would silently replace the first. The cost is a
+ * project that has only ever had rules imported keeping an unused set, which the user can remove;
+ * the cost of the other way round is losing a rule set without saying so.
+ */
+std::size_t intern_rules(Project& project, std::string_view name);
+
+/**
+ * @brief Index of the rule set <code>level</code> auto-tiles with
+ *
+ * The set it names, or the project's first when it names none or names one that has gone -- which
+ * is what a level written before rule sets were plural resolves to. Never <code>kNoRules</code>,
+ * since a project always holds at least one set.
+ */
+[[nodiscard]] std::size_t rules_of(const Project& project, const level::Level& level);
+
+/**
+ * @brief Removes a rule set; a project keeps at least one, so removing the last is a no-op
+ *
+ * Levels naming it fall back to the first set, as one naming a set that was never there does.
+ */
+void remove_rules(Project& project, std::size_t index);
+
+/// Index of the tileset named <code>name</code>, or <code>tilesets.size()</code>
+[[nodiscard]] std::size_t find_tileset(const Project& project, std::string_view name);
+
+/**
+ * @brief Removes a tileset and every reference to it in <code>level</code>
+ *
+ * Refused while the project has more than one member level: the others are not resident, so their
+ * tile cells would keep an id that has moved. The resident level's references are cleared and
+ * renumbered by <code>level::clear_tileset_refs</code>.
+ */
+Status remove_tileset(Project& project, level::Level& level, level::TileSetId id);
+
 /// Index of the catalog entry named <code>name</code> (adding it if it is missing)
 level::SemanticId intern_semantic(Project& project, std::string_view name);
 level::MaterialId intern_material(Project& project, std::string_view name);
 
+/**
+ * @brief Removes a catalog entry; everything that used it becomes "none" (id 0)
+ *
+ * Remapped: <code>level</code>'s semantic/material cells, its tile metadata, its seasonal variants
+ * (materials) and its WFC tiles (semantics); ids after the removed one shift down. Id 0 ("none")
+ * can't be removed.
+ *
+ * <b>Only the level given is remapped.</b> A project's other levels are not resident, so their
+ * cells keep an id that has moved. Until the catalogs stop renumbering, a project with more than
+ * one level should not remove an entry.
+ */
+void remove_semantic(Project& project, level::Level& level, level::SemanticId id);
+void remove_material(Project& project, level::Level& level, level::MaterialId id);
+
+/**
+ * @brief How many cells, tiles, seasonal variants and WFC tiles of <code>level</code> use an entry
+ *
+ * Counts the one level given, for the same reason: the project's other levels are not loaded, so a
+ * count of zero does not mean the entry is unused across the project.
+ */
+[[nodiscard]] std::size_t semantic_uses(const Project& project, const level::Level& level, level::SemanticId id);
+[[nodiscard]] std::size_t material_uses(const Project& project, const level::Level& level, level::MaterialId id);
+
 /// Index of the season named <code>name</code>, or <code>seasons.size()</code>
 [[nodiscard]] level::SeasonId find_season(const Project& project, std::string_view name);
+
+/**
+ * @brief Removes a season (a project keeps at least one)
+ *
+ * Tile variants for it stay in their tilesets, which key them on the season's name, so re-adding a
+ * season of that name brings its variants back.
+ */
+void remove_season(Project& project, level::SeasonId id);
+
+/// Adds a season named <code>name</code>; returns its index (at most 255 seasons)
+level::SeasonId add_season(Project& project, std::string_view name);
 
 }  // namespace lvl::project

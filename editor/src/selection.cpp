@@ -20,24 +20,24 @@ using namespace level;
 
 Extents palette_grid(const App& app, std::size_t tileset)
 {
-  const Level& lv = *app.level;
-  if (tileset >= lv.tilesets.size())
+  const project::Project& pr = *app.project;
+  if (tileset >= pr.tilesets.size())
   {
     return Extents{0, 0};
   }
-  const TileSet& ts = lv.tilesets[tileset];
+  const TileSet& ts = pr.tilesets[tileset];
   return slice_grid(ts.slice, ts.image_width, ts.image_height);
 }
 
 memory::Vector<TileIndex> selected_tiles(const App& app, memory::Arena& arena)
 {
   auto out = memory::make_vector<TileIndex>(arena);
-  const Level& lv = *app.level;
-  if (app.selection.tileset >= lv.tilesets.size())
+  const project::Project& pr = *app.project;
+  if (app.selection.tileset >= pr.tilesets.size())
   {
     return out;
   }
-  const std::size_t tiles = lv.tilesets[app.selection.tileset].tiles.size();
+  const std::size_t tiles = pr.tilesets[app.selection.tileset].tiles.size();
   out.reserve(app.selection.count);
   for (std::size_t i = 0; i < tiles; ++i)
   {
@@ -52,7 +52,7 @@ memory::Vector<TileIndex> selected_tiles(const App& app, memory::Arena& arena)
 memory::Vector<WfcTileId> selected_rule_tiles(const App& app, memory::Arena& arena)
 {
   auto out = memory::make_vector<WfcTileId>(arena);
-  const WfcRules& rules = app.level->wfc;
+  const WfcRules& rules = rule_set(app).wfc;
   for (std::size_t i = 0; i < rules.tiles.size(); ++i)
   {
     const TileRef tile = rules.tiles[i].tile;
@@ -71,7 +71,7 @@ bool selection_bounds(const App& app, SelectionBounds& out)
   {
     return false;
   }
-  const std::size_t tiles = app.level->tilesets[app.selection.tileset].tiles.size();
+  const std::size_t tiles = app.project->tilesets[app.selection.tileset].tiles.size();
   int x0 = grid.width;
   int y0 = grid.height;
   int x1 = -1;
@@ -168,13 +168,13 @@ bool paint_stamp(const App& app, Grid<TileRef>& out)
   {
     return true;
   }
-  const Level& lv = *app.level;
+  const project::Project& pr = *app.project;
   const TileRef base = app.paint.tile;
-  if (base.empty() or base.tileset >= lv.tilesets.size())
+  if (base.empty() or base.tileset >= pr.tilesets.size())
   {
     return false;
   }
-  const TileSet& ts = lv.tilesets[base.tileset];
+  const TileSet& ts = pr.tilesets[base.tileset];
   const int columns = std::max(1, palette_grid(app, base.tileset).width);
   const Extents e = Extents{std::max(1, app.paint.stamp_width), std::max(1, app.paint.stamp_height)};
   out.assign(e, kEmptyTile);

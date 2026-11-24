@@ -59,7 +59,7 @@ void neighbor_thumb(const App& app, WfcTileId b, float size, bool on)
   ImTextureID texture{};
   ImVec2 uv0;
   ImVec2 uv1;
-  if (tile_uv(app, app.level->wfc.tiles[b].tile, texture, uv0, uv1))
+  if (tile_uv(app, rule_set(app).wfc.tiles[b].tile, texture, uv0, uv1))
   {
     draw->AddImage(texture, lo, hi, uv0, uv1);
   }
@@ -80,7 +80,7 @@ void neighbor_thumb(const App& app, WfcTileId b, float size, bool on)
 /// Adjacencies taken from the palette: tiles sitting next to each other there may do so on the map
 void palette_layout_section(App& app)
 {
-  WfcRules& rules = app.level->wfc;
+  WfcRules& rules = rule_set(app).wfc;
   ImGui::SeparatorText("From the palette layout");
   if (selection_size(app) < 2)
   {
@@ -133,8 +133,8 @@ void palette_layout_section(App& app)
 /// Batch edit: the ticked constraints are applied to every selected rule tile
 void batch_constraints_section(App& app)
 {
-  Level& lv = *app.level;
-  WfcRules& rules = lv.wfc;
+  project::Project& pr = *app.project;
+  WfcRules& rules = rule_set(app).wfc;
   WfcTileEdit& edit = app.wfc_batch;
   const auto tiles = selected_rule_tiles(app, app.memory.frame);
   ImGui::SeparatorText("Batch constraints");
@@ -171,7 +171,7 @@ void batch_constraints_section(App& app)
   });
   batch_field("##batch_water", edit.set_water, [&] { enum_combo("Water##batch", edit.water); });
   batch_field(
-    "##batch_semantic", edit.set_semantic, [&] { catalog_combo("Semantic##batch", lv.semantics, edit.semantic); });
+    "##batch_semantic", edit.set_semantic, [&] { catalog_combo("Semantic##batch", pr.semantics, edit.semantic); });
   if (ImGui::Button(format<64>("Apply to %zu rule tiles", tiles.size())))
   {
     const std::size_t edited = apply_edit(rules, edit, tiles.data(), tiles.size());
@@ -184,7 +184,7 @@ void batch_constraints_section(App& app)
 /// The rule set's name and its file, which carries both kinds of rules
 void rules_header(App& app)
 {
-  input_text("Rule set", app.level->wfc.name);
+  input_text("Rule set", rule_set(app).wfc.name);
   if (ImGui::SmallButton("Import..."))
   {
     open_file_dialog(app, FileAction::kLoadWfc);
@@ -202,11 +202,11 @@ void rules_header(App& app)
 
 bool toolbar(App& app)
 {
-  Level& lv = *app.level;
-  WfcRules& rules = lv.wfc;
+  project::Project& pr = *app.project;
+  WfcRules& rules = rule_set(app).wfc;
   bool changed = false;
   const std::size_t selected = selection_size(app);
-  ImGui::BeginDisabled(selected == 0 and (app.paint.tile.empty() or app.paint.tile.tileset >= lv.tilesets.size()));
+  ImGui::BeginDisabled(selected == 0 and (app.paint.tile.empty() or app.paint.tile.tileset >= pr.tilesets.size()));
   if (ImGui::SmallButton("Add palette tile(s)"))
   {
     // Adds the palette selection, or the palette stamp when there is none
@@ -219,7 +219,7 @@ bool toolbar(App& app)
     }
     else
     {
-      const TileSet& ts = lv.tilesets[app.paint.tile.tileset];
+      const TileSet& ts = pr.tilesets[app.paint.tile.tileset];
       const int cols = std::max(1, slice_grid(ts.slice, ts.image_width, ts.image_height).width);
       for (int dy = 0; dy < app.paint.stamp_height; ++dy)
       {
@@ -259,7 +259,7 @@ bool toolbar(App& app)
 /// The strip of rule tiles: picks the tile whose rules are edited (ctrl+click: batch selection)
 void tile_strip(App& app)
 {
-  WfcRules& rules = app.level->wfc;
+  WfcRules& rules = rule_set(app).wfc;
   constexpr float kThumb = 32.0F;
   ImGui::BeginChild(
     "tiles",
@@ -305,7 +305,7 @@ void tile_strip(App& app)
  */
 bool neighbor_row(App& app, WfcTileId a, Direction d)
 {
-  WfcRules& rules = app.level->wfc;
+  WfcRules& rules = rule_set(app).wfc;
   const auto n = static_cast<WfcTileId>(rules.tiles.size());
   bool changed = false;
   ImGui::PushID(static_cast<int>(d));
@@ -455,7 +455,7 @@ bool pattern_slot(App& app, AutoTerrain& terrain, NeighborMask mask, float size)
     draw->AddText(
       ImVec2{lo.x + 2, hi.y - ImGui::GetTextLineHeight()}, IM_COL32(255, 255, 255, 220), format<8>("x%zu", pool));
   }
-  const bool can_set = !app.paint.tile.empty() and app.paint.tile.tileset < app.level->tilesets.size();
+  const bool can_set = !app.paint.tile.empty() and app.paint.tile.tileset < app.project->tilesets.size();
   if (ImGui::IsItemClicked(ImGuiMouseButton_Left) and can_set)
   {
     if (ImGui::GetIO().KeyCtrl)
@@ -508,12 +508,12 @@ bool pattern_slot(App& app, AutoTerrain& terrain, NeighborMask mask, float size)
 /// The terrain list, and the one being edited
 bool terrain_list(App& app)
 {
-  Level& lv = *app.level;
-  AutoTileRules& rules = lv.auto_tiles;
+  project::Project& pr = *app.project;
+  AutoTileRules& rules = rule_set(app).auto_tiles;
   bool changed = false;
   if (ImGui::SmallButton("Add terrain"))
   {
-    app.terrain = add_terrain(rules, *lv.arena, format<32>("terrain_%zu", rules.terrains.size() + 1));
+    app.terrain = add_terrain(rules, *pr.arena, format<32>("terrain_%zu", rules.terrains.size() + 1));
     changed = true;
   }
   if (ImGui::IsItemHovered())
@@ -605,16 +605,15 @@ bool terrain_layout_section(App& app, AutoTerrain& terrain)
 
 void auto_tile_body(App& app)
 {
-  Level& lv = *app.level;
   bool changed = terrain_list(app);
-  if (lv.auto_tiles.terrains.empty())
+  if (rule_set(app).auto_tiles.terrains.empty())
   {
     ImGui::TextDisabled("No terrains yet. Add one, then give it the tiles of its edges and corners -- the usual\n"
                         "way is to select the 3x3 block of a tileset's nine-slice and take it below.");
     app.modified |= changed;
     return;
   }
-  AutoTerrain& terrain = lv.auto_tiles.terrains[app.terrain];
+  AutoTerrain& terrain = rule_set(app).auto_tiles.terrains[app.terrain];
   ImGui::SeparatorText("Terrain");
   changed |= input_text("Name", terrain.name);
   changed |= enum_combo("Neighborhood", terrain.neighborhood);
@@ -760,8 +759,7 @@ bool step_slot(App& app, StepTerrain& terrain, StepType type, float size)
 
 bool step_terrain_list(App& app)
 {
-  Level& lv = *app.level;
-  StepRules& rules = lv.steps;
+  StepRules& rules = rule_set(app).steps;
   bool changed = false;
   if (ImGui::SmallButton("Add terrain"))
   {
@@ -821,17 +819,16 @@ bool step_terrain_list(App& app)
 
 void steps_body(App& app)
 {
-  Level& lv = *app.level;
   bool changed = step_terrain_list(app);
   ImGui::TextDisabled("Ground cut into whole height levels, with a cliff drawn wherever two levels meet.\n"
                       "Fill a map with them in Generate > Height steps.");
-  if (lv.steps.terrains.empty())
+  if (rule_set(app).steps.terrains.empty())
   {
     ImGui::TextDisabled("No terrains yet. Add one, then select a tileset's 3-wide, 6-tall step block and take it.");
     app.modified |= changed;
     return;
   }
-  StepTerrain& terrain = lv.steps.terrains[app.step_terrain];
+  StepTerrain& terrain = rule_set(app).steps.terrains[app.step_terrain];
   ImGui::SeparatorText("Terrain");
   changed |= input_text("Name", terrain.name);
   changed |= ImGui::DragIntRange2("Levels", &terrain.level_lo, &terrain.level_hi, 0.1F, 0, 255);
@@ -892,8 +889,8 @@ void steps_body(App& app)
 
 void adjacency_body(App& app)
 {
-  Level& lv = *app.level;
-  WfcRules& rules = lv.wfc;
+  project::Project& pr = *app.project;
+  WfcRules& rules = rule_set(app).wfc;
   bool changed = toolbar(app);
   palette_layout_section(app);
   if (rules.tiles.empty())
@@ -912,14 +909,14 @@ void adjacency_body(App& app)
   ImGui::SameLine();
   ImGui::BeginGroup();
   const char* name =
-    (tile.tile.tileset < lv.tilesets.size() and tile.tile.tile < lv.tilesets[tile.tile.tileset].tiles.size())
-    ? lv.tilesets[tile.tile.tileset].tiles[tile.tile.tile].name.c_str()
+    (tile.tile.tileset < pr.tilesets.size() and tile.tile.tile < pr.tilesets[tile.tile.tileset].tiles.size())
+    ? pr.tilesets[tile.tile.tileset].tiles[tile.tile.tile].name.c_str()
     : "";
   ImGui::Text("#%u  tile %u:%u %s", app.wfc_tile, tile.tile.tileset, tile.tile.tile, name);
   changed |= ImGui::DragFloat("Weight", &tile.weight, 0.05F, 0.0F, 1000.0F);
   changed |= ImGui::DragFloatRange2("Height band", &tile.height_min, &tile.height_max, 0.005F, 0.0F, 1.0F);
   changed |= enum_combo("Water", tile.water);
-  changed |= catalog_combo("Semantic", lv.semantics, tile.semantic);
+  changed |= catalog_combo("Semantic", pr.semantics, tile.semantic);
   if (ImGui::SmallButton("Remove from rules"))
   {
     remove_tile(rules, app.wfc_tile);

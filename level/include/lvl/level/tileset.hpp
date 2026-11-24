@@ -74,7 +74,7 @@ struct TileProperty
 struct SeasonalVariant
 {
   TileIndex tile = 0;
-  /// Season name (matched against the level's seasons, so tilesets work across levels)
+  /// Season name (matched against the project's seasons, so tilesets work across projects)
   Name season;
   TileIndex alternate = 0;
   MaterialId material = kNoMaterial;
@@ -125,6 +125,9 @@ struct TileSet
   memory::Vector<TileProperty> properties;
   memory::Vector<SeasonalVariant> seasonal;
 };
+
+/// A project's tilesets, indexed by <code>TileSetId</code>; a level names them, the project owns them
+using TileSets = memory::Vector<TileSet>;
 
 /// Number of tile columns/rows <code>params</code> yields for an image of the given size
 Extents slice_grid(const SliceParams& params, int image_width, int image_height);

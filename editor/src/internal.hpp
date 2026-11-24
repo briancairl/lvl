@@ -35,6 +35,18 @@ inline bool skip_while_busy(const App& app)
   return true;
 }
 
+/**
+ * @brief The rule set the open level auto-tiles with
+ *
+ * The one its <code>rules</code> names, or the project's first (see
+ * <code>project::rules_of</code>). Non-const from a const <code>App&</code> because the App holds
+ * the project by pointer, as every other panel reaches it.
+ */
+[[nodiscard]] inline project::RuleSet& rule_set(const App& app)
+{
+  return app.project->rules[project::rules_of(*app.project, *app.level)];
+}
+
 /// The job memory of the running job (valid while a job runs)
 JobMemory& job_memory(App& app);
 

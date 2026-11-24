@@ -5,6 +5,9 @@
  */
 
 // C++ Standard Library
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <utility>
 
 // LVL
@@ -34,6 +37,8 @@ Project::Project(memory::Arena& arena) :
     semantics{memory::ArenaAllocator<level::SemanticType>{arena}},
     materials{memory::ArenaAllocator<level::Material>{arena}},
     seasons{memory::ArenaAllocator<level::Season>{arena}},
+    tilesets{memory::ArenaAllocator<level::TileSet>{arena}},
+    rules{memory::ArenaAllocator<RuleSet>{arena}},
     tileset_files{memory::ArenaAllocator<Path>{arena}},
     rule_files{memory::ArenaAllocator<Path>{arena}},
     levels{memory::ArenaAllocator<LevelEntry>{arena}},
@@ -42,6 +47,9 @@ Project::Project(memory::Arena& arena) :
   semantics.push_back(level::SemanticType{.name = "none", .color = {0, 0, 0, 0}});
   materials.push_back(level::Material{.name = "none", .color = {0, 0, 0, 0}});
   seasons.push_back(level::Season{.name = "default"});
+  // At least one rule set, as there is at least one season, so a level always has one to resolve to
+  rules.emplace_back(arena);
+  rules.back().wfc.name = "rules";
   // Reserved up front and never grown, so every rebuild reuses this one block (see kMaxObjectNames)
   object_names.reserve(kMaxObjectNames);
   levels.reserve(kMaxLevels);
@@ -62,6 +70,9 @@ void create_default(Project& project, std::string_view name, std::string_view ro
   const std::string_view folder = file_name(root);
   project.name.assign(name.empty() ? (folder.empty() ? std::string_view{"untitled"} : folder) : name);
   project.root.assign(root);
+  // A new project's one rule set is named after it, so its file is <project>.rules.json rather than
+  // the bare "rules" a default-constructed Project carries
+  project.rules[0].wfc.name = project.name;
 }
 
 std::size_t find_level(const Project& project, std::string_view name)
@@ -269,6 +280,194 @@ level::MaterialId intern_material(Project& project, std::string_view name)
   }
   project.materials.push_back(level::Material{.name = Name{name}});
   return static_cast<level::MaterialId>(project.materials.size() - 1);
+}
+
+void remove_season(Project& project, level::SeasonId id)
+{
+  LVL_ASSERT_GT(project.seasons.size(), 1UL) << "a project needs at least one season";
+  LVL_ASSERT_LT(id, project.seasons.size());
+  project.seasons.erase(project.seasons.begin() + static_cast<std::ptrdiff_t>(id));
+}
+
+level::SeasonId add_season(Project& project, std::string_view name)
+{
+  // SeasonId is a byte, and a cycle of 255 seasons is already past anything sensible
+  LVL_ASSERT_LT(project.seasons.size(), 255UL) << "a project holds at most 255 seasons";
+  project.seasons.push_back(level::Season{.name = Name{name}});
+  return static_cast<level::SeasonId>(project.seasons.size() - 1);
+}
+
+std::size_t find_rules(const Project& project, std::string_view name)
+{
+  for (std::size_t i = 0; i < project.rules.size(); ++i)
+  {
+    if (project.rules[i].wfc.name == name)
+    {
+      return i;
+    }
+  }
+  return kNoRules;
+}
+
+std::size_t add_rules(Project& project, std::string_view name)
+{
+  project.rules.emplace_back(*project.arena);
+  project.rules.back().wfc.name.assign(name);
+  return project.rules.size() - 1;
+}
+
+std::size_t intern_rules(Project& project, std::string_view name)
+{
+  const std::size_t found = find_rules(project, name);
+  return (found == kNoRules) ? add_rules(project, name) : found;
+}
+
+std::size_t rules_of(const Project& project, const level::Level& level)
+{
+  LVL_ASSERT_FALSE(project.rules.empty()) << "a project always holds at least one rule set";
+  if (level.rules.empty())
+  {
+    return 0;
+  }
+  const std::size_t found = find_rules(project, level.rules.view());
+  // A level naming a set the project does not have falls back rather than failing: the set may have
+  // been removed, and the level is still editable with the project's first
+  return (found == kNoRules) ? 0 : found;
+}
+
+void remove_rules(Project& project, std::size_t index)
+{
+  LVL_ASSERT_LT(index, project.rules.size());
+  if (project.rules.size() == 1)
+  {
+    return;
+  }
+  project.rules.erase(project.rules.begin() + static_cast<std::ptrdiff_t>(index));
+  // The file list is parallel to the sets, as the tilesets' is
+  if (index < project.rule_files.size())
+  {
+    project.rule_files.erase(project.rule_files.begin() + static_cast<std::ptrdiff_t>(index));
+  }
+}
+
+level::TileSetId add_tileset(Project& project, std::string_view name)
+{
+  LVL_ASSERT_LT(project.tilesets.size(), static_cast<std::size_t>(level::kNoTileSet)) << "too many tilesets";
+  project.tilesets.emplace_back(*project.arena);
+  project.tilesets.back().name.assign(name);
+  return static_cast<level::TileSetId>(project.tilesets.size() - 1);
+}
+
+std::size_t find_tileset(const Project& project, std::string_view name)
+{
+  for (std::size_t i = 0; i < project.tilesets.size(); ++i)
+  {
+    if (project.tilesets[i].name == name)
+    {
+      return i;
+    }
+  }
+  return project.tilesets.size();
+}
+
+Status remove_tileset(Project& project, level::Level& level, level::TileSetId id)
+{
+  LVL_ASSERT_LT(id, project.tilesets.size());
+  if (project.levels.size() > 1)
+  {
+    return Status::error(
+      "'%s' is used by %zu levels, and only the open one can be renumbered; removing a tileset from a "
+      "project of several levels is not supported yet",
+      project.tilesets[id].name.c_str(),
+      project.levels.size());
+  }
+  project.tilesets.erase(project.tilesets.begin() + static_cast<std::ptrdiff_t>(id));
+  // The file list is parallel to the tilesets, so it has to follow the removal or every entry after
+  // this one would name the wrong file
+  if (id < project.tileset_files.size())
+  {
+    project.tileset_files.erase(project.tileset_files.begin() + static_cast<std::ptrdiff_t>(id));
+  }
+  level::clear_tileset_refs(level, id);
+  for (RuleSet& set : project.rules)
+  {
+    level::clear_tileset_refs(set.wfc, id);
+    level::clear_tileset_refs(set.auto_tiles, id);
+    level::clear_tileset_refs(set.steps, id);
+  }
+  return Status::okay();
+}
+
+void remove_semantic(Project& project, level::Level& level, level::SemanticId id)
+{
+  LVL_ASSERT_GT(id, level::kNoSemantic) << "the 'none' semantic type can't be removed";
+  LVL_ASSERT_LT(id, project.semantics.size());
+  project.semantics.erase(project.semantics.begin() + static_cast<std::ptrdiff_t>(id));
+  level::for_each_id_cell(level, level::LayerKind::kSemantic, [id](std::uint16_t& v) { v = level::remap_id(v, id); });
+  for (auto& ts : project.tilesets)
+  {
+    for (auto& t : ts.tiles)
+    {
+      t.semantic = level::remap_id(t.semantic, id);
+    }
+  }
+  for (RuleSet& set : project.rules)
+  {
+    for (auto& t : set.wfc.tiles)
+    {
+      t.semantic = level::remap_id(t.semantic, id);
+    }
+  }
+}
+
+void remove_material(Project& project, level::Level& level, level::MaterialId id)
+{
+  LVL_ASSERT_GT(id, level::kNoMaterial) << "the 'none' material can't be removed";
+  LVL_ASSERT_LT(id, project.materials.size());
+  project.materials.erase(project.materials.begin() + static_cast<std::ptrdiff_t>(id));
+  level::for_each_id_cell(level, level::LayerKind::kMaterial, [id](std::uint16_t& v) { v = level::remap_id(v, id); });
+  for (auto& ts : project.tilesets)
+  {
+    for (auto& t : ts.tiles)
+    {
+      t.material = level::remap_id(t.material, id);
+    }
+    for (auto& v : ts.seasonal)
+    {
+      v.material = level::remap_id(v.material, id);
+    }
+  }
+}
+
+std::size_t semantic_uses(const Project& project, const level::Level& level, level::SemanticId id)
+{
+  LVL_ASSERT_LT(id, project.semantics.size());
+  std::size_t n = level::count_id_cells(level, level::LayerKind::kSemantic, [id](std::uint16_t v) { return v == id; });
+  for (const auto& ts : project.tilesets)
+  {
+    n += static_cast<std::size_t>(
+      std::count_if(ts.tiles.begin(), ts.tiles.end(), [id](const level::TileInfo& t) { return t.semantic == id; }));
+  }
+  for (const RuleSet& set : project.rules)
+  {
+    n += static_cast<std::size_t>(std::count_if(
+      set.wfc.tiles.begin(), set.wfc.tiles.end(), [id](const level::WfcTile& t) { return t.semantic == id; }));
+  }
+  return n;
+}
+
+std::size_t material_uses(const Project& project, const level::Level& level, level::MaterialId id)
+{
+  LVL_ASSERT_LT(id, project.materials.size());
+  std::size_t n = level::count_id_cells(level, level::LayerKind::kMaterial, [id](std::uint16_t v) { return v == id; });
+  for (const auto& ts : project.tilesets)
+  {
+    n += static_cast<std::size_t>(
+      std::count_if(ts.tiles.begin(), ts.tiles.end(), [id](const level::TileInfo& t) { return t.material == id; }));
+    n += static_cast<std::size_t>(std::count_if(
+      ts.seasonal.begin(), ts.seasonal.end(), [id](const level::SeasonalVariant& v) { return v.material == id; }));
+  }
+  return n;
 }
 
 level::SeasonId find_season(const Project& project, std::string_view name)

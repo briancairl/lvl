@@ -3,13 +3,15 @@
  *
  * @file level.hpp
  *
- * The level document: grid settings, catalogs, tilesets, layers, seasons, WFC and auto-tiling
+ * The level document: grid settings, layers, path graphs
  * rules, path graphs and objects. Everything it holds is allocated from one document arena; <code>reset()</code>
  * rewinds that arena wholesale (new/load), so there is no per-object freeing to get wrong.
  */
 #pragma once
 
 // C++ Standard Library
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -53,20 +55,18 @@ struct Level
   memory::Arena* arena;
 
   Settings settings;
-  /// Semantic types; index 0 is the reserved "none" entry
-  memory::Vector<SemanticType> semantics;
-  /// Materials; index 0 is the reserved "none" entry
-  memory::Vector<Material> materials;
-  /// Seasons, in yearly order (at least one)
-  memory::Vector<Season> seasons;
-  memory::Vector<TileSet> tilesets;
+  /**
+   * @brief Which of its project's rule sets this level auto-tiles with, by name
+   *
+   * Not part of <code>Settings</code>, because it is a reference to the project rather than a
+   * setting of the level, and because the two formats carry it differently: a file that carries its
+   * rules already names them (the rules' own name), so only a project-scope file has to say which
+   * set it means. Empty resolves to the project's first set (see <code>project::rules_of</code>),
+   * which is what every file written before rule sets were plural gets.
+   */
+  Name rules;
   /// Layers, bottom to top
   memory::Vector<Layer> layers;
-  WfcRules wfc;
-  /// Auto-tiling terrains (the other kind of tile adjacency rules; see auto_tile_rules.hpp)
-  AutoTileRules auto_tiles;
-  /// Height-step terrains, keyed on the difference in level between cells (see step_rules.hpp)
-  StepRules steps;
   memory::Vector<PathGraph> graphs;
   Registry registry;
 };
@@ -74,7 +74,7 @@ struct Level
 /**
  * @brief Destroys everything in <code>level</code>, rewinds its arena, and re-creates it empty
  *
- * The result has the default catalogs (a "none" semantic type and material) and one season.
+ * The catalogs it draws on belong to its project.
  */
 void reset(Level& level);
 
@@ -96,34 +96,55 @@ void move_layer(Level& level, std::size_t from, std::size_t to);
 /// Index of the first layer of <code>kind</code>, or <code>level.layers.size()</code>
 std::size_t find_layer(const Level& level, LayerKind kind);
 
-/// Appends a tileset; returns its id
-TileSetId add_tileset(Level& level, std::string_view name);
-
-/// Removes a tileset, clearing tile cells that referenced it and renumbering later tilesets
-void remove_tileset(Level& level, TileSetId id);
-
-/// Index of the catalog entry named <code>name</code> (adding it if missing)
-SemanticId intern_semantic(Level& level, std::string_view name);
-MaterialId intern_material(Level& level, std::string_view name);
+/**
+ * @brief Clears or renumbers every tile cell of <code>level</code> naming tileset <code>id</code>
+ *
+ * Cells that held it become empty and later tilesets shift down. The tileset itself belongs to the
+ * project, as do the rule sets that name it, each of which has its own overload (see
+ * <code>wfc_rules.hpp</code>, <code>auto_tile_rules.hpp</code>, <code>step_rules.hpp</code>);
+ * <code>project::remove_tileset</code> drives them all.
+ */
+void clear_tileset_refs(Level& level, TileSetId id);
 
 /**
- * @brief Removes a catalog entry; everything that used it becomes "none" (id 0)
+ * @brief New value of an id cell once catalog entry <code>removed</code> is erased
  *
- * Remapped: semantic/material layer cells, tile metadata, seasonal variants (materials) and WFC
- * tiles (semantics); ids after the removed one shift down. Id 0 ("none") can't be removed.
+ * 0 ("none") if it was that entry, one less if it was after it, unchanged otherwise.
  */
-void remove_semantic(Level& level, SemanticId id);
-void remove_material(Level& level, MaterialId id);
+constexpr std::uint16_t remap_id(std::uint16_t v, std::uint16_t removed)
+{
+  return (v == removed) ? 0 : (v > removed ? static_cast<std::uint16_t>(v - 1) : v);
+}
 
-/// How many cells, tiles, seasonal variants and WFC tiles use a catalog entry
-std::size_t semantic_uses(const Level& level, SemanticId id);
-std::size_t material_uses(const Level& level, MaterialId id);
+/// Applies <code>fn(std::uint16_t&)</code> to every cell of every layer of <code>kind</code>
+template <typename Fn> void for_each_id_cell(Level& level, LayerKind kind, Fn&& fn)
+{
+  for (auto& layer : level.layers)
+  {
+    if (layer.kind == kind)
+    {
+      for (auto& v : plane<IdGrid>(layer).values)
+      {
+        fn(v);
+      }
+    }
+  }
+}
 
-/// Removes a season (a level keeps at least one); tile variants for it stay in their tilesets
-void remove_season(Level& level, SeasonId id);
-
-/// Index of the season named <code>name</code>, or <code>level.seasons.size()</code>
-SeasonId find_season(const Level& level, std::string_view name);
+/// Counts the cells of every layer of <code>kind</code> that <code>match</code> accepts
+template <typename Fn> std::size_t count_id_cells(const Level& level, LayerKind kind, Fn&& match)
+{
+  std::size_t n = 0;
+  for (const auto& layer : level.layers)
+  {
+    if (layer.kind == kind)
+    {
+      n += static_cast<std::size_t>(
+        std::count_if(plane<IdGrid>(layer).values.begin(), plane<IdGrid>(layer).values.end(), match));
+    }
+  }
+  return n;
+}
 
 /// Adds a path graph; returns its id
 GraphId add_graph(Level& level, std::string_view name, GraphKind kind);
@@ -137,9 +158,9 @@ void remove_graph(Level& level, GraphId id);
  * Each cell gets the union of the collision masks of the tiles on every visible tile layer at that
  * cell, as drawn during <code>season</code>.
  */
-void derive_collision(Level& level, std::size_t collision_layer, std::string_view season);
+void derive_collision(const TileSets& tilesets, Level& level, std::size_t collision_layer, std::string_view season);
 
 /// As derive_collision, for a material layer (topmost non-empty tile with a material wins)
-void derive_materials(Level& level, std::size_t material_layer, std::string_view season);
+void derive_materials(const TileSets& tilesets, Level& level, std::size_t material_layer, std::string_view season);
 
 }  // namespace lvl::level

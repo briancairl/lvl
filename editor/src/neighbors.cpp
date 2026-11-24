@@ -78,10 +78,10 @@ const char* label(Direction d)
   return "";
 }
 
-const char* tile_name(const Level& lv, const WfcTile& t)
+const char* tile_name(const TileSets& tilesets, const WfcTile& t)
 {
-  return (t.tile.tileset < lv.tilesets.size() and t.tile.tile < lv.tilesets[t.tile.tileset].tiles.size())
-    ? lv.tilesets[t.tile.tileset].tiles[t.tile.tile].name.c_str()
+  return (t.tile.tileset < tilesets.size() and t.tile.tile < tilesets[t.tile.tileset].tiles.size())
+    ? tilesets[t.tile.tileset].tiles[t.tile.tile].name.c_str()
     : "";
 }
 
@@ -115,8 +115,8 @@ bool accept_tile(DragPayload& out)
  */
 bool tile_cell(const App& app, WfcTileId id, float size, std::int8_t from, ImU32 border)
 {
-  const Level& lv = *app.level;
-  const WfcTile& t = lv.wfc.tiles[id];
+  const project::Project& pr = *app.project;
+  const WfcTile& t = rule_set(app).wfc.tiles[id];
   ImGui::PushID(id);
   const bool clicked = ImGui::InvisibleButton("##tile", ImVec2{size, size});
   const ImVec2 lo = ImGui::GetItemRectMin();
@@ -146,7 +146,7 @@ bool tile_cell(const App& app, WfcTileId id, float size, std::int8_t from, ImU32
     // In a slot the direction is known, so the tooltip can show the two tiles as they would sit
     if (from < 0 or !wfc_pair_tooltip(app, app.wfc_tile, id, static_cast<Direction>(from), hint))
     {
-      ImGui::SetTooltip("#%u  %s (%u:%u)\n%s", id, tile_name(lv, t), t.tile.tileset, t.tile.tile, hint);
+      ImGui::SetTooltip("#%u  %s (%u:%u)\n%s", id, tile_name(pr.tilesets, t), t.tile.tileset, t.tile.tile, hint);
     }
   }
   if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None))
@@ -156,7 +156,7 @@ bool tile_cell(const App& app, WfcTileId id, float size, std::int8_t from, ImU32
     tile_image(app, t.tile, 40.0F);
     ImGui::SameLine();
     ImGui::BeginGroup();
-    ImGui::Text("#%u  %s", id, tile_name(lv, t));
+    ImGui::Text("#%u  %s", id, tile_name(pr.tilesets, t));
     ImGui::TextDisabled(
       (from < 0) ? "Drop on a side" : (ImGui::GetIO().KeyCtrl ? "Copy to another side" : "Move to another side"));
     ImGui::EndGroup();
@@ -211,7 +211,7 @@ template <std::size_t N> void copy_side(WfcRules& rules, WfcTileId a, Direction 
 /// One of the eight slots around the edited tile; returns true if the rules changed
 bool slot(App& app, Direction d, ImVec2 size)
 {
-  WfcRules& rules = app.level->wfc;
+  WfcRules& rules = rule_set(app).wfc;
   const WfcTileId a = app.wfc_tile;
   const auto n = static_cast<WfcTileId>(rules.tiles.size());
   const bool ignored = diagonal(d) and !rules.diagonals;
@@ -319,8 +319,8 @@ bool slot(App& app, Direction d, ImVec2 size)
 /// The middle of the grid: the edited tile; dropping another tile here edits that one instead
 void center(App& app, ImVec2 size)
 {
-  const Level& lv = *app.level;
-  const WfcTile& t = lv.wfc.tiles[app.wfc_tile];
+  const project::Project& pr = *app.project;
+  const WfcTile& t = rule_set(app).wfc.tiles[app.wfc_tile];
   ImGui::BeginChild("center", size, ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
   const float text = ImGui::GetTextLineHeightWithSpacing();
   const float side = std::max(16.0F, std::min(size.x, size.y) - 2.0F * text - 2.0F * ImGui::GetStyle().WindowPadding.y);
@@ -328,14 +328,14 @@ void center(App& app, ImVec2 size)
   const ImVec2 p = ImGui::GetCursorScreenPos();
   tile_image(app, t.tile, side);
   ImGui::GetWindowDrawList()->AddRect(p, ImVec2{p.x + side, p.y + side}, kSelected, 0, 0, 2.0F);
-  ImGui::Text("#%u  %s", app.wfc_tile, tile_name(lv, t));
+  ImGui::Text("#%u  %s", app.wfc_tile, tile_name(pr.tilesets, t));
   ImGui::TextDisabled("weight %g", static_cast<double>(t.weight));
   ImGui::EndChild();
   if (ImGui::IsItemHovered() and !dragging_tile())
   {
     ImGui::SetTooltip("The tile whose neighbors are edited. Drop a tile here to edit it instead.");
   }
-  if (DragPayload drop; accept_tile(drop) and drop.tile < lv.wfc.tiles.size())
+  if (DragPayload drop; accept_tile(drop) and drop.tile < rule_set(app).wfc.tiles.size())
   {
     app.wfc_tile = drop.tile;
   }
@@ -344,7 +344,7 @@ void center(App& app, ImVec2 size)
 /// The palette of every rule tile (drag sources); dropping a tile from a slot here removes it there
 bool palette(App& app, float width)
 {
-  WfcRules& rules = app.level->wfc;
+  WfcRules& rules = rule_set(app).wfc;
   const auto n = static_cast<WfcTileId>(rules.tiles.size());
   bool changed = false;
   ImGui::BeginChild("palette", ImVec2{width, 0}, ImGuiChildFlags_Borders);
@@ -373,7 +373,7 @@ bool palette(App& app, float width)
 
 bool wfc_pair_tooltip(const App& app, WfcTileId a, WfcTileId b, Direction direction, const char* hint)
 {
-  const WfcRules& rules = app.level->wfc;
+  const WfcRules& rules = rule_set(app).wfc;
   if (!app.wfc_preview or a >= rules.tiles.size() or b >= rules.tiles.size())
   {
     return false;
@@ -389,10 +389,10 @@ bool wfc_pair_tooltip(const App& app, WfcTileId a, WfcTileId b, Direction direct
   ImGui::Text(
     "#%u %s  %s of  #%u %s",
     b,
-    tile_name(*app.level, rules.tiles[b]),
+    tile_name(app.project->tilesets, rules.tiles[b]),
     label(direction),
     a,
-    tile_name(*app.level, rules.tiles[a]));
+    tile_name(app.project->tilesets, rules.tiles[a]));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{0, 0});
   for (int y = 0; y < height; ++y)
   {
@@ -452,8 +452,7 @@ void neighbors_window(App& app)
   {
     return;
   }
-  Level& lv = *app.level;
-  WfcRules& rules = lv.wfc;
+  WfcRules& rules = rule_set(app).wfc;
   if (rules.tiles.empty())
   {
     ImGui::TextDisabled(

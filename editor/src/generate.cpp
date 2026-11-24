@@ -210,7 +210,7 @@ void wfc_section(App& app)
 {
   Level& lv = *app.level;
   Generators& g = app.generators;
-  ImGui::Text("Rules: %zu tiles, %zu adjacencies", lv.wfc.tiles.size(), lv.wfc.adjacency.size());
+  ImGui::Text("Rules: %zu tiles, %zu adjacencies", rule_set(app).wfc.tiles.size(), rule_set(app).wfc.adjacency.size());
   ImGui::SameLine();
   if (ImGui::SmallButton("Edit rules..."))
   {
@@ -232,7 +232,7 @@ void wfc_section(App& app)
   }
   if (ImGui::SmallButton("Learn rules from target layer"))
   {
-    learn(lv.wfc, plane<TileGrid>(lv.layers[target]));
+    learn(rule_set(app).wfc, plane<TileGrid>(lv.layers[target]));
     app.modified = true;
   }
   ImGui::SeparatorText("Constraints from layers");
@@ -302,14 +302,14 @@ bool scalar_layer_combo(const char* label, const Level& lv, std::size_t& index)
 }
 
 /// Combo over the semantic catalog
-void semantic_combo(const char* label, const Level& lv, int& id)
+void semantic_combo(const char* label, const project::Project& pr, int& id)
 {
-  id = std::clamp(id, 0, static_cast<int>(lv.semantics.size()) - 1);
-  if (ImGui::BeginCombo(label, lv.semantics[static_cast<std::size_t>(id)].name.c_str()))
+  id = std::clamp(id, 0, static_cast<int>(pr.semantics.size()) - 1);
+  if (ImGui::BeginCombo(label, pr.semantics[static_cast<std::size_t>(id)].name.c_str()))
   {
-    for (std::size_t i = 0; i < lv.semantics.size(); ++i)
+    for (std::size_t i = 0; i < pr.semantics.size(); ++i)
     {
-      if (ImGui::Selectable(format<96>("%s##%zu", lv.semantics[i].name.c_str(), i), static_cast<int>(i) == id))
+      if (ImGui::Selectable(format<96>("%s##%zu", pr.semantics[i].name.c_str(), i), static_cast<int>(i) == id))
       {
         id = static_cast<int>(i);
       }
@@ -327,10 +327,10 @@ void semantic_combo(const char* label, const Level& lv, int& id)
 void fill_tiles(const App& app, memory::Arena& arena, memory::Vector<TileRef>& tiles, memory::Vector<float>& weights)
 {
   const TileSelection& selection = app.selection;
-  if (selection.count > 0 and selection.tileset < app.level->tilesets.size())
+  if (selection.count > 0 and selection.tileset < app.project->tilesets.size())
   {
     const auto id = static_cast<TileSetId>(selection.tileset);
-    const TileSet& ts = app.level->tilesets[selection.tileset];
+    const TileSet& ts = app.project->tilesets[selection.tileset];
     for (const TileIndex tile : selected_tiles(app, arena))
     {
       tiles.push_back(TileRef{id, tile});
@@ -359,7 +359,7 @@ void fill_tiles(const App& app, memory::Arena& arena, memory::Vector<TileRef>& t
  */
 void fill_weights_section(App& app, const memory::Vector<TileRef>& tiles, const memory::Vector<float>& weights)
 {
-  TileSet& ts = app.level->tilesets[app.selection.tileset];
+  TileSet& ts = app.project->tilesets[app.selection.tileset];
   float total = 0.0F;
   for (const float w : weights)
   {
@@ -396,6 +396,7 @@ void fill_weights_section(App& app, const memory::Vector<TileRef>& tiles, const 
 void fill_section(App& app)
 {
   Level& lv = *app.level;
+  const project::Project& pr = *app.project;
   Generators& g = app.generators;
   if (app.layer < lv.layers.size() and lv.layers[app.layer].kind == LayerKind::kTiles)
   {
@@ -475,7 +476,7 @@ void fill_section(App& app)
   }
   if (g.fill_use_id and layer_combo("Semantic layer", lv, LayerKind::kSemantic, g.fill_id_layer))
   {
-    semantic_combo("Ground type", lv, g.fill_id);
+    semantic_combo("Ground type", pr, g.fill_id);
   }
   ImGui::Checkbox("Only empty cells", &g.fill_only_empty);
   if (ImGui::IsItemHovered())
@@ -517,7 +518,7 @@ void steps_section(App& app)
 {
   Level& lv = *app.level;
   Generators& g = app.generators;
-  if (lv.steps.terrains.empty())
+  if (rule_set(app).steps.terrains.empty())
   {
     ImGui::TextDisabled("No step terrains yet.");
     if (ImGui::SmallButton("Edit rules..."))
@@ -530,7 +531,7 @@ void steps_section(App& app)
     ImGui::TextDisabled("opens the Height steps tab");
     return;
   }
-  ImGui::Text("%zu step terrain(s)", lv.steps.terrains.size());
+  ImGui::Text("%zu step terrain(s)", rule_set(app).steps.terrains.size());
   ImGui::SameLine();
   if (ImGui::SmallButton("Edit rules..."))
   {
@@ -674,8 +675,8 @@ void steps_section(App& app)
   for (int k = 0; k < levels; ++k)
   {
     const std::size_t at = step_layer_of(lv, k);
-    const level::StepTerrainId id = level::step_terrain_at(lv.steps, k);
-    const char* art = (id == level::kNoStepTerrain) ? "no terrain" : lv.steps.terrains[id].name.c_str();
+    const level::StepTerrainId id = level::step_terrain_at(rule_set(app).steps, k);
+    const char* art = (id == level::kNoStepTerrain) ? "no terrain" : rule_set(app).steps.terrains[id].name.c_str();
     if (at < lv.layers.size())
     {
       ImGui::BulletText("level %d -> layer '%s', drawn as %s", k, lv.layers[at].name.c_str(), art);
@@ -830,7 +831,7 @@ void apply_steps(App& app)
 {
   Level& lv = *app.level;
   Generators& g = app.generators;
-  if (g.step_level_layer >= lv.layers.size() or lv.steps.terrains.empty())
+  if (g.step_level_layer >= lv.layers.size() or rule_set(app).steps.terrains.empty())
   {
     return;
   }
@@ -853,7 +854,7 @@ void apply_steps(App& app)
     app.undo.snapshot(lv, at, "Draw steps");
   }
   g.step_result = procgen::tile_steps(
-    lv.steps,
+    rule_set(app).steps,
     plane<IdGrid>(lv.layers[g.step_level_layer]),
     procgen::StepFillParams{.collision = block ? g.step_collision : procgen::StepCollision::kNone},
     targets.data(),
@@ -931,6 +932,7 @@ void start_heightmap(App& app)
 void start_watershed(App& app)
 {
   Level& lv = *app.level;
+  project::Project& pr = *app.project;
   Generators& g = app.generators;
   const procgen::WatershedParams& p = g.watershed;
   if (g.height_layer >= lv.layers.size() or lv.layers[g.height_layer].kind != LayerKind::kHeight)
@@ -969,9 +971,9 @@ void start_watershed(App& app)
       const auto& sem = plane<IdGrid>(lv.layers[find_layer(lv, LayerKind::kSemantic)]);
       job->semantic.extents = sem.extents;
       job->semantic.values.assign(sem.values.begin(), sem.values.end());
-      job->river_id = intern_semantic(lv, "river");
-      job->lake_id = intern_semantic(lv, "lake");
-      job->tunnel_id = intern_semantic(lv, "tunnel");
+      job->river_id = project::intern_semantic(pr, "river");
+      job->lake_id = project::intern_semantic(pr, "lake");
+      job->tunnel_id = project::intern_semantic(pr, "tunnel");
     }
     start_job(app);
   }
@@ -988,7 +990,8 @@ void start_wfc(App& app, std::size_t target)
   }
   if (auto* job = prepare_job<WfcJob>(app); job != nullptr)
   {
-    job->level = app.level;
+    job->project = app.project;
+    job->rules = project::rules_of(*app.project, lv);
     job->layer = target;
     const auto& tiles = plane<TileGrid>(lv.layers[target]);
     job->tiles = TileGrid{job->memory->general};

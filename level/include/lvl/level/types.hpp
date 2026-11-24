@@ -119,10 +119,10 @@ struct Material
 };
 
 /**
- * @brief One season of a level's year, and its climate
+ * @brief One season of a project's year, and its climate
  *
- * A level has one or more seasons, cycled in order. Tilesets can provide per-season alternate tiles
- * (and materials) keyed by season name.
+ * A project has one or more seasons, cycled in order, and every level of it follows them. Tilesets
+ * can provide per-season alternate tiles (and materials) keyed by season name.
  */
 struct Season
 {

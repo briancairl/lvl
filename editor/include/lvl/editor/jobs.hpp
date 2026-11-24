@@ -28,6 +28,7 @@
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
+#include "lvl/project/project.hpp"
 #include "lvl/render/compose.hpp"
 
 namespace lvl::editor
@@ -70,7 +71,7 @@ struct AtlasImages
 
 /// Decodes every tileset's atlas into <code>dest</code> (in parallel); missing images are reported per tileset
 void load_atlases(
-  const level::Level& level,
+  const project::Project& project,
   memory::Arena& dest,
   JobMemory& memory,
   AtlasImages& out,
@@ -78,6 +79,7 @@ void load_atlases(
 
 struct SaveLevelJob
 {
+  const project::Project* project = nullptr;
   const level::Level* level = nullptr;
   Path path;
   JobMemory* memory = nullptr;
@@ -88,6 +90,8 @@ struct SaveLevelJob
 
 struct LoadLevelJob
 {
+  /// Interned into (the spare project)
+  project::Project* project = nullptr;
   /// Loaded into (the spare document)
   level::Level* level = nullptr;
   /// Atlases decoded into (the spare asset arena)
@@ -102,7 +106,8 @@ struct LoadLevelJob
 
 struct ReloadAtlasesJob
 {
-  const level::Level* level = nullptr;
+  /// Holds the tilesets whose atlases are decoded
+  const project::Project* project = nullptr;
   memory::Arena* assets = nullptr;
   JobMemory* memory = nullptr;
   AtlasImages atlases;
@@ -112,6 +117,7 @@ struct ReloadAtlasesJob
 
 struct ExportJob
 {
+  const project::Project* project = nullptr;
   const level::Level* level = nullptr;
   render::Atlases atlases;
   render::ComposeOptions options;
@@ -159,7 +165,10 @@ struct WatershedJob
 
 struct WfcJob
 {
-  const level::Level* level = nullptr;
+  /// Holds the adjacency rules the solver works to
+  const project::Project* project = nullptr;
+  /// Which of the project's rule sets, taken from the open level when the job is prepared
+  std::size_t rules = 0;
   procgen::WfcConstraints constraints;
   procgen::WfcParams params;
   /// Target layer's tiles (copied in; written back by the UI thread)

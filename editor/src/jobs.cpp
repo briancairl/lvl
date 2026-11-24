@@ -32,7 +32,7 @@ void partition(memory::Arena& arena, JobMemory& out)
 }
 
 void load_atlases(
-  const level::Level& level,
+  const project::Project& project,
   memory::Arena& dest,
   JobMemory& memory,
   AtlasImages& out,
@@ -40,7 +40,7 @@ void load_atlases(
 {
   constexpr std::size_t kMiB = 1UL << 20;
   constexpr std::size_t kSlack = 64;
-  out.count = std::min(level.tilesets.size(), kMaxJobTileSets);
+  out.count = std::min(project.tilesets.size(), kMaxJobTileSets);
   if (progress != nullptr)
   {
     progress->stage("Decoding atlas images");
@@ -55,7 +55,7 @@ void load_atlases(
   std::array<bool, kMaxJobTileSets> pending = {};
   for (std::size_t i = 0; i < out.count; ++i)
   {
-    const level::TileSet& ts = level.tilesets[i];
+    const level::TileSet& ts = project.tilesets[i];
     out.images[i] = image::Image{};
     out.status[i] = Status::okay();
     if (ts.image.empty())
@@ -81,7 +81,7 @@ void load_atlases(
     {
       out.status[i] = Status::error(
         "atlas '%s' (%dx%d, %zu MiB) does not fit the remaining %zu MiB of asset memory (raise --memory)",
-        level.tilesets[i].image.c_str(),
+        project.tilesets[i].image.c_str(),
         info[i].width,
         info[i].height,
         (bytes + kMiB - 1) / kMiB,
@@ -119,7 +119,7 @@ void load_atlases(
     // The reserved slot, as an arena the decoder allocates the pixels from
     memory::Arena slot;
     memory::initialize(slot, slots[i], info[i].pixel_bytes() + kSlack, "atlas-pixels");
-    out.status[i] = image::load(level.tilesets[i].image.c_str(), slot, work, out.images[i]);
+    out.status[i] = image::load(project.tilesets[i].image.c_str(), slot, work, out.images[i]);
     pending[i] = false;
     if (progress != nullptr)
     {
@@ -145,7 +145,7 @@ void load_atlases(
     if (!out.status[i].ok)
     {
       out.images[i] = image::Image{};
-      LVL_LOG_WARN() << "Tileset '" << level.tilesets[i].name << "': " << out.status[i].message;
+      LVL_LOG_WARN() << "Tileset '" << project.tilesets[i].name << "': " << out.status[i].message;
     }
   }
 }
@@ -153,24 +153,24 @@ void load_atlases(
 void SaveLevelJob::run(jobs::Progress& progress)
 {
   auto ctx = memory->context(&progress);
-  result = level::save_level(path.c_str(), *level, ctx);
+  result = level::save_level(path.c_str(), *project, *level, ctx);
 }
 
 void LoadLevelJob::run(jobs::Progress& progress)
 {
   auto ctx = memory->context(&progress);
-  result = level::load_level(path.c_str(), *level, ctx);
+  result = level::load_level(path.c_str(), *project, *level, ctx);
   if (result.ok)
   {
     // Worker arenas are free again: reuse them for the atlas images
-    load_atlases(*level, *assets, *memory, atlases, &progress);
+    load_atlases(*project, *assets, *memory, atlases, &progress);
   }
 }
 
 void ReloadAtlasesJob::run(jobs::Progress& progress)
 {
   progress.reset(1);
-  load_atlases(*level, *assets, *memory, atlases, &progress);
+  load_atlases(*project, *assets, *memory, atlases, &progress);
   progress.advance();
 }
 
@@ -180,13 +180,13 @@ void ExportJob::run(jobs::Progress& progress)
   {
     progress.reset(1);
     progress.stage("Rendering mini-preview");
-    result = render::export_minimap_png(path.c_str(), *level, atlases, options, max_size, memory->general);
+    result = render::export_minimap_png(path.c_str(), *project, *level, atlases, options, max_size, memory->general);
     progress.advance();
   }
   else
   {
-    result =
-      render::export_png(path.c_str(), *level, atlases, options, memory->general, memory->worker_count, &progress);
+    result = render::export_png(
+      path.c_str(), *project, *level, atlases, options, memory->general, memory->worker_count, &progress);
   }
 }
 
@@ -231,7 +231,7 @@ void WfcJob::run(jobs::Progress& progress)
     existing.values.assign(tiles.values.begin(), tiles.values.end());
     constraints.existing = &existing;
   }
-  result = procgen::solve(level->wfc, constraints, params, tiles, memory->workers[0].scratch, &progress);
+  result = procgen::solve(project->rules[rules].wfc, constraints, params, tiles, memory->workers[0].scratch, &progress);
 }
 
 }  // namespace lvl::editor

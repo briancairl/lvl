@@ -70,9 +70,9 @@ Stroke stroke;
 
 image::Rgba tint_of(const App& app)
 {
-  if (app.view.tint and app.view.season < app.level->seasons.size())
+  if (app.view.tint and app.view.season < app.project->seasons.size())
   {
-    return app.level->seasons[app.view.season].tint;
+    return app.project->seasons[app.view.season].tint;
   }
   return image::Rgba{255, 255, 255, 255};
 }
@@ -85,9 +85,10 @@ ImU32 modulate(image::Rgba tint, float alpha)
 /// Rebuilds dirty overlay textures (one texel per cell)
 void update_overlays(App& app)
 {
+  const project::Project& pr = *app.project;
   const Level& lv = *app.level;
   const Extents e = lv.settings.extents;
-  const auto atlases = app.assets.atlases(lv.tilesets.size());
+  const auto atlases = app.assets.atlases(pr.tilesets.size());
   for (std::size_t i = 0; i < lv.layers.size() and i < kMaxLayers; ++i)
   {
     if (!app.overlays.all_dirty and !app.overlays.dirty[i])
@@ -96,7 +97,7 @@ void update_overlays(App& app)
     }
     memory::Scope scope{app.memory.frame};
     image::Image img = image::create(app.memory.frame, e.width, e.height);
-    render::colorize(lv, lv.layers[i], img, &atlases, view_season(app));
+    render::colorize(*app.project, lv.layers[i], img, &atlases, view_season(app));
     upload(app.overlays.textures[i], img);
     app.overlays.dirty[i] = false;
   }
@@ -377,18 +378,19 @@ const char* describe(const App& app, Cell c)
     {
       return "empty";
     }
-    const char* name = (t.tileset < app.level->tilesets.size() and t.tile < app.level->tilesets[t.tileset].tiles.size())
-      ? app.level->tilesets[t.tileset].tiles[t.tile].name.c_str()
+    const char* name =
+      (t.tileset < app.project->tilesets.size() and t.tile < app.project->tilesets[t.tileset].tiles.size())
+      ? app.project->tilesets[t.tileset].tiles[t.tile].name.c_str()
       : "";
     return format<160>("tile %u:%u %s", t.tileset, t.tile, name);
   }
   case LayerKind::kSemantic: {
     const auto id = plane<IdGrid>(layer).at(c);
-    return format<160>("%s", id < app.level->semantics.size() ? app.level->semantics[id].name.c_str() : "?");
+    return format<160>("%s", id < app.project->semantics.size() ? app.project->semantics[id].name.c_str() : "?");
   }
   case LayerKind::kMaterial: {
     const auto id = plane<IdGrid>(layer).at(c);
-    return format<160>("%s", id < app.level->materials.size() ? app.level->materials[id].name.c_str() : "?");
+    return format<160>("%s", id < app.project->materials.size() ? app.project->materials[id].name.c_str() : "?");
   }
   case LayerKind::kCollision:
     return format<160>("mask 0x%02x", plane<MaskGrid>(layer).at(c));
@@ -401,6 +403,7 @@ const char* describe(const App& app, Cell c)
 
 void draw_layers(App& app, const Canvas& cv)
 {
+  const project::Project& pr = *app.project;
   const Level& lv = *app.level;
   const View& v = app.view;
   const Extents e = lv.settings.extents;
@@ -419,11 +422,11 @@ void draw_layers(App& app, const Canvas& cv)
 
   // Seasonal tile lookups for this frame
   memory::Vector<TileIndex>* seasonal =
-    memory::allocate<memory::Vector<TileIndex>>(app.memory.frame, lv.tilesets.size());
-  for (std::size_t t = 0; t < lv.tilesets.size(); ++t)
+    memory::allocate<memory::Vector<TileIndex>>(app.memory.frame, pr.tilesets.size());
+  for (std::size_t t = 0; t < pr.tilesets.size(); ++t)
   {
     new (&seasonal[t]) memory::Vector<TileIndex>{memory::ArenaAllocator<TileIndex>{app.memory.frame}};
-    resolve_season(lv.tilesets[t], view_season(app), seasonal[t]);
+    resolve_season(pr.tilesets[t], view_season(app), seasonal[t]);
   }
 
   for (std::size_t i = 0; i < lv.layers.size() and i < kMaxLayers; ++i)
@@ -442,7 +445,7 @@ void draw_layers(App& app, const Canvas& cv)
         for (int x = x0; x < x1; ++x)
         {
           const TileRef t = g.at(x, y);
-          if (t.empty() or t.tileset >= lv.tilesets.size())
+          if (t.empty() or t.tileset >= pr.tilesets.size())
           {
             continue;
           }
@@ -455,7 +458,7 @@ void draw_layers(App& app, const Canvas& cv)
             cv.draw->AddRectFilled(p0, p1, to_u32(render::id_color(t.tileset * 65536U + drawn), layer.opacity));
             continue;
           }
-          const TileSet& ts = lv.tilesets[t.tileset];
+          const TileSet& ts = pr.tilesets[t.tileset];
           const TileRect r = tile_rect(ts.slice, tex.width, tex.height, drawn);
           const ImVec2 uv0{static_cast<float>(r.x) / tex.width, static_cast<float>(r.y) / tex.height};
           const ImVec2 uv1{
@@ -990,11 +993,11 @@ void toolbar(App& app)
   if (app.tool == Tool::kAutoTile)
   {
     // Which of the two kinds of rules this tile paints with, so it is plain which tab to edit
-    const TerrainId terrain = terrain_of(lv.auto_tiles, app.paint.tile);
+    const TerrainId terrain = terrain_of(rule_set(app).auto_tiles, app.paint.tile);
     ImGui::SameLine();
     if (terrain != kNoTerrain)
     {
-      ImGui::Text("terrain '%s'", lv.auto_tiles.terrains[terrain].name.c_str());
+      ImGui::Text("terrain '%s'", rule_set(app).auto_tiles.terrains[terrain].name.c_str());
       if (ImGui::IsItemHovered())
       {
         ImGui::SetTooltip("This tile belongs to an auto-tiling terrain, so painting lays down its middle and tiles "
@@ -1011,7 +1014,7 @@ void toolbar(App& app)
         ImGui::SetTooltip("How many cells around what is painted the WFC adjacency rules may re-fill");
       }
       // Auto-tiling has nothing to go on unless the tile being painted is in the rules
-      const bool known = find_tile(lv.wfc, app.paint.tile) < lv.wfc.tiles.size();
+      const bool known = find_tile(rule_set(app).wfc, app.paint.tile) < rule_set(app).wfc.tiles.size();
       ImGui::SameLine();
       if (!known)
       {
@@ -1062,7 +1065,7 @@ void toolbar(App& app)
 
 }  // namespace
 
-TerrainId auto_tile_terrain(const App& app) { return terrain_of(app.level->auto_tiles, app.paint.tile); }
+TerrainId auto_tile_terrain(const App& app) { return terrain_of(rule_set(app).auto_tiles, app.paint.tile); }
 
 void auto_tile_stroke(App& app, std::size_t layer, const Cell* painted, std::size_t count)
 {
@@ -1074,9 +1077,10 @@ void auto_tile_stroke(App& app, std::size_t layer, const Cell* painted, std::siz
   if (terrain != kNoTerrain)
   {
     // The terrain prescribes the tile of every cell it covers, edges and inner/outer corners
-    const auto result = procgen::paint_terrain(lv.auto_tiles, terrain, painted, count, grid, app.memory.frame);
+    const auto result =
+      procgen::paint_terrain(rule_set(app).auto_tiles, terrain, painted, count, grid, app.memory.frame);
     status.terrain = true;
-    status.name = lv.auto_tiles.terrains[terrain].name.view();
+    status.name = rule_set(app).auto_tiles.terrains[terrain].name.view();
     status.cells = result.covered;
     status.changed = result.changed;
     status.trouble = result.missing;
@@ -1085,7 +1089,7 @@ void auto_tile_stroke(App& app, std::size_t layer, const Cell* painted, std::siz
   {
     // No terrain: the WFC rules can still tidy the band against hard constraints
     const auto result = procgen::autotile(
-      lv.wfc,
+      rule_set(app).wfc,
       painted,
       count,
       procgen::AutoTileParams{.radius = app.auto_tile.radius, .iterations = app.auto_tile.iterations},
