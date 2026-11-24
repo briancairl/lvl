@@ -631,10 +631,22 @@ applied to every level of the project (`apply_compaction`), and only then are th
 and the project's own references rewritten (`finish_compaction`) -- in that order, because until
 the last step the plan's old ids are what the project's vectors are indexed by. The catalogs panel
 offers it when `needs_compaction` says there is something to do, and clears the undo history, since
-every id below a dropped entry has moved out from under the snapshots in the ring. It currently
-refuses while the project has more than one member level, because rewriting the others needs level
-I/O per member; that becomes a job in phase 4, where the three model functions are already the right
-shape for it.
+every id below a dropped entry has moved out from under the snapshots in the ring. `editor::CompactCatalogsJob` is what drives it across a
+project: it plans once, then loads, renumbers and saves every member but the open one, which the UI
+thread does in `finish_job` since a job may not touch the document. A member is written back in
+**project scope** whatever it was read in, because the plan is the project's: a file carrying its own
+copy of the catalogs would be left naming the old ids beside the new cells. If a member cannot be
+read or written the job stops, says which, and the entries are **not** dropped, so the ids on disk
+and the ids in the project still agree.
+
+`editor::RescanProjectJob` is the other half: it reads every member and rebuilds what the index says
+about it, for files changed outside the editor. Both jobs stage through the **spare** document and
+project -- the pair a load already uses -- rather than carving a document out of the job arena,
+which is the right size by construction where a fraction of the job arena is not: exhausting an
+arena is an assert, not a `Status`. Only one job runs at a time, so nothing else is staging into
+them. Reading a whole level to learn its grid size and object names is wasteful, and both formats
+could read "everything but the cells" cheaply, but that is new I/O surface and is left until a
+rescan is slow enough to matter.
 
 `project::remove_tileset` keeps erasing and renumbering -- it drops the tileset and calls all four
 `clear_tileset_refs` overloads, for the open level and the three rule kinds -- but it returns a
@@ -740,7 +752,9 @@ one check to mark required:
   a retired catalog entry drawing as nothing.
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
-  worker's scratch), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
+  worker's scratch; a rescan reading every member with only one resident and reporting one it cannot
+  read; a compaction rewriting every member but the open one, in project scope, with the entries
+  still in place), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
   editor), undo/redo, save/load

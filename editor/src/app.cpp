@@ -295,6 +295,75 @@ void finish_job(App& app)
         LVL_LOG_INFO_FMT(
           "WFC: solved in %d attempt(s), %zu contradiction(s)", job.result.attempts, job.result.contradictions);
       },
+      [&app](jobs::Background<RescanProjectJob>& bg) {
+        auto& job = bg.job();
+        project::Project& pr = *app.project;
+        // Written here rather than in the job, because the project is the thing the panels read
+        std::size_t updated = 0;
+        for (std::size_t i = 0; i < job.member_count and i < pr.levels.size(); ++i)
+        {
+          const auto& member = job.members[i];
+          if (!member.read)
+          {
+            pr.levels[i].missing = true;
+            continue;
+          }
+          const Status s = project::set_level_objects(
+            pr,
+            i,
+            project::LevelObjects{
+              .extents = member.extents,
+              .portals = job.names + member.portals_begin,
+              .portal_count = member.portal_count,
+              .markers = job.names + member.markers_begin,
+              .marker_count = member.marker_count},
+            app.memory.frame);
+          if (!s.ok)
+          {
+            report(app, s);
+            break;
+          }
+          pr.levels[i].missing = false;
+          ++updated;
+        }
+        app.project_modified = app.project_modified or updated > 0;
+        if (job.failed > 0)
+        {
+          report(
+            app,
+            Status::error(
+              "%zu of %zu levels could not be read: %s", job.failed, job.member_count, job.result.message.c_str()));
+        }
+        else
+        {
+          LVL_LOG_INFO_FMT("Rescanned %zu level(s)", updated);
+        }
+      },
+      [&app](jobs::Background<CompactCatalogsJob>& bg) {
+        auto& job = bg.job();
+        if (!job.result.ok)
+        {
+          // Nothing is dropped, so the ids on disk and the ids in the project still agree. The
+          // members already rewritten hold the new ids, which is why this says where it stopped.
+          report(
+            app,
+            Status::error(
+              "compacting stopped at '%s' after %zu level(s): %s. The catalogs were left as they "
+              "were; fix that file and run it again.",
+              job.stopped_on.c_str(),
+              job.rewritten,
+              job.result.message.c_str()));
+          return;
+        }
+        // The open level is the one the job skipped, because a job may not touch the document
+        project::apply_compaction(*job.plan, *app.level);
+        project::finish_compaction(*app.project, *job.plan);
+        app.undo.clear();
+        invalidate_view(app);
+        app.modified = true;
+        app.project_modified = true;
+        LVL_LOG_INFO_FMT("Compacted the catalogs; %zu other level(s) rewritten", job.rewritten);
+      },
     },
     app.job);
   app.job.emplace<std::monostate>();

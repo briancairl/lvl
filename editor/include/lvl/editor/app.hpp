@@ -410,8 +410,20 @@ struct App
   project::Project* spare_project = nullptr;
   alignas(project::Project) unsigned char project_storage[2][sizeof(project::Project)];
 
+  /// The open level's file, and whether it has unsaved changes
   Path path;
   bool modified = false;
+
+  /**
+   * @brief The open project's manifest, and whether the project has unsaved changes
+   *
+   * Empty while the project is one synthesized around a bare level file, which is what opening a
+   * level with no project beside it gives. The two dirty flags are separate because the two things
+   * are saved separately: editing a tileset or a rule set is a change to the project, not to the
+   * level that happens to be open.
+   */
+  Path project_path;
+  bool project_modified = false;
 
   Assets assets;
   Overlays overlays;

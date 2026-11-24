@@ -1,14 +1,18 @@
 // C++ Standard Library
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <new>
 #include <string>
+#include <string_view>
 
 // GTest
 #include <gtest/gtest.h>
 
 // LVL
 #include "lvl/editor/jobs.hpp"
+#include "lvl/level/objects.hpp"
+#include "lvl/project/paths.hpp"
 #include "lvl/project/project.hpp"
 
 using namespace lvl;
@@ -144,6 +148,175 @@ protected:
 };
 
 }  // namespace
+
+namespace
+{
+
+/// Writes a small level file for <code>name</code> and adds it to the project as a member
+void add_member(
+  project::Project& project,
+  Level& scratch,
+  const char* root,
+  const char* name,
+  const char* portal,
+  editor::JobMemory& memory)
+{
+  level::reset(scratch);
+  create_default(scratch, Settings{.name = name, .extents = {4, 3}, .cell_width = 8, .cell_height = 8});
+  add_layer(scratch, LayerKind::kSemantic, "semantics");
+  plane<IdGrid>(scratch.layers[find_layer(scratch, LayerKind::kSemantic)]).at(0, 0) = 2;
+  create_portal(scratch.registry, portal, {1, 1}, {1, 1}, Portal{});
+
+  Path file;
+  ASSERT_TRUE(project::project_file(project::Folder::kLevels, name, ".json", file).ok);
+  Path absolute;
+  ASSERT_TRUE(project::resolve(std::string_view{root}, file.view(), absolute).ok);
+  auto ctx = memory.context(nullptr);
+  const Status saved = save_level(absolute.c_str(), project, scratch, ctx);
+  ASSERT_TRUE(saved.ok) << saved;
+  ASSERT_NE(project::add_level(project, name, file.view()), project::kNoLevel);
+}
+
+}  // namespace
+
+TEST_F(LevelJobs, RescanReadsEveryMemberWithOnlyOneResident)
+{
+  partition_jobs(64UL << 20);
+  const std::string root = temp("rescan_project");
+  std::filesystem::remove_all(root);
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  pr_a->root.assign(root);
+  // Two semantic entries, so the levels' cells name something
+  project::intern_semantic(*pr_a, "grass");
+  project::intern_semantic(*pr_a, "road");
+
+  add_member(*pr_a, *source, root.c_str(), "overworld", "cave_mouth", memory);
+  add_member(*pr_a, *source, root.c_str(), "cave", "exit", memory);
+  // The index knows nothing about them yet: add_level records the name and file only
+  ASSERT_EQ(pr_a->levels.size(), 2U);
+  EXPECT_EQ(pr_a->levels[0].portal_count, 0U);
+
+  editor::RescanProjectJob job;
+  job.project = pr_a;
+  job.scratch = target;
+  job.scratch_project = pr_b;
+  job.memory = &memory;
+  jobs::Progress progress;
+  job.run(progress);
+  ASSERT_EQ(job.failed, 0UL) << job.result;
+  ASSERT_EQ(job.member_count, 2UL);
+  ASSERT_EQ(job.name_count, 2UL);
+  EXPECT_TRUE(job.members[0].read);
+  EXPECT_EQ(job.members[0].extents.width, 4);
+  ASSERT_EQ(job.members[0].portal_count, 1U);
+  EXPECT_EQ(job.names[job.members[0].portals_begin], std::string_view{"cave_mouth"});
+  EXPECT_EQ(job.names[job.members[1].portals_begin], std::string_view{"exit"});
+
+  // Applying what it found is what finish_job does; a link then resolves without a load
+  for (std::size_t i = 0; i < job.member_count; ++i)
+  {
+    const auto& m = job.members[i];
+    ASSERT_TRUE(project::set_level_objects(
+                  *pr_a,
+                  i,
+                  project::LevelObjects{
+                    .extents = m.extents,
+                    .portals = job.names + m.portals_begin,
+                    .portal_count = m.portal_count,
+                    .markers = job.names + m.markers_begin,
+                    .marker_count = m.marker_count},
+                  work)
+                  .ok);
+  }
+  EXPECT_EQ(project::portal_link(*pr_a, "cave", "exit"), project::LinkState::kResolved);
+  EXPECT_EQ(project::portal_link(*pr_a, "cave", "cave_mouth"), project::LinkState::kUnknownPortal);
+}
+
+TEST_F(LevelJobs, RescanReportsAMemberItCannotRead)
+{
+  partition_jobs(64UL << 20);
+  const std::string root = temp("rescan_missing");
+  std::filesystem::remove_all(root);
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  pr_a->root.assign(root);
+  add_member(*pr_a, *source, root.c_str(), "overworld", "cave_mouth", memory);
+  ASSERT_NE(project::add_level(*pr_a, "gone", "levels/gone.json"), project::kNoLevel);
+
+  editor::RescanProjectJob job;
+  job.project = pr_a;
+  job.scratch = target;
+  job.scratch_project = pr_b;
+  job.memory = &memory;
+  jobs::Progress progress;
+  job.run(progress);
+  EXPECT_EQ(job.failed, 1UL);
+  EXPECT_FALSE(job.result.ok);
+  // The one that is there was still read
+  EXPECT_TRUE(job.members[0].read);
+  EXPECT_FALSE(job.members[1].read);
+}
+
+TEST_F(LevelJobs, CompactingRewritesEveryMemberButTheOpenOne)
+{
+  partition_jobs(64UL << 20);
+  const std::string root = temp("compact_project");
+  std::filesystem::remove_all(root);
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  pr_a->root.assign(root);
+  const level::SemanticId grass = project::intern_semantic(*pr_a, "grass");
+  const level::SemanticId road = project::intern_semantic(*pr_a, "road");
+  ASSERT_EQ(grass, 1);
+  ASSERT_EQ(road, 2);
+
+  // Both levels put "road" in a cell, so both have an id that compaction moves
+  for (const char* name : {"overworld", "cave"})
+  {
+    add_member(*pr_a, *source, root.c_str(), name, "p", memory);
+    const std::size_t member = project::find_level(*pr_a, name);
+    ASSERT_NE(member, project::kNoLevel);
+    Path absolute;
+    ASSERT_TRUE(project::resolve(std::string_view{root}, pr_a->levels[member].file.view(), absolute).ok);
+    auto ctx = memory.context(nullptr);
+    level::reset(*source);
+    project::reset(*pr_b);
+    ASSERT_TRUE(load_level(absolute.c_str(), *pr_b, *source, ctx).ok);
+    EXPECT_EQ(plane<IdGrid>(source->layers[find_layer(*source, LayerKind::kSemantic)]).at(0, 0), road);
+  }
+
+  // "grass" goes, so "road" moves from 2 to 1
+  level::reset(*source);
+  create_default(*source, Settings{.name = "overworld", .extents = {1, 1}});
+  project::remove_semantic(*pr_a, *source, grass);
+  ASSERT_TRUE(project::needs_compaction(*pr_a));
+
+  editor::CompactCatalogsJob job;
+  job.project = pr_a;
+  job.scratch = target;
+  job.scratch_project = pr_b;
+  job.skip = "overworld";
+  job.memory = &memory;
+  jobs::Progress progress;
+  job.run(progress);
+  ASSERT_TRUE(job.result.ok) << job.result;
+  // One rewritten; the open one is left to the UI thread
+  EXPECT_EQ(job.rewritten, 1UL);
+  EXPECT_TRUE(job.stopped_on.empty());
+  ASSERT_NE(job.plan, nullptr);
+  EXPECT_EQ(job.plan->retired_semantics, 1UL);
+
+  // The file on disk now holds "road"'s new id, and the entries have not been dropped yet
+  EXPECT_EQ(pr_a->semantics.size(), 3U);
+  Path absolute;
+  ASSERT_TRUE(project::resolve(std::string_view{root}, std::string_view{"levels/cave.json"}, absolute).ok);
+  auto ctx = memory.context(nullptr);
+  level::reset(*source);
+  project::reset(*pr_b);
+  ASSERT_TRUE(load_level(absolute.c_str(), *pr_b, *source, ctx).ok);
+  EXPECT_EQ(plane<IdGrid>(source->layers[find_layer(*source, LayerKind::kSemantic)]).at(0, 0), 1);
+  // Written back in project scope: the manifest is the authority for a member's catalogs, so the
+  // file no longer carries a copy that could name the old ids beside the new cells
+  EXPECT_EQ(pr_b->semantics.size(), 1U) << "only the reserved 'none'";
+}
 
 TEST_F(LevelJobs, SavesAndLoadsLayersBiggerThanAWorkersScratch)
 {

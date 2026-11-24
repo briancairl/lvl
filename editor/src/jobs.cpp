@@ -6,10 +6,13 @@
 
 // C++ Standard Library
 #include <algorithm>
+#include <new>
 
 // LVL
 #include "lvl/core/logging.hpp"
 #include "lvl/editor/jobs.hpp"
+#include "lvl/level/objects.hpp"
+#include "lvl/project/paths.hpp"
 
 namespace lvl::editor
 {
@@ -164,6 +167,126 @@ void LoadLevelJob::run(jobs::Progress& progress)
   {
     // Worker arenas are free again: reuse them for the atlas images
     load_atlases(*project, *assets, *memory, atlases, &progress);
+  }
+}
+
+void RescanProjectJob::run(jobs::Progress& progress)
+{
+  const project::Project& pr = *project;
+  member_count = std::min(pr.levels.size(), kMaxJobLevels);
+  progress.reset(member_count == 0 ? 1 : member_count);
+  // The names every member's spans point into. One block out of the general arena, which the job
+  // owns until finish_job has copied them into the project.
+  auto table = memory::make_vector<Name>(memory->general);
+  table.reserve(project::kMaxObjectNames);
+
+  for (std::size_t i = 0; i < member_count; ++i)
+  {
+    const project::LevelEntry& entry = pr.levels[i];
+    progress.stage(entry.name.c_str());
+    Path absolute;
+    Status located = project::resolve(pr.root.view(), entry.file.view(), absolute);
+    if (located.ok)
+    {
+      level::reset(*scratch);
+      project::reset(*scratch_project);
+      auto ctx = memory->context(nullptr);
+      located = level::load_level(absolute.c_str(), *scratch_project, *scratch, ctx);
+    }
+    if (!located.ok)
+    {
+      ++failed;
+      if (result.ok)
+      {
+        result = located;
+      }
+      progress.advance();
+      continue;
+    }
+    Member& out = members[i];
+    out.read = true;
+    out.extents = scratch->settings.extents;
+    out.portals_begin = static_cast<std::uint32_t>(table.size());
+    for (auto [e, label, portal] : scratch->registry.view<level::Label, level::Portal>().each())
+    {
+      table.push_back(label.name);
+    }
+    out.portal_count = static_cast<std::uint32_t>(table.size() - out.portals_begin);
+    out.markers_begin = static_cast<std::uint32_t>(table.size());
+    for (auto [e, label, marker] : scratch->registry.view<level::Label, level::Marker>().each())
+    {
+      table.push_back(label.name);
+    }
+    out.marker_count = static_cast<std::uint32_t>(table.size() - out.markers_begin);
+    if (table.size() > project::kMaxObjectNames)
+    {
+      result = Status::error(
+        "the project's levels hold more than %zu portals and markers between them", project::kMaxObjectNames);
+      failed += member_count - i;
+      break;
+    }
+    progress.advance();
+  }
+  names = table.data();
+  name_count = table.size();
+  // Detach without releasing the block: finish_job reads it after the job is done
+  new (&table) memory::Vector<Name>{memory::ArenaAllocator<Name>{}};
+  if (member_count == 0)
+  {
+    progress.advance();
+  }
+}
+
+void CompactCatalogsJob::run(jobs::Progress& progress)
+{
+  const project::Project& pr = *project;
+  // Planned once, here, so that the members rewritten below and the open level that finish_job
+  // rewrites afterwards move by the same table
+  plan = new (plan_storage) project::CatalogPlan{memory->general};
+  project::plan_compaction(pr, *plan);
+  progress.reset(pr.levels.empty() ? 1 : pr.levels.size());
+  for (const project::LevelEntry& entry : pr.levels)
+  {
+    if (entry.name == skip)
+    {
+      // The resident document: the UI thread applies the plan to it, since a job may not touch it
+      progress.advance();
+      continue;
+    }
+    progress.stage(entry.name.c_str());
+    stopped_on = entry.file;
+    Path absolute;
+    if (Status s = project::resolve(pr.root.view(), entry.file.view(), absolute); !s.ok)
+    {
+      result = s;
+      return;
+    }
+    level::reset(*scratch);
+    project::reset(*scratch_project);
+    auto ctx = memory->context(nullptr);
+    if (Status s = level::load_level(absolute.c_str(), *scratch_project, *scratch, ctx); !s.ok)
+    {
+      result = s;
+      return;
+    }
+    project::apply_compaction(*plan, *scratch);
+    // Written back in project scope, whatever it was read in. The plan is the project's, so the
+    // cells now hold the project's new ids; a file that carried its own copy of the catalogs would
+    // be left naming the old ones beside them. The manifest is the authority for a member, which is
+    // what kProject exists for.
+    if (Status s = level::save_level(absolute.c_str(), *scratch_project, *scratch, ctx, level::LevelScope::kProject);
+        !s.ok)
+    {
+      result = s;
+      return;
+    }
+    ++rewritten;
+    progress.advance();
+  }
+  stopped_on.clear();
+  if (pr.levels.empty())
+  {
+    progress.advance();
   }
 }
 
