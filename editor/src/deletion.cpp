@@ -100,6 +100,25 @@ void apply(App& app, const PendingDelete& d)
     remove_step_terrain(rule_set(app).steps, static_cast<StepTerrainId>(d.index));
     app.step_terrain = 0;
     break;
+  case DeleteKind::kLevelMember:
+    if (d.index >= pr.levels.size())
+    {
+      return;
+    }
+    // The member leaves the index; its file stays on disk. Portals naming it are left as they are
+    // and show as dangling, which is what they now are -- quietly clearing them would throw away
+    // what the user wrote on the strength of a removal they may be undoing by hand.
+    project::remove_level(pr, d.index, app.memory.frame);
+    app.project_modified = true;
+    break;
+  case DeleteKind::kRuleSet:
+    if (d.index >= pr.rules.size())
+    {
+      return;
+    }
+    project::remove_rules(pr, d.index);
+    app.project_modified = true;
+    break;
   case DeleteKind::kGraph:
     if (d.index >= lv.graphs.size())
     {

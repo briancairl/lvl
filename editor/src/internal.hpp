@@ -149,6 +149,7 @@ void layers_panel(App& app);
 void tilesets_panel(App& app);
 void tile_meta_panel(App& app);
 void catalogs_panel(App& app);
+void project_panel(App& app);
 void objects_panel(App& app);
 void generate_panel(App& app);
 void minimap_panel(App& app);

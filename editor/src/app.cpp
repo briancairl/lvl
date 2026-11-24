@@ -28,6 +28,7 @@
 #include "lvl/level/io.hpp"
 #include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/wfc.hpp"
+#include "lvl/project/io.hpp"
 #include "lvl/project/paths.hpp"
 
 namespace lvl::editor
@@ -89,7 +90,18 @@ void apply_atlases(App& app, AtlasImages& atlases, std::size_t index)
 
 void update_title(App& app)
 {
-  set_title(format<600>("lvl - %s%s", app.path.empty() ? "untitled" : app.path.c_str(), app.modified ? " *" : ""));
+  // The project and the level are saved separately, so the star means "either has changes"
+  const bool dirty = app.modified or app.project_modified;
+  if (app.project_path.empty())
+  {
+    set_title(format<600>("lvl - %s%s", app.path.empty() ? "untitled" : app.path.c_str(), dirty ? " *" : ""));
+    return;
+  }
+  set_title(format<600>(
+    "lvl - %s/%s%s",
+    app.project->name.c_str(),
+    app.level->settings.name.empty() ? "untitled" : app.level->settings.name.c_str(),
+    dirty ? " *" : ""));
 }
 
 /**
@@ -100,32 +112,34 @@ void update_title(App& app)
  * found by name first, since that is how levels address each other; a level saved under a new name
  * keeps the file it had and takes the new name, rather than becoming a second member.
  */
-void refresh_level_entry(App& app, std::string_view file)
+Status add_member(App& app, std::string_view name, std::string_view file, level::Level& lv)
 {
   project::Project& pr = *app.project;
-  level::Level& lv = *app.level;
   Path relative;
   if (!project::relativize(pr.root.view(), file, relative).ok)
   {
     relative.assign(file);
   }
 
-  std::size_t index = project::find_level(pr, lv.settings.name.view());
+  std::size_t index = project::find_level(pr, name);
   if (index == project::kNoLevel)
   {
     if (const std::size_t by_file = project::find_level_by_file(pr, relative.view()); by_file != project::kNoLevel)
     {
       index = by_file;
-      project::rename_level(pr, index, lv.settings.name.view());
+      project::rename_level(pr, index, name);
     }
   }
   if (index == project::kNoLevel)
   {
-    index = project::add_level(pr, lv.settings.name.view(), relative.view());
+    index = project::add_level(pr, name, relative.view());
     if (index == project::kNoLevel)
     {
-      // The project is full, or the name is taken by a member whose file this is not
-      return;
+      return Status::error(
+        "'%.*s' cannot be added: the project is full, or another level of that name is already a "
+        "member",
+        static_cast<int>(name.size()),
+        name.data());
     }
   }
   pr.levels[index].file = relative;
@@ -152,9 +166,47 @@ void refresh_level_entry(App& app, std::string_view file)
       .markers = markers.data(),
       .marker_count = markers.size()},
     app.memory.frame);
+  app.project_modified = app.project_modified or s.ok;
+  return s;
+}
+
+/// Records the open level as a member, and refreshes what the index says about it
+void refresh_level_entry(App& app, std::string_view file)
+{
+  const Status s = add_member(app, app.level->settings.name.view(), file, *app.level);
   if (!s.ok)
   {
     report(app, s);
+  }
+}
+
+/**
+ * @brief Opens member level <code>index</code> of the open project in place of the open one
+ *
+ * The file is a member, so it carries none of the shared sections: it is read into the open project
+ * rather than the spare, and the project, its tilesets and their decoded atlases all stay as they
+ * are. The caller is responsible for the unsaved-changes prompt.
+ */
+void switch_to_level(App& app, std::size_t index)
+{
+  project::Project& pr = *app.project;
+  if (index >= pr.levels.size())
+  {
+    return;
+  }
+  Path absolute;
+  if (Status s = project::resolve(pr.root.view(), pr.levels[index].file.view(), absolute); !s.ok)
+  {
+    report(app, s);
+    return;
+  }
+  if (auto* job = prepare_job<LoadLevelJob>(app); job != nullptr)
+  {
+    job->project = app.project;
+    job->level = app.spare;
+    job->keep_project = true;
+    job->path = absolute;
+    start_job(app);
   }
 }
 
@@ -173,10 +225,21 @@ void finish_job(App& app)
           refresh_level_entry(app, job.path.view());
           remember_recent_file(app, job.path.view());
           web::offer_download(job.path.c_str());
-          // Quitting was waiting on this save
+          // Quitting or switching was waiting on this save
           app.exit = app.exit or app.exit_after_save;
+          if (app.switch_after_save and app.switch_to != project::kNoLevel)
+          {
+            const std::size_t index = app.switch_to;
+            app.switch_to = project::kNoLevel;
+            app.switch_after_save = false;
+            switch_to_level(app, index);
+            report(app, job.result);
+            return;
+          }
         }
         app.exit_after_save = false;
+        app.switch_after_save = false;
+        app.switch_to = project::kNoLevel;
         report(app, job.result);
       },
       [&app](jobs::Background<LoadLevelJob>& bg) {
@@ -184,10 +247,14 @@ void finish_job(App& app)
         if (job.result.ok)
         {
           std::swap(app.level, app.spare);
-          std::swap(app.project, app.spare_project);
           level::reset(*app.spare);
-          project::reset(*app.spare_project);
-          apply_atlases(app, job.atlases, 1 - app.assets.current);
+          if (!job.keep_project)
+          {
+            // Opening a level brings its project with it; switching within a project does not
+            std::swap(app.project, app.spare_project);
+            project::reset(*app.spare_project);
+            apply_atlases(app, job.atlases, 1 - app.assets.current);
+          }
           app.path = job.path;
           app.modified = false;
           refresh_level_entry(app, job.path.view());
@@ -202,7 +269,10 @@ void finish_job(App& app)
         else
         {
           level::reset(*app.spare);
-          project::reset(*app.spare_project);
+          if (!job.keep_project)
+          {
+            project::reset(*app.spare_project);
+          }
           // A level that could not be loaded does not belong in the recent list
           forget_recent_file(app, job.path.view());
           report(app, job.result);
@@ -431,26 +501,47 @@ void exit_prompt(App& app)
   {
     return;
   }
+  const bool switching = app.switch_to != project::kNoLevel;
   ImGui::Text("'%s' has unsaved changes.", app.path.empty() ? app.level->settings.name.c_str() : app.path.c_str());
-  ImGui::TextUnformatted("Save them before quitting?");
+  ImGui::TextUnformatted(switching ? "Save them before opening the other level?" : "Save them before quitting?");
   ImGui::Spacing();
-  if (ImGui::Button(app.path.empty() ? "Save as... and quit" : "Save and quit") or ImGui::IsKeyPressed(ImGuiKey_Enter))
+  const char* save_label = switching ? (app.path.empty() ? "Save as... and switch" : "Save and switch")
+                                     : (app.path.empty() ? "Save as... and quit" : "Save and quit");
+  if (ImGui::Button(save_label) or ImGui::IsKeyPressed(ImGuiKey_Enter))
   {
     ImGui::CloseCurrentPopup();
-    save_and_exit(app);
+    if (switching)
+    {
+      save_and_switch(app);
+    }
+    else
+    {
+      save_and_exit(app);
+    }
   }
   ImGui::SameLine();
-  if (ImGui::Button("Quit without saving"))
+  if (ImGui::Button(switching ? "Discard and switch" : "Quit without saving"))
   {
     ImGui::CloseCurrentPopup();
     app.confirm_exit = false;
-    app.exit = true;
+    if (switching)
+    {
+      const std::size_t index = app.switch_to;
+      app.switch_to = project::kNoLevel;
+      app.modified = false;
+      switch_to_level(app, index);
+    }
+    else
+    {
+      app.exit = true;
+    }
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel") or ImGui::IsKeyPressed(ImGuiKey_Escape) or !app.confirm_exit)
   {
     ImGui::CloseCurrentPopup();
     app.confirm_exit = false;
+    app.switch_to = project::kNoLevel;
   }
   ImGui::EndPopup();
 }
@@ -495,6 +586,13 @@ void redo(App& app)
 
 void save(App& app)
 {
+  // The manifest first, and synchronously: a member level is written in project scope, so its file
+  // means nothing without the manifest that holds the catalogs, tilesets and rules its cells name.
+  // Writing the manifest before the level job starts also keeps the two out of each other's way.
+  if (!app.project_path.empty())
+  {
+    file_action(app, FileAction::kSaveProjectAs, app.project_path.c_str());
+  }
   if (app.path.empty())
   {
     open_file_dialog(app, FileAction::kSaveLevel);
@@ -667,6 +765,38 @@ void main_menu(App& app)
         open_file_dialog(app, FileAction::kSaveLevel);
       }
       ImGui::Separator();
+      if (ImGui::MenuItem("New project..."))
+      {
+        open_file_dialog(app, FileAction::kNewProject);
+      }
+      if (ImGui::MenuItem("Open project..."))
+      {
+        open_file_dialog(app, FileAction::kOpenProject);
+      }
+      if (ImGui::MenuItem("Save project", nullptr, false, !app.project_path.empty()))
+      {
+        file_action(app, FileAction::kSaveProjectAs, app.project_path.c_str());
+      }
+      if (ImGui::MenuItem("Save project as..."))
+      {
+        open_file_dialog(app, FileAction::kSaveProjectAs);
+      }
+      if (ImGui::MenuItem(
+            "Compact catalogs",
+            nullptr,
+            false,
+            project::needs_compaction(*app.project) and !app.project->levels.empty()))
+      {
+        if (auto* job = prepare_job<CompactCatalogsJob>(app); job != nullptr)
+        {
+          job->project = app.project;
+          job->skip = app.level->settings.name;
+          job->scratch = app.spare;
+          job->scratch_project = app.spare_project;
+          start_job(app);
+        }
+      }
+      ImGui::Separator();
       if (ImGui::BeginMenu("Import"))
       {
         if (ImGui::MenuItem("Tileset..."))
@@ -786,6 +916,7 @@ void main_menu(App& app)
       ImGui::MenuItem("Tilesets", nullptr, &app.panels.tilesets);
       ImGui::MenuItem("Tile metadata", nullptr, &app.panels.tile_meta);
       ImGui::MenuItem("Catalogs & seasons", nullptr, &app.panels.catalogs);
+      ImGui::MenuItem("Project", nullptr, &app.panels.project);
       ImGui::MenuItem("Generate", nullptr, &app.panels.generate);
       ImGui::MenuItem("Tile adjacency rules", nullptr, &app.panels.adjacency);
       ImGui::MenuItem("Tile neighbors", nullptr, &app.panels.neighbors);
@@ -1838,7 +1969,8 @@ void frame(App& app)
     cancel_close();
     request_exit(app);
   }
-  web::set_unsaved_changes(app.modified);
+  // Either flag arms the browser's "leave site?" prompt, as either arms the editor's own
+  web::set_unsaved_changes(app.modified or app.project_modified);
   const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
   static bool layout_done = false;
   if (!layout_done)
@@ -1868,6 +2000,10 @@ void frame(App& app)
   if (app.panels.catalogs)
   {
     catalogs_panel(app);
+  }
+  if (app.panels.project)
+  {
+    project_panel(app);
   }
   if (app.panels.generate)
   {
@@ -1918,14 +2054,41 @@ void frame(App& app)
   }
 }
 
+void request_switch(App& app, std::size_t index)
+{
+  if (!app.modified)
+  {
+    switch_to_level(app, index);
+    return;
+  }
+  // The same prompt quitting uses: the open document is about to be replaced either way
+  app.switch_to = index;
+  app.confirm_exit = true;
+}
+
 void request_exit(App& app, bool force)
 {
-  if (force or !app.modified)
+  if (force or (!app.modified and !app.project_modified))
   {
     app.exit = true;
     return;
   }
   app.confirm_exit = true;
+}
+
+void save_and_switch(App& app)
+{
+  app.confirm_exit = false;
+  app.switch_after_save = true;
+  if (app.path.empty())
+  {
+    // Switches when the dialog's save succeeds; cancelling the dialog cancels switching
+    open_file_dialog(app, FileAction::kSaveLevel);
+  }
+  else
+  {
+    file_action(app, FileAction::kSaveLevel, app.path.c_str());
+  }
 }
 
 void save_and_exit(App& app)
@@ -1981,6 +2144,78 @@ void file_action(App& app, FileAction action, const char* path)
   {
   case FileAction::kNone:
     break;
+  case FileAction::kNewProject:
+    // Synchronous: a manifest and the files it names are kilobytes, never on a hot path. What needs
+    // a job is loading a level, and nothing is loaded here -- a new project has no members.
+    small_io([&](level::IoContext& ctx) {
+      const std::string_view folder = project::parent_path(std::string_view{path});
+      Status s =
+        project::create_project(folder.empty() ? "." : FixedString<512>{folder}.c_str(), {}, *app.project, ctx);
+      if (s.ok)
+      {
+        app.project_path.assign(path);
+        app.project_modified = false;
+        // The open level belongs to the new project now, and is its first member once it is saved
+        app.modified = true;
+        invalidate_view(app);
+        reload_atlases(app);
+      }
+      return s;
+    });
+    break;
+  case FileAction::kOpenProject:
+    small_io([&](level::IoContext& ctx) {
+      // Into the spare, so a manifest that will not load leaves the open project alone
+      Status s = project::load_project(path, *app.spare_project, ctx);
+      if (!s.ok)
+      {
+        project::reset(*app.spare_project);
+        return s;
+      }
+      std::swap(app.project, app.spare_project);
+      project::reset(*app.spare_project);
+      app.project_path.assign(path);
+      app.project_modified = false;
+      app.tileset = 0;
+      invalidate_view(app);
+      reload_atlases(app);
+      // The project's own first member replaces whatever level is open; one with no members leaves
+      // the open level where it is, as the project's first member once it is saved
+      if (!app.project->levels.empty())
+      {
+        switch_to_level(app, 0);
+      }
+      return s;
+    });
+    break;
+  case FileAction::kSaveProjectAs:
+    small_io([&](level::IoContext& ctx) {
+      Status s = project::save_project(path, *app.project, ctx);
+      if (s.ok)
+      {
+        app.project_path.assign(path);
+        app.project_modified = false;
+      }
+      return s;
+    });
+    break;
+  case FileAction::kAddLevel:
+    small_io([&](level::IoContext& ctx) {
+      // Read its name and objects without disturbing the open level, then record it as a member.
+      // Its file stays where it is: copying levels into the tree is phase 5's business.
+      level::reset(*app.spare);
+      project::reset(*app.spare_project);
+      Status s = level::load_level(path, *app.spare_project, *app.spare, ctx);
+      if (!s.ok)
+      {
+        return s;
+      }
+      s = add_member(app, app.spare->settings.name.view(), path, *app.spare);
+      level::reset(*app.spare);
+      project::reset(*app.spare_project);
+      return s;
+    });
+    break;
   case FileAction::kOpenLevel:
     if (auto* job = prepare_job<LoadLevelJob>(app); job != nullptr)
     {
@@ -1997,6 +2232,8 @@ void file_action(App& app, FileAction action, const char* path)
       job->project = app.project;
       job->level = app.level;
       job->path.assign(path);
+      // A level inside a project is a member of it; one with no project folder stands alone
+      job->scope = app.project_path.empty() ? level::LevelScope::kStandalone : level::LevelScope::kProject;
       start_job(app);
     }
     break;

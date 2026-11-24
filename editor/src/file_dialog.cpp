@@ -38,6 +38,7 @@ constexpr const char* kKey = "lvl-file";
 constexpr const char* kPlacesGroup = "Places";
 constexpr const char* kPlacesFile = "file_dialog_places.txt";
 
+constexpr const char* kProjectFilters = "Project manifest (project.json){project.json},.json";
 constexpr const char* kLevelFilters = "Levels{.json,.lvlb,.bin},JSON{.json},Binary{.lvlb,.bin},All files{.*}";
 constexpr const char* kDataFilters = "JSON{.json},Binary{.lvlb,.bin},All files{.*}";
 constexpr const char* kImageFilters = "Images{.png,.jpg,.jpeg,.bmp,.tga,.gif,.psd,.hdr,.pic,.pnm},All files{.*}";
@@ -92,8 +93,24 @@ Setup setup(const App& app, FileAction action)
   {
   case FileAction::kNone:
     break;
+  case FileAction::kNewProject:
+    // A project is where its manifest is, so putting project.json somewhere is what makes a project
+    // there. Picking the file rather than the folder means no directory-picking mode is needed, and
+    // it matches what save_project does with the path it is given.
+    return Setup{
+      .title = "New project (choose where project.json goes)",
+      .filters = kProjectFilters,
+      .save = true,
+      .name = "project.json"};
+  case FileAction::kOpenProject:
+    return Setup{.title = "Open project", .filters = kProjectFilters};
+  case FileAction::kSaveProjectAs:
+    return Setup{
+      .title = "Save project as", .filters = kProjectFilters, .save = true, .project = true, .name = "project.json"};
   case FileAction::kOpenLevel:
     return Setup{.title = "Open level", .filters = kLevelFilters};
+  case FileAction::kAddLevel:
+    return Setup{.title = "Add a level to this project", .filters = kLevelFilters, .project = true};
   case FileAction::kSaveLevel:
     return Setup{
       .title = "Save level",

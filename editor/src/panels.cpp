@@ -938,6 +938,154 @@ void catalogs_panel(App& app)
 }
 
 // -------------------------------------------------------------------------------------------------
+// Project: its member levels, tilesets and rule sets
+// -------------------------------------------------------------------------------------------------
+
+void project_panel(App& app)
+{
+  if (!ImGui::Begin("Project", &app.panels.project))
+  {
+    ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
+    return;
+  }
+  project::Project& pr = *app.project;
+  const Level& lv = *app.level;
+
+  if (app.project_path.empty())
+  {
+    // What opening a bare level gives: a project synthesized around it, with nowhere to save to
+    ImGui::TextWrapped("This level has no project folder yet. File > New project writes one.");
+  }
+  else
+  {
+    ImGui::Text("%s%s", pr.name.c_str(), app.project_modified ? " *" : "");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("%s", app.project_path.c_str());
+    }
+  }
+  if (input_text("Name", pr.name))
+  {
+    app.project_modified = true;
+  }
+
+  ImGui::SeparatorText("Levels");
+  const std::size_t open_member = project::find_level(pr, lv.settings.name.view());
+  for (std::size_t i = 0; i < pr.levels.size(); ++i)
+  {
+    project::LevelEntry& entry = pr.levels[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Remove from the project (the file stays on disk)"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kLevelMember,
+          .index = i,
+          .what = format<128>("level '%s' from the project", entry.name.c_str()),
+          .detail = "Its file stays on disk. Portals pointing at it will show as dangling."});
+    }
+    const bool is_open = (i == open_member);
+    if (is_open)
+    {
+      // The open one is the document: it is renamed through the level's own settings, not here
+      ImGui::TextDisabled("%s (open)", entry.name.c_str());
+    }
+    else
+    {
+      ImGui::SetNextItemWidth(140.0F);
+      if (input_text("##name", entry.name))
+      {
+        app.project_modified = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Open"))
+      {
+        // Leaves the unsaved-changes prompt to request_switch, as quitting does
+        request_switch(app, i);
+      }
+    }
+    ImGui::SameLine();
+    if (entry.missing)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      ImGui::Text("%s (file not found)", entry.file.c_str());
+      ImGui::PopStyleColor();
+    }
+    else
+    {
+      ImGui::TextDisabled(
+        "%dx%d, %u portal(s)  %s", entry.extents.width, entry.extents.height, entry.portal_count, entry.file.c_str());
+    }
+    ImGui::PopID();
+  }
+  if (pr.levels.empty())
+  {
+    ImGui::TextDisabled("No levels yet. Saving this one makes it the first.");
+  }
+  if (ImGui::SmallButton("Add a level..."))
+  {
+    open_file_dialog(app, FileAction::kAddLevel);
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Rescan"))
+  {
+    // What the index says is only as fresh as the last save this editor did
+    if (auto* job = prepare_job<RescanProjectJob>(app); job != nullptr)
+    {
+      job->project = app.project;
+      job->scratch = app.spare;
+      job->scratch_project = app.spare_project;
+      start_job(app);
+    }
+  }
+
+  ImGui::SeparatorText("Tilesets");
+  for (const level::TileSet& ts : pr.tilesets)
+  {
+    ImGui::BulletText("%s  %s", ts.name.c_str(), ts.image.empty() ? "(no atlas)" : ts.image.c_str());
+  }
+  if (pr.tilesets.empty())
+  {
+    ImGui::TextDisabled("None; import one in Tilesets");
+  }
+
+  ImGui::SeparatorText("Rule sets");
+  for (std::size_t i = 0; i < pr.rules.size(); ++i)
+  {
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Delete rule set"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kRuleSet,
+          .index = i,
+          .what = format<128>("rule set '%s'", pr.rules[i].wfc.name.c_str()),
+          .detail = "Levels naming it fall back to the project's first set."});
+    }
+    const bool used = (i == project::rules_of(pr, lv));
+    ImGui::Text(
+      "%s%s  %zu tile(s), %zu terrain(s)",
+      pr.rules[i].wfc.name.c_str(),
+      used ? " (this level)" : "",
+      pr.rules[i].wfc.tiles.size(),
+      pr.rules[i].auto_tiles.terrains.size() + pr.rules[i].steps.terrains.size());
+    ImGui::PopID();
+  }
+  if (ImGui::SmallButton("Add a rule set"))
+  {
+    project::add_rules(pr, format<64>("rules_%zu", pr.rules.size() + 1));
+    app.project_modified = true;
+  }
+  ImGui::End();
+}
+
+// -------------------------------------------------------------------------------------------------
 // Objects & paths
 // -------------------------------------------------------------------------------------------------
 

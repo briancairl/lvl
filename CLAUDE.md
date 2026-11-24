@@ -103,7 +103,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs, incl. `RescanProjectJob` and `CompactCatalogsJob`), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `panels.cpp` (including the Project panel: members, tilesets, rule sets), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -284,6 +284,37 @@ answers whether a link can be followed, `link_message` says what is missing, and
 draws red in the objects list and in the viewport with that message as its tooltip. A value naming
 nothing is still listed, red and disabled, so it can be seen and replaced rather than silently
 dropped.
+
+**The Project panel** (View > Project) lists the members -- each with its grid size, portal count
+and file, red when the file is not where the manifest says -- with Open, rename, and a delete button
+that removes the member from the index and leaves its file on disk. The open level is shown as
+"(open)" and renamed through its own settings rather than here, since it is the document. Below it
+are the tilesets and the rule sets, each rule set with a delete button and the one this level uses
+marked. "Add a level..." records an existing file as a member; "Rescan" runs `RescanProjectJob`.
+
+**A member level is saved in project scope**, so the manifest stays the one authority for the
+catalogs, seasons, tilesets and rules its cells name and the project's levels cannot drift apart. A
+level with no project folder is saved standalone, as a level file has always been. That is also why
+Ctrl+S writes the **manifest first and synchronously**, then starts the level save: a member's file
+means nothing without the manifest, and writing it first keeps the two out of each other's way.
+
+**Switching level** goes through `request_switch`, which uses the same prompt quitting does, since
+the open document is about to be replaced either way (Save and switch / Discard and switch /
+Cancel). The load itself is `LoadLevelJob` with `keep_project` set: a member carries none of the
+shared sections, so it is read into the open project rather than the spare, `finish_job` does not
+swap the project, and **the atlases are not decoded again** -- not re-decoding them on every switch
+is most of the point of the project owning the tilesets.
+
+**New project / Open project / Save project** are synchronous rather than jobs: a manifest and the
+files it names are kilobytes and never on a hot path. What needs a job is the level that follows,
+which is `LoadLevelJob` as it stands. A new project is made by choosing where `project.json` goes,
+rather than by picking a folder: that needs no directory-picking mode and matches `save_project`,
+which takes the project to be wherever its manifest is written.
+
+`App::project_path` and `App::project_modified` sit beside `App::path` and `App::modified`. The two
+pairs are separate because the two things are saved separately -- editing a tileset or a rule set
+changes the project, not the level that happens to be open -- and the title's star, the quit prompt
+and the browser's "leave site?" prompt all mean "either has changes".
 
 ### Recent levels
 

@@ -319,6 +319,10 @@ enum class DeleteKind : std::uint8_t
   kTerrain,
   /// A height-step terrain
   kStepTerrain,
+  /// A member level, which leaves its file on disk
+  kLevelMember,
+  /// A rule set of the project
+  kRuleSet,
 };
 
 /// A delete waiting for confirmation (or, when confirmed, for the end of the frame)
@@ -352,14 +356,22 @@ struct Panels
   bool adjacency = false;
   /// The pop-out neighbor editor
   bool neighbors = false;
+  /// The project: its member levels, its tilesets and its rule sets
+  bool project = true;
 };
 
 /// What the modal file dialog is for
 enum class FileAction : std::uint8_t
 {
   kNone,
+  /// A new project: the manifest is saved where the user puts it, and that folder is the root
+  kNewProject,
+  kOpenProject,
+  kSaveProjectAs,
   kOpenLevel,
   kSaveLevel,
+  /// A level file brought into the open project as a member (copied into levels/ by the save)
+  kAddLevel,
   kLoadTileSet,
   kSaveTileSet,
   kAtlasImage,
@@ -490,6 +502,15 @@ struct App
   bool exit = false;
   /// The unsaved-changes prompt is up
   bool confirm_exit = false;
+  /**
+   * @brief The member level a switch is waiting on, while the open one has unsaved changes
+   *
+   * <code>project::kNoLevel</code> when nothing is pending. Switching goes through the same prompt
+   * quitting does, for the same reason: the open document is about to be replaced.
+   */
+  std::size_t switch_to = static_cast<std::size_t>(-1);
+  /// Switch once the save in flight succeeds (as exit_after_save does for quitting)
+  bool switch_after_save = false;
   /// Exit once the level save in progress (or about to be chosen in the save dialog) succeeds
   bool exit_after_save = false;
   /// Scripted smoke test: drives generators, undo, save/load and exports through the UI code paths
@@ -518,6 +539,17 @@ void request_exit(App& app, bool force = false);
 
 /// Saves the level (asking where if it has no path yet), then exits if that succeeds
 void save_and_exit(App& app);
+
+/**
+ * @brief Opens member level <code>index</code> of the open project in place of the open one
+ *
+ * Immediately when the open level has no unsaved changes; otherwise through the same prompt
+ * quitting uses, since the open document is about to be replaced either way.
+ */
+void request_switch(App& app, std::size_t index);
+
+/// Saves the level (asking where if it has no path yet), then switches if that succeeds
+void save_and_switch(App& app);
 
 /// Marks every overlay (and the minimap) as needing an update
 void invalidate_view(App& app);

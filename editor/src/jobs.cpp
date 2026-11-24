@@ -156,14 +156,14 @@ void load_atlases(
 void SaveLevelJob::run(jobs::Progress& progress)
 {
   auto ctx = memory->context(&progress);
-  result = level::save_level(path.c_str(), *project, *level, ctx);
+  result = level::save_level(path.c_str(), *project, *level, ctx, scope);
 }
 
 void LoadLevelJob::run(jobs::Progress& progress)
 {
   auto ctx = memory->context(&progress);
   result = level::load_level(path.c_str(), *project, *level, ctx);
-  if (result.ok)
+  if (result.ok and !keep_project)
   {
     // Worker arenas are free again: reuse them for the atlas images
     load_atlases(*project, *assets, *memory, atlases, &progress);

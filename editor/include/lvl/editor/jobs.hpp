@@ -84,6 +84,15 @@ struct SaveLevelJob
   const project::Project* project = nullptr;
   const level::Level* level = nullptr;
   Path path;
+  /**
+   * @brief How much of what the level draws on goes into the file
+   *
+   * A member of a project on disk is written in project scope, so the manifest stays the one
+   * authority for the catalogs, seasons, tilesets and rules its cells name and the project's levels
+   * cannot drift apart. A level with no project folder is written standalone, which is what a level
+   * file has always been and what a file handed to someone else has to be.
+   */
+  level::LevelScope scope = level::LevelScope::kStandalone;
   JobMemory* memory = nullptr;
   Status result;
 
@@ -92,13 +101,23 @@ struct SaveLevelJob
 
 struct LoadLevelJob
 {
-  /// Interned into (the spare project)
+  /// Interned into: the spare project, or the open one when switching within a project
   project::Project* project = nullptr;
   /// Loaded into (the spare document)
   level::Level* level = nullptr;
-  /// Atlases decoded into (the spare asset arena)
+  /// Atlases decoded into (the spare asset arena); unused when keep_project is set
   memory::Arena* assets = nullptr;
   Path path;
+  /**
+   * @brief Switching to another level of the open project, rather than opening a level
+   *
+   * The file is a member, so it carries none of the shared sections and the project it is read into
+   * is left as it is -- which is why <code>project</code> is the open one and
+   * <code>finish_job</code> does not swap it. The tilesets are therefore the same objects they
+   * were, so the atlases are not decoded again either: not re-decoding them on every switch is
+   * most of the point of the project owning them.
+   */
+  bool keep_project = false;
   JobMemory* memory = nullptr;
   AtlasImages atlases;
   Status result;

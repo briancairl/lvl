@@ -98,6 +98,7 @@ cc_library(
         "//level:io",
         "//level:model",
         "//procgen",
+        "//project:io",
         "//project:model",
         "//project:paths",
         "//render",
