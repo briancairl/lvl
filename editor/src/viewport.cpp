@@ -567,13 +567,19 @@ void draw_objects(App& app, const Canvas& cv)
   {
     const ImVec2 p0 = cv.to_screen(v, pos.x, pos.y);
     const ImVec2 p1 = cv.to_screen(v, pos.x + ext.width, pos.y + ext.height);
-    cv.draw->AddRectFilled(p0, p1, IM_COL32(80, 220, 255, 50));
-    cv.draw->AddRect(p0, p1, e == app.entity ? IM_COL32(255, 255, 255, 255) : IM_COL32(80, 220, 255, 255), 0, 0, 2.0F);
-    cv.draw->AddText(ImVec2{p0.x + 2, p0.y - 16}, IM_COL32(200, 245, 255, 255), label.name.c_str());
+    // A destination the project cannot follow is drawn red here as well as in the objects list, so
+    // a broken link is visible where the level is being edited
+    const auto link = portal_link_of(app, portal);
+    const bool dangling = link != project::LinkState::kResolved and link != project::LinkState::kSelf;
+    const ImU32 edge = dangling ? IM_COL32(245, 115, 100, 255) : IM_COL32(80, 220, 255, 255);
+    const ImU32 text = dangling ? IM_COL32(255, 180, 170, 255) : IM_COL32(200, 245, 255, 255);
+    cv.draw->AddRectFilled(p0, p1, dangling ? IM_COL32(245, 115, 100, 40) : IM_COL32(80, 220, 255, 50));
+    cv.draw->AddRect(p0, p1, e == app.entity ? IM_COL32(255, 255, 255, 255) : edge, 0, 0, 2.0F);
+    cv.draw->AddText(ImVec2{p0.x + 2, p0.y - 16}, text, label.name.c_str());
     // Exit direction tick
     const ImVec2 c{(p0.x + p1.x) * 0.5F, (p0.y + p1.y) * 0.5F};
     const Cell d = step(Cell{0, 0}, portal.exit);
-    cv.draw->AddLine(c, ImVec2{c.x + d.x * 12.0F, c.y + d.y * 12.0F}, IM_COL32(200, 245, 255, 255), 2.0F);
+    cv.draw->AddLine(c, ImVec2{c.x + d.x * 12.0F, c.y + d.y * 12.0F}, text, 2.0F);
   }
   for (auto [e, pos, label, marker] : reg.view<Position, Label, Marker>().each())
   {

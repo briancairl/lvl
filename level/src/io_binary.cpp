@@ -386,6 +386,8 @@ Status load_level_binary(const char* path, project::Project& project, Level& lev
     // The set it carried names itself, so the level takes its name from what it read
     level.rules = project.rules[0].wfc.name;
   }
+  // A file written before projects names its destination level by path; a portal points at a member
+  migrate_portal_targets(project, path, records);
   if (Status s = restore(records, level.registry, level.graphs.size()); !s.ok)
   {
     return Status::error("%s: %s", path, s.message.c_str());

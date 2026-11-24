@@ -14,7 +14,10 @@
 #include <imgui.h>
 
 // LVL
+#include "lvl/core/format.hpp"
 #include "lvl/editor/app.hpp"
+#include "lvl/level/objects.hpp"
+#include "lvl/project/project.hpp"
 
 namespace lvl::editor
 {
@@ -45,6 +48,49 @@ inline bool skip_while_busy(const App& app)
 [[nodiscard]] inline project::RuleSet& rule_set(const App& app)
 {
   return app.project->rules[project::rules_of(*app.project, *app.level)];
+}
+
+/**
+ * @brief Whether <code>portal</code>'s destination can be followed
+ *
+ * The project's index answers for a sibling level without loading it. A destination that is this
+ * level is answered from the live registry instead, because the index is only as fresh as the last
+ * save and a portal made this session is not in it yet. An unset destination portal is not a
+ * dangling one: the user is still filling the fields in.
+ */
+[[nodiscard]] inline project::LinkState portal_link_of(const App& app, const level::Portal& portal)
+{
+  const bool self = portal.target_level.empty() or portal.target_level == app.level->settings.name;
+  if (portal.target_portal.empty())
+  {
+    return self ? project::LinkState::kSelf : project::portal_link(*app.project, portal.target_level.view(), {});
+  }
+  if (self)
+  {
+    return (level::find_portal(app.level->registry, portal.target_portal.view()) != level::kNullEntity)
+      ? project::LinkState::kSelf
+      : project::LinkState::kUnknownPortal;
+  }
+  return project::portal_link(*app.project, portal.target_level.view(), portal.target_portal.view());
+}
+
+/// What is missing from a link that does not resolve, for the tooltip
+[[nodiscard]] inline const char* link_message(project::LinkState link, const level::Portal& portal)
+{
+  switch (link)
+  {
+  case project::LinkState::kUnknownLevel:
+    return format<160>("This project has no level named '%s'.", portal.target_level.c_str());
+  case project::LinkState::kUnknownPortal:
+    return format<160>(
+      "Level '%s' has no portal named '%s'. Its portals are known from when it was last saved.",
+      portal.target_level.c_str(),
+      portal.target_portal.c_str());
+  case project::LinkState::kResolved:
+  case project::LinkState::kSelf:
+    break;
+  }
+  return "";
 }
 
 /// The job memory of the running job (valid while a job runs)

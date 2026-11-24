@@ -7,11 +7,13 @@
 // C++ Standard Library
 #include <algorithm>
 #include <cstring>
+#include <string_view>
 
 // LVL
 #include "io_common.hpp"
 #include "lvl/core/file.hpp"
 #include "lvl/core/logging.hpp"
+#include "lvl/project/paths.hpp"
 
 namespace lvl::level
 {
@@ -203,11 +205,14 @@ void collect(const Registry& registry, ObjectRecords& out, bool paths_only)
   {
     if (!paths_only and registry.all_of<Portal>(e))
     {
+      const Portal& portal = registry.get<Portal>(e);
       out.portals.push_back(PortalRecord{
         .name = registry.get<Label>(e).name,
         .position = registry.get<Position>(e),
         .extent = registry.get<Extent>(e),
-        .portal = registry.get<Portal>(e)});
+        .portal = portal,
+        // What goes in the file: a name now, in a field wide enough for the paths older ones hold
+        .target_level_field = Path{portal.target_level.view()}});
     }
     else if (!paths_only and registry.all_of<Marker>(e))
     {
@@ -234,6 +239,40 @@ void collect(const Registry& registry, ObjectRecords& out, bool paths_only)
       out.edges.push_back(EdgeRecord{
         .from = index_of(edge.from), .to = index_of(edge.to), .cost = edge.cost, .bidirectional = edge.bidirectional});
     }
+  }
+}
+
+void migrate_portal_targets(const project::Project& project, const char* path, ObjectRecords& records)
+{
+  for (PortalRecord& r : records.portals)
+  {
+    const std::string_view field = r.target_level_field.view();
+    r.portal.target_level.clear();
+    if (field.empty())
+    {
+      // "this level", which only the caller can check, so there is nothing to resolve
+      continue;
+    }
+    if (project::find_level(project, field) != project::kNoLevel)
+    {
+      r.portal.target_level.assign(field);
+      continue;
+    }
+    // Written as a path, as they were before projects: the member whose file has that name
+    if (const std::size_t member = project::find_level_by_file_name(project, field); member != project::kNoLevel)
+    {
+      r.portal.target_level = project.levels[member].name;
+      continue;
+    }
+    // Neither: the file name's stem is what the level would have been called. Kept as a name that
+    // does not resolve, and said so, rather than refusing the file over a portal the user can fix.
+    const std::string_view guess = project::stem(project::file_name(field));
+    if (!guess.empty() and guess.size() <= Name::kMaxLength)
+    {
+      r.portal.target_level.assign(guess);
+    }
+    LVL_LOG_WARN() << path << ": portal '" << r.name.c_str() << "' points at '" << r.target_level_field.c_str()
+                   << "', which is no level of this project";
   }
 }
 

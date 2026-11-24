@@ -258,8 +258,32 @@ save does reuses the same block instead of leaving the old one behind in the bum
 `set_level_objects` is that rebuild, and `remove_level` compacts the table the same way.
 
 Levels address each other **by name**, not by path, so moving a level's file within `levels/` does
-not break the portals pointing at it; `find_level_by_file_name` is how a target that was written as
-a path is matched to a member.
+not break the portals pointing at it. `Portal::target_level` is a `Name` into the index.
+
+**A file still carries that field `Path`-wide**, because it held a path before projects and a path
+does not fit a `Name`. `PortalRecord::target_level_field` is the wire form, and
+`level::migrate_portal_targets` (called by both loaders, before `restore`) turns it into a member's
+name: a string that already names a member is kept, a path is matched to the member whose file has
+that name (`find_level_by_file_name`), and anything else is reduced to the file name's stem -- what
+the level would have been called -- and logged as a **warning**. A portal that does not resolve is
+something to fix in the editor, not a reason to refuse the file.
+
+**The open level is a member, and the index follows it.** `editor::refresh_level_entry` runs
+whenever a level is saved or loaded: it finds the member by name (how levels address each other),
+falling back to the file so a level saved under a new name takes the new name rather than becoming a
+second member, adds it if it is new, and rebuilds what the index says -- the grid size and the names
+of its portals and markers, read from the live registry. That is also what makes a bare level file
+open as a single-member project, with no "no project" branch anywhere.
+
+In the editor the two destination fields are **combos, not text boxes**, which is the point: a typed
+path was indistinguishable from a working link. The target level is picked from the project's
+members (plus "(this level)"), and the target portal from the live registry when the destination is
+this level -- so a portal made this session is offered before any save -- or from that member's name
+span otherwise, which is what a project knows about a level it has not loaded. `portal_link_of`
+answers whether a link can be followed, `link_message` says what is missing, and a dangling portal
+draws red in the objects list and in the viewport with that message as its tooltip. A value naming
+nothing is still listed, red and disabled, so it can be seen and replaced rather than silently
+dropped.
 
 ### Recent levels
 
@@ -661,7 +685,9 @@ one check to mark required:
   stability, a project-scope save leaving the shared sections out and round-tripping against a
   project that already holds them while leaving it untouched, a project-scope level naming the rule
   set it uses and resolving to it in a project that holds the sets in another order, a standalone
-  level carrying only the set it uses and taking its name from it, the standalone scope being the
+  level carrying only the set it uses and taking its name from it, a portal target written as a path
+  becoming the member whose file it names, one that names no member keeping a stem and warning
+  rather than failing, the standalone scope being the
   default and still reading into an empty project, standalone files moving between levels,
   malformed/truncated files, a level whose layers
   and file are bigger than one worker's share, saves split across waves and saves streamed layer by
@@ -724,8 +750,10 @@ one check to mark required:
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
   layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of
-  a step, and redrawing changing nothing), deleting a catalog entry retiring it and the project then
-  saying it has something to compact, compacting dropping exactly those entries,
+  a step, and redrawing changing nothing), saving making the open level a member of its project and
+  a portal resolving against it (its own portals from the live registry, a level no member is named
+  after and a portal a member does not have both reported), deleting a catalog entry retiring it and
+  the project then saying it has something to compact, compacting dropping exactly those entries,
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

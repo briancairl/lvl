@@ -843,7 +843,7 @@ void save_objects(Json& j, const ObjectRecords& records)
     json::write(e, "name", p.name);
     write_position(e, "position", p.position);
     json::write(e, "extent", std::array<float, 2>{p.extent.width, p.extent.height});
-    json::write(e, "target_level", p.portal.target_level);
+    json::write(e, "target_level", p.target_level_field);
     json::write(e, "target_portal", p.portal.target_portal);
     json::write(e, "exit", p.portal.exit);
     json::write(e, "interact", p.portal.interact);
@@ -873,7 +873,8 @@ bool load_objects(json::Reader& r, const Json& j, ObjectRecords& records)
       r.get(e, "name", p.name);
       read_position(r, e, "position", p.position);
       r.get_optional(e, "extent", extent);
-      r.get_optional(e, "target_level", p.portal.target_level);
+      // Read wide, because a file written before projects holds a path here
+      r.get_optional(e, "target_level", p.target_level_field);
       r.get_optional(e, "target_portal", p.portal.target_portal);
       r.get_optional(e, "exit", p.portal.exit);
       r.get_optional(e, "interact", p.portal.interact);
@@ -1602,6 +1603,8 @@ Status load_level_json(const char* path, project::Project& project, Level& level
     return Status::okay();
   });
   LVL_RETURN_IF_ERROR(status);
+  // A file written before projects names its destination level by path; a portal points at a member
+  migrate_portal_targets(project, path, records);
   if (Status s = restore(records, level.registry, level.graphs.size()); !s.ok)
   {
     return Status::error("%s: %s", path, s.message.c_str());

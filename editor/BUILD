@@ -57,6 +57,7 @@ cc_library(
         "//level:model",
         "//procgen",
         "//project:model",
+        "//project:paths",
         "//render",
     ],
 )
@@ -98,6 +99,7 @@ cc_library(
         "//level:model",
         "//procgen",
         "//project:model",
+        "//project:paths",
         "//render",
         "@imgui",
         "@imgui//:backend_glfw_opengl3",
@@ -155,6 +157,7 @@ cc_test(
     deps = [
         ":jobs",
         "//project:model",
+        "//project:paths",
         "@googletest//:gtest_main",
     ],
 )

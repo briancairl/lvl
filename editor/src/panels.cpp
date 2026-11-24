@@ -941,6 +941,108 @@ void catalogs_panel(App& app)
 // Objects & paths
 // -------------------------------------------------------------------------------------------------
 
+/**
+ * @brief The two destination fields of a portal, as combos over what the project knows
+ *
+ * Levels address each other by name, and the project's index holds every member's name and the
+ * names of its portals, so both can be picked rather than typed -- which is the point: a typed path
+ * was indistinguishable from a working link. A value that resolves to nothing is kept and shown, in
+ * red and disabled, so it can be seen and replaced rather than silently dropped.
+ */
+bool portal_target(App& app, Portal& portal)
+{
+  const project::Project& pr = *app.project;
+  const Level& lv = *app.level;
+  bool changed = false;
+
+  const bool self = portal.target_level.empty() or portal.target_level == lv.settings.name;
+  const char* preview = self ? "(this level)" : portal.target_level.c_str();
+  if (ImGui::BeginCombo("Target level", preview))
+  {
+    if (ImGui::Selectable("(this level)", self))
+    {
+      portal.target_level.clear();
+      changed = true;
+    }
+    for (const project::LevelEntry& entry : pr.levels)
+    {
+      if (entry.name == lv.settings.name)
+      {
+        // Already offered as "(this level)"
+        continue;
+      }
+      if (ImGui::Selectable(entry.name.c_str(), portal.target_level == entry.name))
+      {
+        portal.target_level = entry.name;
+        portal.target_portal.clear();
+        changed = true;
+      }
+    }
+    // A name no member has: still listed, so it can be seen rather than silently replaced
+    if (!self and project::find_level(pr, portal.target_level.view()) == project::kNoLevel)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      ImGui::Selectable(
+        format<96>("%s (no such level)", portal.target_level.c_str()), true, ImGuiSelectableFlags_Disabled);
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndCombo();
+  }
+
+  // The destination's portals: from the live registry when it is this level, so one made this
+  // session is offered before any save; from the index otherwise, which is what a project knows
+  // about a level it has not loaded
+  const char* portal_preview = portal.target_portal.empty() ? "(none)" : portal.target_portal.c_str();
+  if (ImGui::BeginCombo("Target portal", portal_preview))
+  {
+    if (ImGui::Selectable("(none)", portal.target_portal.empty()))
+    {
+      portal.target_portal.clear();
+      changed = true;
+    }
+    bool listed = false;
+    const auto offer = [&portal, &changed, &listed](std::string_view name) {
+      listed = true;
+      if (ImGui::Selectable(
+            format<96>("%.*s", static_cast<int>(name.size()), name.data()), portal.target_portal == name))
+      {
+        portal.target_portal.assign(name);
+        changed = true;
+      }
+    };
+    if (self)
+    {
+      for (auto [e, label, other] : lv.registry.view<Label, Portal>().each())
+      {
+        offer(label.name.view());
+      }
+    }
+    else if (const std::size_t member = project::find_level(pr, portal.target_level.view());
+             member != project::kNoLevel)
+    {
+      const project::LevelEntry& entry = pr.levels[member];
+      const Name* names = project::portals_of(pr, entry);
+      for (std::uint32_t i = 0; i < entry.portal_count; ++i)
+      {
+        offer(names[i].view());
+      }
+    }
+    if (!listed)
+    {
+      ImGui::TextDisabled(self ? "This level has no other portal" : "That level had no portals when it was saved");
+    }
+    if (!portal.target_portal.empty() and portal_link_of(app, portal) == project::LinkState::kUnknownPortal)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      ImGui::Selectable(
+        format<96>("%s (no such portal)", portal.target_portal.c_str()), true, ImGuiSelectableFlags_Disabled);
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
 void objects_panel(App& app)
 {
   if (!ImGui::Begin("Objects & paths", &app.panels.objects))
@@ -1032,16 +1134,32 @@ void objects_panel(App& app)
             .kind = DeleteKind::kObject, .entity = e, .what = format<128>("portal '%s'", label.name.c_str())});
       }
       ImGui::PopID();
+      // A link the project cannot follow is drawn red, with what is missing in the tooltip, so a
+      // typo is not indistinguishable from a working link
+      const auto link = portal_link_of(app, portal);
+      const bool dangling = link != project::LinkState::kResolved and link != project::LinkState::kSelf;
+      if (dangling)
+      {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      }
       if (ImGui::Selectable(
             format<128>(
               "portal: %s -> %s:%s##%u",
               label.name.c_str(),
-              portal.target_level.c_str(),
+              portal.target_level.empty() ? "(this level)" : portal.target_level.c_str(),
               portal.target_portal.c_str(),
               static_cast<unsigned>(e)),
             app.entity == e))
       {
         app.entity = e;
+      }
+      if (dangling)
+      {
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+        {
+          ImGui::SetTooltip("%s", link_message(link, portal));
+        }
       }
     }
     for (auto [e, label, marker] : reg.view<Label, Marker>().each())
@@ -1082,8 +1200,7 @@ void objects_panel(App& app)
     }
     if (auto* portal = reg.try_get<Portal>(e); portal != nullptr)
     {
-      changed |= input_text("Target level", portal->target_level);
-      changed |= input_text("Target portal", portal->target_portal);
+      changed |= portal_target(app, *portal);
       changed |= enum_combo("Exit facing", portal->exit);
       changed |= ImGui::Checkbox("Requires interaction", &portal->interact);
     }

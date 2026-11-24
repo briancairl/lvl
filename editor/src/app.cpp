@@ -28,6 +28,7 @@
 #include "lvl/level/io.hpp"
 #include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/wfc.hpp"
+#include "lvl/project/paths.hpp"
 
 namespace lvl::editor
 {
@@ -91,6 +92,72 @@ void update_title(App& app)
   set_title(format<600>("lvl - %s%s", app.path.empty() ? "untitled" : app.path.c_str(), app.modified ? " *" : ""));
 }
 
+/**
+ * @brief Makes the open level a member of its project, and refreshes what the index says about it
+ *
+ * Called whenever a level is saved or loaded, because the index is what lets a portal in another
+ * level name this one and have its portals offered without this level being loaded. A member is
+ * found by name first, since that is how levels address each other; a level saved under a new name
+ * keeps the file it had and takes the new name, rather than becoming a second member.
+ */
+void refresh_level_entry(App& app, std::string_view file)
+{
+  project::Project& pr = *app.project;
+  level::Level& lv = *app.level;
+  Path relative;
+  if (!project::relativize(pr.root.view(), file, relative).ok)
+  {
+    relative.assign(file);
+  }
+
+  std::size_t index = project::find_level(pr, lv.settings.name.view());
+  if (index == project::kNoLevel)
+  {
+    if (const std::size_t by_file = project::find_level_by_file(pr, relative.view()); by_file != project::kNoLevel)
+    {
+      index = by_file;
+      project::rename_level(pr, index, lv.settings.name.view());
+    }
+  }
+  if (index == project::kNoLevel)
+  {
+    index = project::add_level(pr, lv.settings.name.view(), relative.view());
+    if (index == project::kNoLevel)
+    {
+      // The project is full, or the name is taken by a member whose file this is not
+      return;
+    }
+  }
+  pr.levels[index].file = relative;
+  pr.levels[index].missing = false;
+
+  memory::Scope scope{app.memory.frame};
+  auto portals = memory::make_vector<Name>(app.memory.frame);
+  auto markers = memory::make_vector<Name>(app.memory.frame);
+  for (auto [e, label, portal] : lv.registry.view<level::Label, level::Portal>().each())
+  {
+    portals.push_back(label.name);
+  }
+  for (auto [e, label, marker] : lv.registry.view<level::Label, level::Marker>().each())
+  {
+    markers.push_back(label.name);
+  }
+  const Status s = project::set_level_objects(
+    pr,
+    index,
+    project::LevelObjects{
+      .extents = lv.settings.extents,
+      .portals = portals.data(),
+      .portal_count = portals.size(),
+      .markers = markers.data(),
+      .marker_count = markers.size()},
+    app.memory.frame);
+  if (!s.ok)
+  {
+    report(app, s);
+  }
+}
+
 /// Applies a finished job's results on the UI thread
 void finish_job(App& app)
 {
@@ -103,6 +170,7 @@ void finish_job(App& app)
         {
           app.path = job.path;
           app.modified = false;
+          refresh_level_entry(app, job.path.view());
           remember_recent_file(app, job.path.view());
           web::offer_download(job.path.c_str());
           // Quitting was waiting on this save
@@ -122,6 +190,7 @@ void finish_job(App& app)
           apply_atlases(app, job.atlases, 1 - app.assets.current);
           app.path = job.path;
           app.modified = false;
+          refresh_level_entry(app, job.path.view());
           remember_recent_file(app, job.path.view());
           app.undo.clear();
           app.layer = std::min<std::size_t>(app.layer, app.level->layers.empty() ? 0 : app.level->layers.size() - 1);
@@ -1407,6 +1476,46 @@ void smoke(App& app)
     break;
   }
   case 26: {
+    // Portals name a level the project knows, and the index is what answers for one that is not
+    // loaded. The saves above made the open level a member, so its own portals resolve from the
+    // live registry and a name no member has does not.
+    project::Project& pr = *app.project;
+    level::Level& lv = *app.level;
+    if (project::find_level(pr, lv.settings.name.view()) == project::kNoLevel)
+    {
+      report(app, Status::error("saving the level did not make it a member of its project"));
+    }
+    const level::Entity door = level::create_portal(lv.registry, "ring_road", {1, 1}, {1, 1}, level::Portal{});
+    auto& portal = lv.registry.get<level::Portal>(door);
+    // This level, and a portal of it that really is there
+    portal.target_portal.assign("ring_road");
+    if (portal_link_of(app, portal) != project::LinkState::kSelf)
+    {
+      report(app, Status::error("a portal pointing at this level's own portal did not resolve"));
+    }
+    // A level no member is named after
+    portal.target_level.assign("nowhere_at_all");
+    if (portal_link_of(app, portal) != project::LinkState::kUnknownLevel)
+    {
+      report(app, Status::error("a portal naming no member was not reported as dangling"));
+    }
+    if (*link_message(project::LinkState::kUnknownLevel, portal) == '\0')
+    {
+      report(app, Status::error("a dangling portal has nothing to say about what is missing"));
+    }
+    // And a member that has no portal of that name
+    portal.target_level = lv.settings.name;
+    portal.target_portal.assign("not_a_portal");
+    if (portal_link_of(app, portal) != project::LinkState::kUnknownPortal)
+    {
+      report(app, Status::error("a portal naming a portal that is not there was not reported"));
+    }
+    app.pending_delete =
+      PendingDelete{.kind = DeleteKind::kObject, .entity = door, .what = "portal", .confirmed = true};
+    process_deletes(app);
+    break;
+  }
+  case 27: {
     // The catalog entries deleted in step 14 were retired, not erased: their ids stay reserved
     // because the project's other levels are not loaded. Compacting is the deliberate act that
     // renumbers every level at once, and the only thing that moves a catalog id.
@@ -1449,7 +1558,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 27:
+  case 28:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -1458,7 +1567,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 28:
+  case 29:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -2200,7 +2309,8 @@ void demo_level(App& app)
     "east_exit",
     {94, 30},
     {2, 4},
-    Portal{.target_level = "east.json", .target_portal = "west_entry", .exit = Direction::kWest});
+    // A level is named, not pathed: this is a destination the project's index would resolve
+    Portal{.target_level = "east", .target_portal = "west_entry", .exit = Direction::kWest});
   create_marker(lv.registry, "spawn", "player", {21.0F, 31.0F});
   app.layer = 1;
   app.generators.height_layer = 0;

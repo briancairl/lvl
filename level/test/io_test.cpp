@@ -1,6 +1,7 @@
 // C++ Standard Library
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <new>
 #include <string>
 
@@ -150,7 +151,7 @@ protected:
       "cave",
       {3, 4},
       {2, 1},
-      Portal{.target_level = "cave.json", .target_portal = "exit", .exit = Direction::kWest, .interact = true});
+      Portal{.target_level = "cave", .target_portal = "exit", .exit = Direction::kWest, .interact = true});
     create_marker(level.registry, "spawn", "player", {10.5F, 11.25F});
     const GraphId g0 = add_graph(level, "roads", GraphKind::kRoad);
     const GraphId g1 = add_graph(level, "guards", GraphKind::kPatrol);
@@ -404,6 +405,62 @@ TEST_F(LevelIo, ProjectScopeRoundTripsAgainstAProjectThatAlreadyHoldsTheSharedDa
     EXPECT_EQ(pr_b->tilesets.size(), before_tilesets);
     EXPECT_EQ(pr_b->rules[0].wfc.tiles.size(), before_rule_tiles);
   }
+}
+
+TEST_F(LevelIo, APortalTargetWrittenAsAPathBecomesTheMemberItNames)
+{
+  // What a file written before projects holds: the destination level as a path
+  const auto path = temp("v1_portal.json");
+  {
+    Level source{doc_a};
+    populate(*pr_a, source);
+    ASSERT_NE(find_portal(source.registry, "cave"), kNullEntity);
+    // A Name cannot hold a path, so write the file and then put one in it, as a v1 editor would
+    ASSERT_TRUE(save_level(path.c_str(), *pr_a, source, ctx).ok);
+  }
+  {
+    memory::Scope scope{shared};
+    char* text = nullptr;
+    std::size_t size = 0;
+    ASSERT_TRUE(file::read(path.c_str(), shared, text, size).ok);
+    std::string doc{text, size};
+    const auto at = doc.find("\"target_level\": \"cave\"");
+    ASSERT_NE(at, std::string::npos);
+    doc.replace(at, std::strlen("\"target_level\": \"cave\""), "\"target_level\": \"levels/cavern.json\"");
+    ASSERT_TRUE(file::write(path.c_str(), doc.data(), doc.size()).ok);
+  }
+
+  // A project that has the level as a member, under a name its file does not spell
+  Level loaded{doc_b};
+  project::reset(*pr_b);
+  ASSERT_NE(project::add_level(*pr_b, "the cavern", "levels/cavern.json"), project::kNoLevel);
+  ASSERT_TRUE(load_level(path.c_str(), *pr_b, loaded, ctx).ok);
+  const Entity door = find_portal(loaded.registry, "cave");
+  ASSERT_NE(door, kNullEntity);
+  EXPECT_EQ(loaded.registry.get<Portal>(door).target_level, std::string_view{"the cavern"});
+  EXPECT_EQ(
+    project::portal_link(*pr_b, "the cavern", loaded.registry.get<Portal>(door).target_portal.view()),
+    project::LinkState::kUnknownPortal)
+    << "the member has no portal names yet, which is what a project that has never saved it knows";
+}
+
+TEST_F(LevelIo, APortalTargetThatNamesNoMemberKeepsAStemAndIsNotAnError)
+{
+  const auto path = temp("dangling_portal.json");
+  Level source{doc_a};
+  populate(*pr_a, source);
+  ASSERT_TRUE(save_level(path.c_str(), *pr_a, source, ctx).ok);
+
+  // No project member of that name at all: the file still loads, and the target is kept as
+  // something the user can see and fix rather than silently dropped
+  Level loaded{doc_b};
+  project::reset(*pr_b);
+  const auto status = load_level(path.c_str(), *pr_b, loaded, ctx);
+  ASSERT_TRUE(status.ok) << status;
+  const Entity door = find_portal(loaded.registry, "cave");
+  ASSERT_NE(door, kNullEntity);
+  EXPECT_EQ(loaded.registry.get<Portal>(door).target_level, std::string_view{"cave"});
+  EXPECT_EQ(project::portal_link(*pr_b, "cave", "exit"), project::LinkState::kUnknownLevel);
 }
 
 TEST_F(LevelIo, AProjectScopeLevelNamesTheRuleSetItUses)

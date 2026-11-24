@@ -107,6 +107,15 @@ struct PortalRecord
   Position position;
   Extent extent;
   Portal portal;
+  /**
+   * @brief The destination level as the file carries it, which may be a path
+   *
+   * <code>Portal::target_level</code> is a member's name, but it was a path before projects, and a
+   * path does not fit a <code>Name</code>. So the wire field stays this wide -- writing a name into
+   * it is what every file written from now on does -- and the loaders migrate it into the portal
+   * (<code>migrate_portal_targets</code>) once they have the project whose members it names.
+   */
+  Path target_level_field;
 };
 
 struct MarkerRecord
@@ -153,12 +162,23 @@ void collect(const Registry& registry, ObjectRecords& out, bool paths_only = fal
 /// Creates entities for the records (nodes/edges get graph ids offset by nothing)
 Status restore(const ObjectRecords& records, Registry& registry, std::size_t graph_count, bool paths_only = false);
 
+/**
+ * @brief Turns each record's destination level into the name of a member of <code>project</code>
+ *
+ * A file written before projects names its destination by path, so it is matched to the member
+ * whose file has that name. One that is already a member's name is kept as it is. Anything else is
+ * reduced to the file name's stem, which is what the level would have been called, and logged as a
+ * warning rather than an error: a portal that does not resolve is a thing to fix in the editor, not
+ * a reason to refuse the file. Call it before <code>restore</code>.
+ */
+void migrate_portal_targets(const project::Project& project, const char* path, ObjectRecords& records);
+
 template <typename S> void serialize(S& s, PortalRecord& r)
 {
   s.object(r.name);
   s.object(r.position);
   s.object(r.extent);
-  s.object(r.portal.target_level);
+  s.object(r.target_level_field);
   s.object(r.portal.target_portal);
   s.value1b(r.portal.exit);
   s.value1b(r.portal.interact);

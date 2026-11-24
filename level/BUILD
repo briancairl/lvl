@@ -62,6 +62,7 @@ cc_library(
         "//core:json",
         "//core:types",
         "//project:model",
+        "//project:paths",
     ],
 )
 
@@ -86,6 +87,7 @@ cc_test(
         ":model",
         "//core:file",
         "//project:model",
+        "//project:paths",
         "@googletest//:gtest_main",
     ],
 )

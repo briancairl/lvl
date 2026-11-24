@@ -41,7 +41,8 @@ portal and a spawn marker, the tileset palette and tile metadata with seasonal v
   what), used by WFC and by any other auto-tiling: tile weights and constraints, and per-direction
   neighbor toggles over tile thumbnails, which a left-button drag can sweep over several at a time.
   Rules can also be learned from an existing tile layer or taken from the palette layout.
-- **Portals** (target level, target portal, exit direction), **markers**, and **path/route graphs**
+- **Portals** (target level and portal picked from the project's other levels, exit direction),
+  **markers**, and **path/route graphs**
   (roads, patrols, rivers, navigation) with one-way edges, costs, node wait times and a shortest-route
   preview.
 - **File dialogs** ([ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog)): a places pane
