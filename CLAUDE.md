@@ -99,6 +99,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/rules/path files in JSON and binary |
+| `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the catalogs and seasons its levels share, the tileset/rule-set files it owns, and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
 | `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
@@ -168,6 +169,61 @@ images, the PNG exports) open in the **current project folder**: the folder the 
 or the working directory while it has no path yet. Choosing a file elsewhere in one of them does not
 move the remembered folder. Level open/save and style profiles keep using the last folder the dialog
 was used in.
+
+### Projects
+
+A project is a **folder** with a fixed sub-folder tree, and everything it needs lives inside it, so
+the whole folder can be moved, copied or committed as one thing. Its manifest is always
+`project.json` in the root, which makes "is this a project folder?" one existence check
+(`project::is_project_root`).
+
+```
+shoreline/                 the project root; its name is the project's default name
+  project.json             the manifest
+  levels/                  one file per level ("lvl-level")
+  tilesets/                one file per tileset ("lvl-tileset")
+  rules/                   one file per rule set ("lvl-wfc": WFC + auto-tiling + height steps)
+  paths/                   exported/imported path graphs ("lvl-paths")
+  assets/
+    atlases/               tileset atlas images, copied in on import
+    images/                heightmap seed images and layer image imports
+  artifacts/               PNG exports: the full map, the mini-preview, layer images
+```
+
+`project::Folder` names those folders and `subfolder`/`resolve`/`relativize` compose paths against
+the root. Every path a project file stores is **relative to the root** with `/` separators, whatever
+the platform; a path that stays absolute is one that points outside the tree, which is how a
+deliberately external reference is expressed. Composing a path can overflow a `Path`, and the inputs
+are the user's, so those functions return a `Status` rather than truncating: a truncated path would
+name a different file. `ensure_tree` creates the whole tree and is idempotent.
+
+**Assets are copied in, not linked.** Choosing an atlas or a seed image from outside the project
+goes through `plan_copy`, which says where the copy would land (`assets/atlases/` or
+`assets/images/`), whether it would be renamed around a different file of that name (`forest.png` ->
+`forest-2.png`), and whether the identical bytes are already there — so the confirmation dialog can
+say exactly what will happen before `apply_copy` does it. A file already inside the tree is simply
+relativized. Keeping the copy optional is deliberate: a reference may stay absolute, and the project
+can be made self-contained later.
+
+**The manifest is always JSON**, the one deliberate exception to "binary is a translation of the
+same data": it is a few kilobytes of names, never on a hot path, and a fixed name is what makes the
+existence check work. Levels, tilesets, rule sets and path graphs keep both formats. The manifest
+never stores the project's own location — `Project::root` comes from where the file was read, so a
+moved project still works.
+
+**Only one level is ever resident**, because a level carries whole grid planes and a project may
+hold many. The others are an index: a `LevelEntry` each, holding the name, the file, the grid size
+and the names of the level's portals and markers. That is enough to list the project, to offer a
+portal a destination, and to say whether a link still resolves (`portal_link` ->
+`kResolved`/`kSelf`/`kUnknownLevel`/`kUnknownPortal`) without loading one sibling. Opening a project
+reads one small file. The portal/marker names live in one flat `object_names` table that each entry
+spans into; it is reserved to `kMaxObjectNames` up front and never grown, so the rebuild every level
+save does reuses the same block instead of leaving the old one behind in the bump arena.
+`set_level_objects` is that rebuild, and `remove_level` compacts the table the same way.
+
+Levels address each other **by name**, not by path, so moving a level's file within `levels/` does
+not break the portals pointing at it; `find_level_by_file_name` is how a target that was written as
+a path is matched to a member.
 
 ### Recent levels
 
