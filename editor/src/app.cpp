@@ -1114,7 +1114,8 @@ void smoke(App& app)
       report(app, Status::error("deletes did not apply"));
     }
     // Removal retires the entry rather than erasing it, so the name is still there and the id
-    // after it has not moved; step 26 compacts and checks it really goes
+    // after it has not moved. It does not survive the level reopen in step 22: a standalone file is
+    // the whole source of the project it is read into, and retirement is the manifest's to carry.
     if (!pr.materials[material].retired or !pr.semantics[semantic].retired)
     {
       report(app, Status::error("deleting a catalog entry did not retire it"));
@@ -1727,14 +1728,21 @@ void smoke(App& app)
     break;
   }
   case 27: {
-    // The catalog entries deleted in step 14 were retired, not erased: their ids stay reserved
-    // because the project's other levels are not loaded. Compacting is the deliberate act that
-    // renumbers every level at once, and the only thing that moves a catalog id.
+    // Removing a catalog entry retires it: the id stays reserved because the project's other levels
+    // are not loaded. Compacting is the deliberate act that renumbers every level at once, and the
+    // only thing that moves a catalog id. This is the panel's own path, with one member level.
+    //
+    // The entry is retired here rather than relying on the ones step 14 removed: step 22 reopened a
+    // level, and a standalone level file is the whole source of the project it is read into, so it
+    // brings no retirement with it. Retirement is the manifest's to carry, and there is no manifest
+    // until step 28.
     project::Project& pr = *app.project;
     level::Level& lv = *app.level;
+    const auto doomed = project::intern_semantic(pr, "scaffold");
+    project::remove_semantic(pr, lv, doomed);
     if (!project::needs_compaction(pr))
     {
-      report(app, Status::error("the deleted catalog entries were not retired"));
+      report(app, Status::error("removing a catalog entry did not retire it"));
     }
     std::size_t retired = 0;
     for (const auto& e : pr.semantics)
@@ -1864,7 +1872,7 @@ void smoke(App& app)
       report(app, Status::error("switching level decoded the atlases again"));
     }
     // Something to compact, now that the project has two members and the job can do it
-    const auto doomed = project::intern_semantic(pr, "scaffold");
+    const auto doomed = project::intern_semantic(pr, "scaffold_again");
     project::remove_semantic(pr, *app.level, doomed);
     if (!project::needs_compaction(pr))
     {

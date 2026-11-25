@@ -671,7 +671,13 @@ transparent), which is what makes leaving them safe.
 `project::intern_semantic`/`intern_material` give a retired entry's name its id back, so a file
 naming it does not append a duplicate -- but they deliberately do **not** un-retire it. Interning is
 what reading a file does, and a file must not quietly undo the project's decision to remove an
-entry. The catalogs panel lists a retired entry greyed as "(removed)" with a **Restore** button
+entry.
+
+Retirement is the **manifest's** to carry, so it does not survive opening a *standalone* level:
+such a file carries the catalogs itself and is the whole source of the project it is read into, so
+the project that comes back has nothing retired. That is the right answer rather than a gap -- there
+is no manifest in the picture to have recorded the decision -- but it is worth knowing, because it
+means "I removed an entry" is a fact about a project on disk and not about a level file. The catalogs panel lists a retired entry greyed as "(removed)" with a **Restore** button
 beside it, which is the one way back; hiding it would leave the user wondering why the ids below it
 never close up. Every picker skips retired entries, since nothing new should be given one.
 
@@ -817,7 +823,8 @@ one check to mark required:
   a step, and redrawing changing nothing), saving making the open level a member of its project and
   a portal resolving against it (its own portals from the live registry, a level no member is named
   after and a portal a member does not have both reported), deleting a catalog entry retiring it and
-  the project then saying it has something to compact, compacting dropping exactly those entries,
+  the project then saying it has something to compact, the panel's own compaction dropping exactly
+  the entries retired for it,
   a project written to disk (its tree made and its manifest written, the open level saved into
   `levels/` becoming its first member and its file carrying none of the shared sections, a second
   member from a save under another name, a portal into that sibling resolving from the index alone,
