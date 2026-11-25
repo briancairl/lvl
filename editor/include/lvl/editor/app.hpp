@@ -501,6 +501,19 @@ struct App
   /// The main loop ends after the current frame
   bool exit = false;
   /// The unsaved-changes prompt is up
+  /**
+   * @brief What one scripted step records for the next one to check (see app.cpp's smoke())
+   *
+   * The steps run one per idle frame, with a job in between, so a step that wants to compare
+   * against what things were before it has to leave the value somewhere.
+   */
+  struct SmokeCheck
+  {
+    std::size_t tilesets = 0;
+    std::size_t semantics = 0;
+    std::size_t assets = 0;
+  } smoke_check;
+
   bool confirm_exit = false;
   /**
    * @brief The member level a switch is waiting on, while the open one has unsaved changes

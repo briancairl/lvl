@@ -184,10 +184,14 @@ void refresh_level_entry(App& app, std::string_view file)
  * @brief Opens member level <code>index</code> of the open project in place of the open one
  *
  * The file is a member, so it carries none of the shared sections: it is read into the open project
- * rather than the spare, and the project, its tilesets and their decoded atlases all stay as they
- * are. The caller is responsible for the unsaved-changes prompt.
+ * rather than the spare, and the project and its tilesets stay as they are. The caller is
+ * responsible for the unsaved-changes prompt.
+ *
+ * <code>decode_atlases</code> is false for an ordinary switch, where the tilesets are the same
+ * objects and their atlases are already decoded, and true when the project itself has just been
+ * read in and the tilesets are new.
  */
-void switch_to_level(App& app, std::size_t index)
+void switch_to_level(App& app, std::size_t index, bool decode_atlases = false)
 {
   project::Project& pr = *app.project;
   if (index >= pr.levels.size())
@@ -205,6 +209,9 @@ void switch_to_level(App& app, std::size_t index)
     job->project = app.project;
     job->level = app.spare;
     job->keep_project = true;
+    // The tilesets are the same objects, so their atlases are already decoded
+    job->decode_atlases = decode_atlases;
+    job->assets = &app.memory.assets[1 - app.assets.current];
     job->path = absolute;
     start_job(app);
   }
@@ -250,9 +257,13 @@ void finish_job(App& app)
           level::reset(*app.spare);
           if (!job.keep_project)
           {
-            // Opening a level brings its project with it; switching within a project does not
+            // Opening a level brings its project with it; switching within one, or opening a
+            // project whose manifest is already in, does not
             std::swap(app.project, app.spare_project);
             project::reset(*app.spare_project);
+          }
+          if (job.decode_atlases)
+          {
             apply_atlases(app, job.atlases, 1 - app.assets.current);
           }
           app.path = job.path;
@@ -1759,6 +1770,176 @@ void smoke(App& app)
     break;
   }
   case 28:
+    // A project on disk: the manifest goes where the user puts it, and that folder is the root
+    file_action(app, FileAction::kNewProject, "smoke_project/project.json");
+    break;
+  case 29: {
+    project::Project& pr = *app.project;
+    if (app.project_path.empty() or pr.root.empty())
+    {
+      report(app, Status::error("creating a project did not record where it is"));
+    }
+    if (!project::is_project_root(pr.root.view()))
+    {
+      report(app, Status::error("creating a project did not write its manifest"));
+    }
+    Path levels;
+    if (project::subfolder(pr.root.view(), project::Folder::kLevels, levels).ok and !file::exists(levels.c_str()))
+    {
+      report(app, Status::error("creating a project did not make its folder tree"));
+    }
+    // Into the project's own levels/ folder, which is what makes it a member
+    file_action(app, FileAction::kSaveLevel, "smoke_project/levels/demo.json");
+    break;
+  }
+  case 30: {
+    project::Project& pr = *app.project;
+    level::Level& lv = *app.level;
+    if (project::find_level(pr, lv.settings.name.view()) == project::kNoLevel)
+    {
+      report(app, Status::error("saving into a project did not make the level a member"));
+    }
+    // A member is written in project scope, so its file carries none of the shared sections
+    memory::Scope scope{app.memory.frame};
+    char* text = nullptr;
+    std::size_t size = 0;
+    if (file::read(app.path.c_str(), app.memory.frame, text, size).ok)
+    {
+      if (std::string_view{text, size}.find("\n  \"tilesets\"") != std::string_view::npos)
+      {
+        report(app, Status::error("a member level was saved standalone, not in project scope"));
+      }
+    }
+    // A second member: the same level saved under another name, which is what the index follows
+    lv.settings.name.assign("east");
+    file_action(app, FileAction::kSaveLevel, "smoke_project/levels/east.json");
+    break;
+  }
+  case 31: {
+    project::Project& pr = *app.project;
+    if (pr.levels.size() != 2)
+    {
+      report(app, Status::error("saving under a new name did not add a second member"));
+    }
+    // A portal of the open level pointing at the other member resolves from the index alone --
+    // the other level is not loaded, and will not be
+    const std::size_t other = (project::find_level(pr, "east") == 0) ? 1 : 0;
+    const Name target = pr.levels[other].name;
+    const level::Entity door =
+      level::create_portal(app.level->registry, "west_gate", {0, 0}, {1, 1}, level::Portal{.target_level = target});
+    auto& portal = app.level->registry.get<level::Portal>(door);
+    if (pr.levels[other].portal_count == 0)
+    {
+      report(app, Status::error("the other member has no portal names in the index"));
+    }
+    portal.target_portal = project::portals_of(pr, pr.levels[other])[0];
+    if (portal_link_of(app, portal) != project::LinkState::kResolved)
+    {
+      report(app, Status::error("a portal into a sibling level did not resolve from the index"));
+    }
+    app.pending_delete =
+      PendingDelete{.kind = DeleteKind::kObject, .entity = door, .what = "portal", .confirmed = true};
+    process_deletes(app);
+    // Switch to that sibling. Nothing is unsaved, so it goes straight to the load.
+    app.modified = false;
+    app.smoke_check.tilesets = pr.tilesets.size();
+    app.smoke_check.assets = app.assets.current;
+    request_switch(app, other);
+    break;
+  }
+  case 32: {
+    project::Project& pr = *app.project;
+    if (app.level->settings.name == std::string_view{"east"})
+    {
+      report(app, Status::error("switching level did not replace the open document"));
+    }
+    // A member carries none of the shared sections, so the project is untouched and its atlases
+    // are not decoded again -- which is most of the point of the project owning the tilesets
+    if (pr.tilesets.size() != app.smoke_check.tilesets)
+    {
+      report(app, Status::error("switching level replaced the project's tilesets"));
+    }
+    if (app.assets.current != app.smoke_check.assets)
+    {
+      report(app, Status::error("switching level decoded the atlases again"));
+    }
+    // Something to compact, now that the project has two members and the job can do it
+    const auto doomed = project::intern_semantic(pr, "scaffold");
+    project::remove_semantic(pr, *app.level, doomed);
+    if (!project::needs_compaction(pr))
+    {
+      report(app, Status::error("removing a catalog entry did not leave anything to compact"));
+    }
+    app.smoke_check.semantics = pr.semantics.size();
+    if (auto* job = prepare_job<CompactCatalogsJob>(app); job != nullptr)
+    {
+      job->project = app.project;
+      job->skip = app.level->settings.name;
+      job->scratch = app.spare;
+      job->scratch_project = app.spare_project;
+      start_job(app);
+    }
+    break;
+  }
+  case 33: {
+    project::Project& pr = *app.project;
+    if (project::needs_compaction(pr))
+    {
+      report(app, Status::error("the compaction job left a retired entry behind"));
+    }
+    if (pr.semantics.size() != app.smoke_check.semantics - 1)
+    {
+      report(app, Status::error("the compaction job dropped the wrong number of entries"));
+    }
+    // Rescan: read every member again and rebuild what the index says
+    if (auto* job = prepare_job<RescanProjectJob>(app); job != nullptr)
+    {
+      job->project = app.project;
+      job->scratch = app.spare;
+      job->scratch_project = app.spare_project;
+      start_job(app);
+    }
+    break;
+  }
+  case 34: {
+    const project::Project& pr = *app.project;
+    for (const project::LevelEntry& entry : pr.levels)
+    {
+      if (entry.missing)
+      {
+        report(app, Status::error(format<160>("the rescan could not read '%s'", entry.file.c_str())));
+      }
+      if (entry.extents.width <= 0)
+      {
+        report(app, Status::error(format<160>("the rescan left '%s' without a size", entry.name.c_str())));
+      }
+    }
+    // Ctrl+S: the manifest first and synchronously, then the level, so what is on disk is what the
+    // rescan and the compaction left
+    save(app);
+    break;
+  }
+  case 35:
+    // And open it again: the manifest, its tilesets and rule sets, then its first member
+    file_action(app, FileAction::kOpenProject, "smoke_project/project.json");
+    break;
+  case 36: {
+    const project::Project& pr = *app.project;
+    if (pr.levels.size() != 2)
+    {
+      report(app, Status::error("reopening the project did not bring both levels back"));
+    }
+    if (pr.tilesets.empty())
+    {
+      report(app, Status::error("reopening the project did not bring its tilesets back"));
+    }
+    if (app.project_modified)
+    {
+      report(app, Status::error("a project just opened already reports unsaved changes"));
+    }
+    break;
+  }
+  case 37:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -1767,7 +1948,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 29:
+  case 38:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -2147,18 +2328,25 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kNewProject:
     // Synchronous: a manifest and the files it names are kilobytes, never on a hot path. What needs
     // a job is loading a level, and nothing is loaded here -- a new project has no members.
-    small_io([&](level::IoContext& ctx) {
+    small_io([&](level::IoContext& ctx) -> Status {
       const std::string_view folder = project::parent_path(std::string_view{path});
-      Status s =
-        project::create_project(folder.empty() ? "." : FixedString<512>{folder}.c_str(), {}, *app.project, ctx);
+      const Path root{folder.empty() ? std::string_view{"."} : folder};
+      LVL_RETURN_IF_ERROR(project::ensure_tree(root.view()));
+      // The project the open level already draws on gets a home on disk; it is deliberately not
+      // replaced by an empty one (which is what project::create_project does, for a caller that
+      // wants that). Making a project out of the level you have open must not throw away its
+      // tilesets, its catalogs or its rules: the level's cells name them.
+      if (app.project->name.empty() or app.project->name == std::string_view{"untitled"})
+      {
+        app.project->name.assign(project::file_name(root.view()));
+      }
+      const Status s = project::save_project(path, *app.project, ctx);
       if (s.ok)
       {
         app.project_path.assign(path);
         app.project_modified = false;
-        // The open level belongs to the new project now, and is its first member once it is saved
+        // The open level is not a member of it until it is saved into the tree
         app.modified = true;
-        invalidate_view(app);
-        reload_atlases(app);
       }
       return s;
     });
@@ -2178,12 +2366,16 @@ void file_action(App& app, FileAction action, const char* path)
       app.project_modified = false;
       app.tileset = 0;
       invalidate_view(app);
-      reload_atlases(app);
-      // The project's own first member replaces whatever level is open; one with no members leaves
-      // the open level where it is, as the project's first member once it is saved
-      if (!app.project->levels.empty())
+      // The project's own first member replaces whatever level is open, and brings the new
+      // tilesets' atlases in with it -- one job, since only one runs at a time. A project with no
+      // members leaves the open level where it is, and then the atlases need a job of their own.
+      if (app.project->levels.empty())
       {
-        switch_to_level(app, 0);
+        reload_atlases(app);
+      }
+      else
+      {
+        switch_to_level(app, 0, true);
       }
       return s;
     });

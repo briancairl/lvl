@@ -109,15 +109,21 @@ struct LoadLevelJob
   memory::Arena* assets = nullptr;
   Path path;
   /**
-   * @brief Switching to another level of the open project, rather than opening a level
+   * @brief The project is already the right one, so <code>finish_job</code> must not swap it
    *
-   * The file is a member, so it carries none of the shared sections and the project it is read into
-   * is left as it is -- which is why <code>project</code> is the open one and
-   * <code>finish_job</code> does not swap it. The tilesets are therefore the same objects they
-   * were, so the atlases are not decoded again either: not re-decoding them on every switch is
-   * most of the point of the project owning them.
+   * Set when switching to another member of the open project, and when opening a project (whose
+   * manifest has already been read into the live project). The file is a member either way, so it
+   * carries none of the shared sections and the project it is read into is left as it is.
    */
   bool keep_project = false;
+  /**
+   * @brief Decode the tilesets' atlases as part of the load
+   *
+   * Off for a switch within a project, where the tilesets are the same objects they were: not
+   * re-decoding the atlases on every switch is most of the point of the project owning them. On
+   * when opening a level or a project, where they are new.
+   */
+  bool decode_atlases = true;
   JobMemory* memory = nullptr;
   AtlasImages atlases;
   Status result;

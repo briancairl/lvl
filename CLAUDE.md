@@ -301,15 +301,26 @@ means nothing without the manifest, and writing it first keeps the two out of ea
 **Switching level** goes through `request_switch`, which uses the same prompt quitting does, since
 the open document is about to be replaced either way (Save and switch / Discard and switch /
 Cancel). The load itself is `LoadLevelJob` with `keep_project` set: a member carries none of the
-shared sections, so it is read into the open project rather than the spare, `finish_job` does not
-swap the project, and **the atlases are not decoded again** -- not re-decoding them on every switch
-is most of the point of the project owning the tilesets.
+shared sections, so it is read into the open project rather than the spare and `finish_job` does not
+swap the project. `decode_atlases` is a separate flag because the two are separate questions: a
+switch leaves the tilesets as the same objects, so **the atlases are not decoded again** -- not
+re-decoding them on every switch is most of the point of the project owning them -- while opening a
+project has just read new tilesets in and needs them. Both are one job, because only one job runs at
+a time: opening a project reads the manifest synchronously and then loads its first member with
+`decode_atlases` on, rather than starting an atlas job the level load would have displaced.
 
 **New project / Open project / Save project** are synchronous rather than jobs: a manifest and the
 files it names are kilobytes and never on a hot path. What needs a job is the level that follows,
 which is `LoadLevelJob` as it stands. A new project is made by choosing where `project.json` goes,
 rather than by picking a folder: that needs no directory-picking mode and matches `save_project`,
 which takes the project to be wherever its manifest is written.
+
+**New project keeps the project the open level draws on** and gives it a home on disk -- it creates
+the tree, names the project after the folder if it has no name yet, and writes the manifest. It
+deliberately does *not* replace it with an empty one (which is what `project::create_project` does,
+for a caller that wants that): making a project out of the level you have open must not throw away
+the tilesets, catalogs and rules its cells name. The level is not a member until it is saved into
+the tree.
 
 `App::project_path` and `App::project_modified` sit beside `App::path` and `App::modified`. The two
 pairs are separate because the two things are saved separately -- editing a tileset or a rule set
@@ -799,6 +810,12 @@ one check to mark required:
   a portal resolving against it (its own portals from the live registry, a level no member is named
   after and a portal a member does not have both reported), deleting a catalog entry retiring it and
   the project then saying it has something to compact, compacting dropping exactly those entries,
+  a project written to disk (its tree made and its manifest written, the open level saved into
+  `levels/` becoming its first member and its file carrying none of the shared sections, a second
+  member from a save under another name, a portal into that sibling resolving from the index alone,
+  switching to it without replacing the project or decoding the atlases again, the compaction job
+  rewriting the other member, a rescan leaving every member with a size, Ctrl+S writing the manifest
+  and the level, and the whole project read back with both levels and its tilesets),
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
