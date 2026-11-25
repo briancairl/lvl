@@ -342,6 +342,13 @@ which is `LoadLevelJob` as it stands. A new project is made by choosing where `p
 rather than by picking a folder: that needs no directory-picking mode and matches `save_project`,
 which takes the project to be wherever its manifest is written.
 
+**The dialog suggests a folder of its own**, `<level name>/project.json` rather than a bare
+`project.json` (`project::project_file` slug-ifies the level's name, so any name the user gave it
+makes a file name). The tree is created beside the manifest, so accepting a bare `project.json`
+scatters `levels/`, `tilesets/`, `assets/` and the rest into whatever folder the dialog happened to
+be in, which is recoverable only by hand. It is only a suggestion -- the folder can be renamed or
+dropped in the name box like any other part of a save name.
+
 **New project keeps the project the open level draws on** and gives it a home on disk -- it creates
 the tree, names the project after the folder if it has no name yet, and writes the manifest. It
 deliberately does *not* replace it with an empty one (which is what `project::create_project` does,
@@ -353,6 +360,25 @@ the tree.
 pairs are separate because the two things are saved separately -- editing a tileset or a rule set
 changes the project, not the level that happens to be open -- and the title's star, the quit prompt
 and the browser's "leave site?" prompt all mean "either has changes".
+
+### Starting up
+
+Started with nothing named on the command line, the editor raises a **start-up prompt**
+(`editor::welcome_prompt`, `App::welcome`): the recent *projects* that are still on disk, each named
+by its folder, plus **New project...** and **Open project...**. That is the one question start-up
+has an answer to, and the manifest is always called the same thing, so reaching a project through
+File > Open would otherwise have the user navigating to a folder to pick a file whose name they
+already know.
+
+It is deliberately an **escape rather than a gate**: **Not now** (and Escape) leaves the blank level
+the editor has always started with, and New project turns that into a project at any time. It never
+appears when a level, a manifest or a project folder was named, nor after `--demo`, because those
+have already said what to work on. Choosing something clears `App::welcome` *before* the action
+runs, so the file dialog does not open underneath the modal; a job in flight or an open dialog
+clears it too, so the prompt cannot sit over the progress dialog.
+
+The scripted session (`--smoke`) is **not** exempt: step 0 checks the prompt came up and that making
+a level puts it away, so the one path a user takes is the path the test takes.
 
 ### Recent levels and projects
 
@@ -840,7 +866,8 @@ one check to mark required:
   read; a compaction rewriting every member but the open one, in project scope, with the entries
   still in place), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
-  paths: demo level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
+  paths: the start-up prompt coming up with nothing named and going away once a level is made, demo
+  level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a

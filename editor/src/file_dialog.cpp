@@ -129,15 +129,29 @@ Setup setup(const App& app, FileAction action)
   {
   case FileAction::kNone:
     break;
-  case FileAction::kNewProject:
+  case FileAction::kNewProject: {
     // A project is where its manifest is, so putting project.json somewhere is what makes a project
     // there. Picking the file rather than the folder means no directory-picking mode is needed, and
     // it matches what save_project does with the path it is given.
+    //
+    // The suggested name carries a folder, because the tree is created beside the manifest: accept
+    // it and the project lands in a folder of its own, named after the level. Accepting a bare
+    // "project.json" would scatter levels/, tilesets/, assets/ and the rest directly into whatever
+    // folder the dialog happened to be in, which is recoverable only by hand. The folder is still
+    // only a suggestion -- it can be renamed or deleted in the name box like any other.
+    Path suggested;
+    const std::string_view name = lv.settings.name.empty() ? std::string_view{"project"} : lv.settings.name.view();
+    if (!project::project_file(project::Folder::kRoot, name, "", suggested).ok)
+    {
+      suggested.assign("project");
+    }
     return Setup{
-      .title = "New project (choose where project.json goes)",
+      .title = "New project (choose where its folder goes)",
       .filters = kProjectFilters,
       .save = true,
-      .name = "project.json"};
+      .name = format<160>(
+        "%s/%.*s", suggested.c_str(), static_cast<int>(project::kManifestName.size()), project::kManifestName.data())};
+  }
   case FileAction::kOpenProject:
     return Setup{.title = "Open project", .filters = kProjectFilters};
   case FileAction::kSaveProjectAs:
