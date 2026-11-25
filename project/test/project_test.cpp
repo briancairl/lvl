@@ -298,6 +298,47 @@ TEST(CopyIn, AFileAlreadyInsideIsJustRelativized)
   EXPECT_TRUE(project::apply_copy(root, plan, root + "/assets/atlases/forest.png", f.scratch).ok);
 }
 
+TEST(CopyIn, AnOutsideFileIsOutsideWhateverIsRelative)
+{
+  // Every other copy test uses absolute paths for both, which is what a file dialog gives. The
+  // editor's root is whatever the manifest was written to, though, and a source may be whatever was
+  // typed, so either can be relative -- and resolving the source against the *root* made an outside
+  // file look like one already inside, stored under a path that named nothing.
+  Fixture f;
+  const std::string root = temp_dir("copy_relative");
+  ASSERT_TRUE(project::ensure_tree(root).ok);
+  const std::string outside = temp_dir("copy_relative_src");
+  write_text_file(outside + "/forest.png", "PNG-A");
+
+  // Both named relative to the working directory, which is what they are measured against
+  std::error_code ec;
+  const std::filesystem::path previous = std::filesystem::current_path(ec);
+  ASSERT_FALSE(ec);
+  std::filesystem::current_path(std::filesystem::path{::testing::TempDir()}, ec);
+  ASSERT_FALSE(ec);
+
+  project::CopyPlan plan;
+  const Status planned =
+    project::plan_copy("copy_relative", project::Folder::kAtlases, "copy_relative_src/forest.png", f.scratch, plan);
+  EXPECT_TRUE(planned.ok) << planned.message.c_str();
+  EXPECT_FALSE(plan.inside) << "a file beside the project is not in the project";
+  EXPECT_EQ(plan.destination, std::string_view{"assets/atlases/forest.png"});
+  const Status copied = project::apply_copy("copy_relative", plan, "copy_relative_src/forest.png", f.scratch);
+  EXPECT_TRUE(copied.ok) << copied.message.c_str();
+  EXPECT_TRUE(file::exists("copy_relative/assets/atlases/forest.png"));
+
+  // And the copy, now in the tree, is recognised as inside it -- by a relative path either way
+  project::CopyPlan second;
+  ASSERT_TRUE(
+    project::plan_copy(
+      "copy_relative", project::Folder::kAtlases, "copy_relative/assets/atlases/forest.png", f.scratch, second)
+      .ok);
+  EXPECT_TRUE(second.inside);
+  EXPECT_EQ(second.destination, std::string_view{"assets/atlases/forest.png"});
+
+  std::filesystem::current_path(previous, ec);
+}
+
 TEST(CopyIn, RefusesAnEmptyChoice)
 {
   Fixture f;

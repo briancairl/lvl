@@ -173,6 +173,35 @@ Status join(std::string_view base, std::string_view tail, Path& out)
 
 Status subfolder(std::string_view root, Folder folder, Path& out) { return join(root, folder_path(folder), out); }
 
+namespace
+{
+
+/**
+ * @brief <code>path</code> made absolute, against the working directory if it is relative
+ *
+ * What lets "is this inside the project?" be asked at all: the source comes from the user and the
+ * root from wherever the manifest was written, and either may be relative, so neither can be
+ * compared with the other until both are in the same frame of reference. The working directory is
+ * that frame, because a relative path means the same thing to the process either way. The one place
+ * here besides ensure_tree that reaches for std::filesystem.
+ */
+Status absolute_path(std::string_view path, Path& out)
+{
+  if (is_absolute(path))
+  {
+    return assign_checked(path, out);
+  }
+  std::error_code ec;
+  const std::filesystem::path cwd = std::filesystem::current_path(ec);
+  if (ec)
+  {
+    return Status::error("cannot find the working directory: %s", ec.message().c_str());
+  }
+  return join(cwd.string(), path, out);
+}
+
+}  // namespace
+
 Status resolve(std::string_view root, std::string_view relative, Path& out)
 {
   return is_absolute(relative) ? assign_checked(relative, out) : join(root, relative, out);
@@ -288,19 +317,27 @@ Status plan_copy(std::string_view root, Folder folder, std::string_view source, 
   {
     return Status::error("no file was chosen");
   }
+  // Both made absolute against the working directory before anything is compared. The source is
+  // the user's -- a file dialog gives an absolute path, a script may give a relative one -- and the
+  // root is whatever the manifest was written to, which may itself be relative. Resolving the
+  // source against the *root* instead, as this once did, reads "forest.png" as
+  // "<root>/forest.png": an outside file then looks like one already inside, and is stored by a
+  // path that names nothing.
+  Path absolute_root;
   Path absolute_source;
-  LVL_RETURN_IF_ERROR(resolve(root, source, absolute_source));
-  if (is_inside(root, absolute_source.view()))
+  LVL_RETURN_IF_ERROR(absolute_path(root, absolute_root));
+  LVL_RETURN_IF_ERROR(absolute_path(source, absolute_source));
+  if (is_inside(absolute_root.view(), absolute_source.view()))
   {
     out.inside = true;
-    return relativize(root, absolute_source.view(), out.destination);
+    return relativize(absolute_root.view(), absolute_source.view(), out.destination);
   }
 
   const std::string_view name = file_name(absolute_source.view());
   const std::string_view base = stem(name);
   const std::string_view ext = extension(name);
   Path folder_absolute;
-  LVL_RETURN_IF_ERROR(subfolder(root, folder, folder_absolute));
+  LVL_RETURN_IF_ERROR(subfolder(absolute_root.view(), folder, folder_absolute));
 
   // The first free name: "a.png", then "a-2.png", "a-3.png", ... ; an identical file is reused
   for (int attempt = 1; attempt <= 1000; ++attempt)
@@ -320,12 +357,12 @@ Status plan_copy(std::string_view root, Folder folder, std::string_view source, 
     if (!file::exists(absolute_destination.c_str()))
     {
       out.renamed = attempt > 1;
-      return relativize(root, absolute_destination.view(), out.destination);
+      return relativize(absolute_root.view(), absolute_destination.view(), out.destination);
     }
     if (same_contents(absolute_source.c_str(), absolute_destination.c_str(), scratch))
     {
       out.identical = true;
-      return relativize(root, absolute_destination.view(), out.destination);
+      return relativize(absolute_root.view(), absolute_destination.view(), out.destination);
     }
   }
   return Status::error(
@@ -338,10 +375,14 @@ Status apply_copy(std::string_view root, const CopyPlan& plan, std::string_view 
   {
     return Status::okay();
   }
+  // The source as the user gave it (absolute, or relative to the working directory); the
+  // destination as the plan left it, which is relative to the root
+  Path absolute_root;
   Path absolute_source;
   Path absolute_destination;
-  LVL_RETURN_IF_ERROR(resolve(root, source, absolute_source));
-  LVL_RETURN_IF_ERROR(resolve(root, plan.destination.view(), absolute_destination));
+  LVL_RETURN_IF_ERROR(absolute_path(root, absolute_root));
+  LVL_RETURN_IF_ERROR(absolute_path(source, absolute_source));
+  LVL_RETURN_IF_ERROR(resolve(absolute_root.view(), plan.destination.view(), absolute_destination));
   std::error_code ec;
   std::filesystem::create_directories(
     std::filesystem::path{Path{parent_path(absolute_destination.view())}.c_str()}, ec);

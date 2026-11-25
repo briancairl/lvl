@@ -224,6 +224,13 @@ goes through `plan_copy`, which says where the copy would land (`assets/atlases/
 `forest-2.png`), and whether the identical bytes are already there — so the confirmation dialog can
 say exactly what will happen before `apply_copy` does it.
 
+`plan_copy` makes **both** the source and the root absolute against the working directory before it
+compares them (`absolute_path`). Either can be relative -- a source is whatever the user gave, a
+root is wherever the manifest was written -- and neither can be compared with the other until they
+are in the same frame of reference. Resolving the source against the *root* instead reads
+`forest.png` as `<root>/forest.png`, so an outside file looks like one already inside and is stored
+under a path that names nothing.
+
 `editor::request_import` is the gate: it plans the copy and, for a file outside the tree, records an
 `App::pending_import` that `import_prompt` draws as a modal beside the other prompts — **Copy into
 the project** (what Enter takes), **Link in place** or **Cancel**. Three cases never reach it: a
@@ -779,7 +786,8 @@ one check to mark required:
   round trips, a path outside the root staying absolute, and a part's file name made from any name
   the user might give it), `ensure_tree` being idempotent, copying
   an asset in (a plain copy, a rename around a name clash, identical bytes reused, a file already
-  inside), the level index (members added/found/renamed, each member's object names and their spans
+  inside, and a file beside the project staying outside it when the root and the source are both
+  relative), the level index (members added/found/renamed, each member's object names and their spans
   surviving a re-save, a portal link validated without loading its target, removal compacting the
   name table), seasons (added, found, removed, the cycle never empty), catalogs interned by name and
   removing an entry remapping the resident level's cells, tile metadata, seasonal variants and WFC
