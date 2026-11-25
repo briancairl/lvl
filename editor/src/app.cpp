@@ -1768,11 +1768,13 @@ void smoke(App& app)
     {
       report(app, Status::error("compacting left a retired entry behind"));
     }
-    for (const auto& e : pr.materials)
+    // And the entry itself is gone, by name: the count above would be satisfied by dropping the
+    // wrong one
+    for (const auto& e : pr.semantics)
     {
-      if (e.name == std::string_view{"snow"})
+      if (e.name == std::string_view{"scaffold"})
       {
-        report(app, Status::error("the retired material survived compacting"));
+        report(app, Status::error("the retired semantic type survived compacting"));
       }
     }
     break;
@@ -1898,6 +1900,14 @@ void smoke(App& app)
     if (pr.semantics.size() != app.smoke_check.semantics - 1)
     {
       report(app, Status::error("the compaction job dropped the wrong number of entries"));
+    }
+    // By name as well: the count alone would be satisfied by dropping the wrong entry
+    for (const auto& e : pr.semantics)
+    {
+      if (e.name == std::string_view{"scaffold_again"})
+      {
+        report(app, Status::error("the entry the compaction job was meant to drop is still there"));
+      }
     }
     // Rescan: read every member again and rebuild what the index says
     if (auto* job = prepare_job<RescanProjectJob>(app); job != nullptr)
