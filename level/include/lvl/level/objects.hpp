@@ -67,8 +67,16 @@ struct Label
  */
 struct Portal
 {
-  /// Path of the destination level file (empty = this level)
-  Path target_level;
+  /**
+   * @brief Name of the destination level, as its project's index knows it (empty = this level)
+   *
+   * A name, not a path, because names are the project's reference currency and a name survives the
+   * level's file being moved or renamed within <code>levels/</code>. It was a path before projects;
+   * the loaders migrate one by matching the file it names to a member
+   * (<code>project::migrate_portal_targets</code>), which is why a file still carries a
+   * <code>Path</code>-wide field.
+   */
+  Name target_level;
   /// Name of the destination portal in that level
   Name target_portal;
   /// Direction the player faces when arriving through this portal

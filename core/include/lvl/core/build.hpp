@@ -8,9 +8,17 @@
 namespace lvl
 {
 
-/// Editor version, also written into every saved level/tileset so loaders can migrate old files
+/**
+ * @brief Editor version, written into every file so loaders can migrate old ones
+ *
+ * 0.2 is the version projects came in. A level file now says whether it carries the catalogs,
+ * seasons, tilesets and rules its cells reference (level::LevelScope) or leaves them to its
+ * project's manifest, so a 0.2 level can be one a 0.1 build would read as having no tilesets at
+ * all. The loaders refuse a file written by a newer editor, which is what keeps that from
+ * happening quietly. Every 0.1 file still loads: it carries them, as they all did.
+ */
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 1;
+inline constexpr int kVersionMinor = 2;
 inline constexpr int kVersionPatch = 0;
 
 /// Packed version number: <code>major * 10000 + minor * 100 + patch</code>

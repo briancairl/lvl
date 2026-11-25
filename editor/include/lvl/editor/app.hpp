@@ -32,6 +32,7 @@
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
+#include "lvl/project/paths.hpp"
 #include "lvl/render/compose.hpp"
 
 namespace lvl::editor
@@ -52,6 +53,14 @@ struct Memory
 {
   memory::Arena root;
   std::array<memory::Arena, 2> documents;
+  /**
+   * @brief The open project and a spare, paired with the documents
+   *
+   * A load interns the file's catalogs, seasons, tilesets and rule sets into the project, so a
+   * failed load would leave it half-filled. The spare is swapped in on success, exactly as the
+   * documents are.
+   */
+  std::array<memory::Arena, 2> projects;
   std::array<memory::Arena, 2> assets;
   memory::Arena undo;
   memory::Arena frame;
@@ -311,6 +320,10 @@ enum class DeleteKind : std::uint8_t
   kTerrain,
   /// A height-step terrain
   kStepTerrain,
+  /// A member level, which leaves its file on disk
+  kLevelMember,
+  /// A rule set of the project
+  kRuleSet,
 };
 
 /// A delete waiting for confirmation (or, when confirmed, for the end of the frame)
@@ -344,14 +357,22 @@ struct Panels
   bool adjacency = false;
   /// The pop-out neighbor editor
   bool neighbors = false;
+  /// The project: its member levels, its tilesets and its rule sets
+  bool project = true;
 };
 
 /// What the modal file dialog is for
 enum class FileAction : std::uint8_t
 {
   kNone,
+  /// A new project: the manifest is saved where the user puts it, and that folder is the root
+  kNewProject,
+  kOpenProject,
+  kSaveProjectAs,
   kOpenLevel,
   kSaveLevel,
+  /// A level file brought into the open project as a member (copied into levels/ by the save)
+  kAddLevel,
   kLoadTileSet,
   kSaveTileSet,
   kAtlasImage,
@@ -362,8 +383,30 @@ enum class FileAction : std::uint8_t
   kSavePaths,
   kExportPng,
   kExportMinimap,
+  /// The selected layer as a PNG, one pixel per cell (what its overlay draws)
+  kExportLayerImage,
   kSaveStyle,
   kLoadStyle,
+};
+
+/**
+ * @brief A file chosen from outside the project, waiting for the user to say what to do with it
+ *
+ * Everything a project needs should live inside its folder, so the whole folder can be moved,
+ * copied or committed as one thing. Choosing an atlas or a seed image from elsewhere therefore asks
+ * first rather than storing the outside path quietly. <code>project::plan_copy</code> has already
+ * worked out exactly what copying would do, so the prompt can say it before anything is written.
+ *
+ * A file already inside the tree never gets here: it is simply relativized.
+ */
+struct PendingImport
+{
+  /// What wanted the file; kNone when nothing is pending
+  FileAction action = FileAction::kNone;
+  /// What the user picked, as the dialog gave it
+  Path source;
+  /// Where a copy would land and what copying would do (see project::plan_copy)
+  project::CopyPlan plan;
 };
 
 /// The most recently opened or saved levels (File > Open recent), newest first
@@ -397,8 +440,28 @@ struct App
   level::Level* spare = nullptr;
   alignas(level::Level) unsigned char level_storage[2][sizeof(level::Level)];
 
+  /// The open level's project, and its spare; swapped together with the document
+  project::Project* project = nullptr;
+  project::Project* spare_project = nullptr;
+  alignas(project::Project) unsigned char project_storage[2][sizeof(project::Project)];
+
+  /// The open level's file, and whether it has unsaved changes
   Path path;
   bool modified = false;
+
+  /**
+   * @brief The open project's manifest, and whether the project has unsaved changes
+   *
+   * Empty while the project is one synthesized around a bare level file, which is what opening a
+   * level with no project beside it gives. The two dirty flags are separate because the two things
+   * are saved separately: editing a tileset or a rule set is a change to the project, not to the
+   * level that happens to be open.
+   */
+  Path project_path;
+  bool project_modified = false;
+
+  /// An asset chosen from outside the project, waiting on the copy-in prompt
+  PendingImport pending_import;
 
   Assets assets;
   Overlays overlays;
@@ -464,7 +527,29 @@ struct App
   /// The main loop ends after the current frame
   bool exit = false;
   /// The unsaved-changes prompt is up
+  /**
+   * @brief What one scripted step records for the next one to check (see app.cpp's smoke())
+   *
+   * The steps run one per idle frame, with a job in between, so a step that wants to compare
+   * against what things were before it has to leave the value somewhere.
+   */
+  struct SmokeCheck
+  {
+    std::size_t tilesets = 0;
+    std::size_t semantics = 0;
+    std::size_t assets = 0;
+  } smoke_check;
+
   bool confirm_exit = false;
+  /**
+   * @brief The member level a switch is waiting on, while the open one has unsaved changes
+   *
+   * <code>project::kNoLevel</code> when nothing is pending. Switching goes through the same prompt
+   * quitting does, for the same reason: the open document is about to be replaced.
+   */
+  std::size_t switch_to = static_cast<std::size_t>(-1);
+  /// Switch once the save in flight succeeds (as exit_after_save does for quitting)
+  bool switch_after_save = false;
   /// Exit once the level save in progress (or about to be chosen in the save dialog) succeeds
   bool exit_after_save = false;
   /// Scripted smoke test: drives generators, undo, save/load and exports through the UI code paths
@@ -493,6 +578,17 @@ void request_exit(App& app, bool force = false);
 
 /// Saves the level (asking where if it has no path yet), then exits if that succeeds
 void save_and_exit(App& app);
+
+/**
+ * @brief Opens member level <code>index</code> of the open project in place of the open one
+ *
+ * Immediately when the open level has no unsaved changes; otherwise through the same prompt
+ * quitting uses, since the open document is about to be replaced either way.
+ */
+void request_switch(App& app, std::size_t index);
+
+/// Saves the level (asking where if it has no path yet), then switches if that succeeds
+void save_and_switch(App& app);
 
 /// Marks every overlay (and the minimap) as needing an update
 void invalidate_view(App& app);

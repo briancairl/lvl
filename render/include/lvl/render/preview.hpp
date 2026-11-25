@@ -16,6 +16,7 @@
 // LVL
 #include "lvl/core/image.hpp"
 #include "lvl/level/level.hpp"
+#include "lvl/project/project.hpp"
 
 namespace lvl::render
 {
@@ -45,7 +46,7 @@ image::Rgba id_color(std::uint32_t id);
  * Transparent pixels mean "nothing here".
  */
 void colorize(
-  const level::Level& level,
+  const project::Project& project,
   const level::Layer& layer,
   image::Image& out,
   const Atlases* atlases = nullptr,

@@ -184,6 +184,9 @@ memory::Vector<NeighborMask> patterns(Neighborhood neighborhood, memory::Arena& 
  */
 std::size_t learn_from_layout(AutoTerrain& terrain, const Grid<TileRef>& layout);
 
+/// Drops the variants naming tileset <code>id</code> and renumbers the rest
+void clear_tileset_refs(AutoTileRules& rules, TileSetId id);
+
 }  // namespace lvl::level
 
 template <> struct lvl::EnumNames<lvl::level::Neighborhood>

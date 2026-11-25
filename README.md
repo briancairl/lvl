@@ -41,7 +41,8 @@ portal and a spawn marker, the tileset palette and tile metadata with seasonal v
   what), used by WFC and by any other auto-tiling: tile weights and constraints, and per-direction
   neighbor toggles over tile thumbnails, which a left-button drag can sweep over several at a time.
   Rules can also be learned from an existing tile layer or taken from the palette layout.
-- **Portals** (target level, target portal, exit direction), **markers**, and **path/route graphs**
+- **Portals** (target level and portal picked from the project's other levels, exit direction),
+  **markers**, and **path/route graphs**
   (roads, patrols, rivers, navigation) with one-way edges, costs, node wait times and a shortest-route
   preview.
 - **File dialogs** ([ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog)): a places pane
@@ -117,5 +118,18 @@ A level JSON file holds `settings`, the `semantics`/`materials`/`seasons` catalo
 seasons and tilesets are referenced **by name**, so standalone tileset/WFC/path files move between
 levels. Tile cells are `-1` (empty) or `tileset * 65536 + tile`. Binary files (`.lvlb`/`.bin`) carry
 the same data, checksummed per layer.
+
+A level can also leave the shared sections out and let its project carry them, which is what a
+level saved inside a project does. A **project** is a folder with a fixed sub-folder tree and a
+`project.json` manifest in its root: the project's name, the catalogs and seasons its levels share,
+the files its tilesets and rule sets live in (`tilesets/forest.tileset.json`,
+`rules/forest.rules.json` — the same standalone formats, one file each), and an index of its member
+levels. A file handed to someone on its own still carries everything it needs.
+
+Open a project by naming its folder or its `project.json`, a level by naming the file:
+
+```bash
+lvl shoreline/
+```
 
 See [CLAUDE.md](CLAUDE.md) for the design tenets and code layout.

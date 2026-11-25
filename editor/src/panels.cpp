@@ -81,13 +81,13 @@ bool collision_edit(std::uint8_t& mask)
 
 bool tile_uv(const App& app, TileRef tile, ImTextureID& texture, ImVec2& uv0, ImVec2& uv1)
 {
-  const Level& lv = *app.level;
-  if (tile.empty() or tile.tileset >= lv.tilesets.size() or !app.assets.textures[tile.tileset].valid())
+  const project::Project& pr = *app.project;
+  if (tile.empty() or tile.tileset >= pr.tilesets.size() or !app.assets.textures[tile.tileset].valid())
   {
     return false;
   }
   const Texture& tex = app.assets.textures[tile.tileset];
-  const TileRect r = tile_rect(lv.tilesets[tile.tileset].slice, tex.width, tex.height, tile.tile);
+  const TileRect r = tile_rect(pr.tilesets[tile.tileset].slice, tex.width, tex.height, tile.tile);
   texture = texture_id(tex);
   uv0 = ImVec2{static_cast<float>(r.x) / tex.width, static_cast<float>(r.y) / tex.height};
   uv1 = ImVec2{static_cast<float>(r.x + r.width) / tex.width, static_cast<float>(r.y + r.height) / tex.height};
@@ -123,6 +123,7 @@ void layers_panel(App& app)
     return;
   }
   Level& lv = *app.level;
+  const project::Project& pr = *app.project;
   if (ImGui::Button("Add"))
   {
     ImGui::OpenPopup("add_layer");
@@ -249,10 +250,10 @@ void layers_panel(App& app)
       switch (layer.kind)
       {
       case LayerKind::kSemantic:
-        catalog_combo("Semantic", lv.semantics, app.paint.semantic);
+        catalog_combo("Semantic", pr.semantics, app.paint.semantic);
         break;
       case LayerKind::kMaterial:
-        catalog_combo("Material", lv.materials, app.paint.material);
+        catalog_combo("Material", pr.materials, app.paint.material);
         break;
       case LayerKind::kCollision:
         collision_edit(app.paint.collision);
@@ -286,10 +287,11 @@ void tilesets_panel(App& app)
   {
     return;
   }
+  project::Project& pr = *app.project;
   Level& lv = *app.level;
-  if (ImGui::Button("New tileset") and lv.tilesets.size() < kMaxTileSets)
+  if (ImGui::Button("New tileset") and pr.tilesets.size() < kMaxTileSets)
   {
-    app.tileset = add_tileset(lv, format<64>("tileset_%zu", lv.tilesets.size()));
+    app.tileset = project::add_tileset(pr, format<64>("tileset_%zu", pr.tilesets.size()));
     app.modified = true;
   }
   ImGui::SameLine();
@@ -298,7 +300,7 @@ void tilesets_panel(App& app)
     open_file_dialog(app, FileAction::kLoadTileSet);
   }
   ImGui::SameLine();
-  ImGui::BeginDisabled(app.tileset >= lv.tilesets.size());
+  ImGui::BeginDisabled(app.tileset >= pr.tilesets.size());
   if (ImGui::Button("Export..."))
   {
     open_file_dialog(app, FileAction::kSaveTileSet);
@@ -306,33 +308,40 @@ void tilesets_panel(App& app)
   ImGui::SameLine();
   if (ImGui::Button("Remove"))
   {
-    remove_tileset(lv, static_cast<TileSetId>(app.tileset));
-    app.tileset = 0;
-    app.selection.clear();
-    app.undo.clear();
-    app.modified = true;
-    reload_atlases(app);
+    // Refused while the project has several levels: only the open one can be renumbered
+    if (const Status s = project::remove_tileset(pr, lv, static_cast<TileSetId>(app.tileset)); !s.ok)
+    {
+      report(app, s);
+    }
+    else
+    {
+      app.tileset = 0;
+      app.selection.clear();
+      app.undo.clear();
+      app.modified = true;
+      reload_atlases(app);
+    }
   }
   ImGui::EndDisabled();
-  if (lv.tilesets.empty())
+  if (pr.tilesets.empty())
   {
     ImGui::TextDisabled("No tilesets. Create one and choose an atlas image, or File > New demo level.");
     ImGui::End();
     return;
   }
-  app.tileset = std::min(app.tileset, lv.tilesets.size() - 1);
-  if (ImGui::BeginCombo("Tileset", lv.tilesets[app.tileset].name.c_str()))
+  app.tileset = std::min(app.tileset, pr.tilesets.size() - 1);
+  if (ImGui::BeginCombo("Tileset", pr.tilesets[app.tileset].name.c_str()))
   {
-    for (std::size_t i = 0; i < lv.tilesets.size(); ++i)
+    for (std::size_t i = 0; i < pr.tilesets.size(); ++i)
     {
-      if (ImGui::Selectable(format<96>("%s##%zu", lv.tilesets[i].name.c_str(), i), i == app.tileset))
+      if (ImGui::Selectable(format<96>("%s##%zu", pr.tilesets[i].name.c_str(), i), i == app.tileset))
       {
         app.tileset = i;
       }
     }
     ImGui::EndCombo();
   }
-  TileSet& ts = lv.tilesets[app.tileset];
+  TileSet& ts = pr.tilesets[app.tileset];
   const Texture& tex = app.assets.textures[app.tileset];
 
   if (ImGui::CollapsingHeader("Slicer", ImGuiTreeNodeFlags_DefaultOpen))
@@ -530,7 +539,7 @@ namespace
 /// Batch edit: the fields ticked here are applied to every tile selected in the palette
 void batch_edit_section(App& app, TileSet& ts)
 {
-  Level& lv = *app.level;
+  const project::Project& pr = *app.project;
   TileEdit& edit = app.batch;
   ImGui::SeparatorText("Batch edit");
   const std::size_t count = selection_size(app);
@@ -569,9 +578,9 @@ void batch_edit_section(App& app, TileSet& ts)
 
   // One field per row, behind the checkbox that says whether the batch edit writes it
   batch_field(
-    "##batch_semantic", edit.set_semantic, [&] { catalog_combo("Semantic type##batch", lv.semantics, edit.semantic); });
+    "##batch_semantic", edit.set_semantic, [&] { catalog_combo("Semantic type##batch", pr.semantics, edit.semantic); });
   batch_field(
-    "##batch_material", edit.set_material, [&] { catalog_combo("Material##batch", lv.materials, edit.material); });
+    "##batch_material", edit.set_material, [&] { catalog_combo("Material##batch", pr.materials, edit.material); });
   batch_field("##batch_hidden", edit.set_hidden, [&] {
     ImGui::Checkbox("Hidden from palettes/generation##batch", &edit.hidden);
   });
@@ -621,14 +630,14 @@ void tile_meta_panel(App& app)
   {
     return;
   }
-  Level& lv = *app.level;
-  if (app.tileset >= lv.tilesets.size() or lv.tilesets[app.tileset].tiles.empty())
+  project::Project& pr = *app.project;
+  if (app.tileset >= pr.tilesets.size() or pr.tilesets[app.tileset].tiles.empty())
   {
     ImGui::TextDisabled("Select a tile in the Tilesets palette");
     ImGui::End();
     return;
   }
-  TileSet& ts = lv.tilesets[app.tileset];
+  TileSet& ts = pr.tilesets[app.tileset];
   app.tile = std::min<TileIndex>(app.tile, static_cast<TileIndex>(ts.tiles.size() - 1));
   int index = app.tile;
   tile_image(app, TileRef{static_cast<TileSetId>(app.tileset), app.tile}, 48.0F);
@@ -643,8 +652,8 @@ void tile_meta_panel(App& app)
   bool changed = input_text("Name", info.name);
   changed |= ImGui::Checkbox("Hidden from palettes/generation", &info.hidden);
   ImGui::EndGroup();
-  changed |= catalog_combo("Semantic type", lv.semantics, info.semantic);
-  changed |= catalog_combo("Material", lv.materials, info.material);
+  changed |= catalog_combo("Semantic type", pr.semantics, info.semantic);
+  changed |= catalog_combo("Material", pr.materials, info.material);
   changed |= collision_edit(info.collision);
   ImGui::SetNextItemWidth(110.0F);
   changed |= ImGui::DragFloat("Scatter weight", &info.scatter_weight, 0.05F, 0.0F, 1000.0F, "%.2f");
@@ -688,9 +697,9 @@ void tile_meta_panel(App& app)
 
   ImGui::SeparatorText("Seasonal variants");
   ImGui::TextDisabled("Tile and material used instead of this one during a season");
-  for (std::size_t s = 0; s < lv.seasons.size(); ++s)
+  for (std::size_t s = 0; s < pr.seasons.size(); ++s)
   {
-    const Season& season = lv.seasons[s];
+    const Season& season = pr.seasons[s];
     ImGui::PushID(static_cast<int>(s));
     const TileIndex alt = seasonal_tile(ts, app.tile, season.name.view());
     const SeasonalVariant* existing = nullptr;
@@ -716,7 +725,7 @@ void tile_meta_panel(App& app)
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120.0F);
-    vchanged |= catalog_combo("##mat", lv.materials, variant.material);
+    vchanged |= catalog_combo("##mat", pr.materials, variant.material);
     if (vchanged)
     {
       variant.alternate = static_cast<TileIndex>(std::clamp(alternate, 0, static_cast<int>(ts.tiles.size()) - 1));
@@ -750,6 +759,7 @@ void catalogs_panel(App& app)
     return;
   }
   Level& lv = *app.level;
+  project::Project& pr = *app.project;
   bool changed = false;
   if (ImGui::CollapsingHeader("Level", ImGuiTreeNodeFlags_DefaultOpen))
   {
@@ -767,15 +777,16 @@ void catalogs_panel(App& app)
   }
   if (ImGui::CollapsingHeader("Seasons", ImGuiTreeNodeFlags_DefaultOpen))
   {
-    ImGui::TextDisabled("A level cycles through its seasons in order; tilesets switch to seasonal variants by name.");
+    ImGui::TextDisabled(
+      "The project cycles through its seasons in order; tilesets switch to seasonal variants by name.");
     std::uint32_t year = 0;
-    for (std::size_t i = 0; i < lv.seasons.size(); ++i)
+    for (std::size_t i = 0; i < pr.seasons.size(); ++i)
     {
-      Season& s = lv.seasons[i];
+      Season& s = pr.seasons[i];
       year += s.duration_days;
       ImGui::PushID(static_cast<int>(i));
-      ImGui::BeginDisabled(lv.seasons.size() <= 1);
-      if (delete_button(lv.seasons.size() <= 1 ? "A level needs at least one season" : "Delete season"))
+      ImGui::BeginDisabled(pr.seasons.size() <= 1);
+      if (delete_button(pr.seasons.size() <= 1 ? "A project needs at least one season" : "Delete season"))
       {
         request_delete(
           app,
@@ -810,9 +821,9 @@ void catalogs_panel(App& app)
       ImGui::PopID();
     }
     ImGui::TextDisabled("Year: %u days", year);
-    if (ImGui::SmallButton("Add season") and lv.seasons.size() < 255)
+    if (ImGui::SmallButton("Add season") and pr.seasons.size() < 255)
     {
-      lv.seasons.push_back(Season{.name = Name{format<64>("season_%zu", lv.seasons.size() + 1)}});
+      project::add_season(pr, format<64>("season_%zu", pr.seasons.size() + 1));
       changed = true;
     }
   }
@@ -825,20 +836,42 @@ void catalogs_panel(App& app)
     for (std::size_t i = 1; i < catalog.size(); ++i)
     {
       ImGui::PushID(static_cast<int>(i));
+      // A retired entry is still listed, greyed, because its id is still reserved: hiding it would
+      // leave the user wondering why the ids below it never close up. "Restore" brings it back,
+      // which is what every cell still holding its id already says it means.
+      if (catalog[i].retired)
+      {
+        ImGui::TextDisabled("%s (removed)", catalog[i].name.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Restore"))
+        {
+          catalog[i].retired = false;
+          changed = true;
+          invalidate_view(app);
+        }
+        ImGui::PopID();
+        continue;
+      }
       if (delete_button(kind == DeleteKind::kSemantic ? "Delete semantic type" : "Delete material"))
       {
         const bool semantic = (kind == DeleteKind::kSemantic);
-        const std::size_t uses =
-          semantic ? semantic_uses(lv, static_cast<SemanticId>(i)) : material_uses(lv, static_cast<MaterialId>(i));
+        const std::size_t uses = semantic ? project::semantic_uses(pr, lv, static_cast<SemanticId>(i))
+                                          : project::material_uses(pr, lv, static_cast<MaterialId>(i));
         request_delete(
           app,
           PendingDelete{
             .kind = kind,
             .index = i,
             .what = format<128>("%s '%s'", semantic ? "semantic type" : "material", catalog[i].name.c_str()),
-            .detail = (uses == 0) ? FixedString<256>{"Nothing uses it."}
+            // The count is of this level only: the project's other levels are not loaded, so a
+            // count of zero does not mean nothing anywhere uses the entry
+            // Its id stays reserved, because the project's other levels are not loaded and their
+            // cells would otherwise keep an id that had come to mean something else
+            .detail = (uses == 0) ? FixedString<256>{"Nothing in this level uses it. Its id stays reserved until the "
+                                                     "catalogs are compacted."}
                                   : FixedString<256>{format<256>(
-                                      "%zu cells, tiles%s use it; they become 'none'. The undo history is cleared.",
+                                      "%zu cells, tiles%s in this level use it; they become 'none'. Its id stays "
+                                      "reserved until the catalogs are compacted. The undo history is cleared.",
                                       uses,
                                       semantic ? " and WFC rule tiles" : ", and seasonal variants")}});
       }
@@ -861,8 +894,8 @@ void catalogs_panel(App& app)
     }
     ImGui::PopID();
   };
-  catalog_editor("Semantic types", lv.semantics, DeleteKind::kSemantic, [](SemanticType&) {});
-  catalog_editor("Materials", lv.materials, DeleteKind::kMaterial, [&changed](Material& m) {
+  catalog_editor("Semantic types", pr.semantics, DeleteKind::kSemantic, [](SemanticType&) {});
+  catalog_editor("Materials", pr.materials, DeleteKind::kMaterial, [&changed](Material& m) {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0F);
     changed |= ImGui::DragFloat("friction", &m.friction, 0.01F, 0.0F, 4.0F);
@@ -873,13 +906,326 @@ void catalogs_panel(App& app)
     ImGui::SetNextItemWidth(90.0F);
     changed |= input_text("sound", m.sound);
   });
+
+  // Compaction is the only thing that renumbers the catalogs, which is why it is a deliberate act
+  // rather than something a removal does: every level of the project has to be rewritten together.
+  if (project::needs_compaction(pr))
+  {
+    ImGui::Separator();
+    project::CatalogPlan plan{app.memory.frame};
+    project::plan_compaction(pr, plan);
+    ImGui::TextWrapped(
+      "%zu semantic type(s) and %zu material(s) are removed but still hold their ids.",
+      plan.retired_semantics,
+      plan.retired_materials);
+    if (pr.levels.size() > 1)
+    {
+      ImGui::TextDisabled("Compacting needs every level rewritten at once, which this build cannot do yet.");
+    }
+    else if (ImGui::Button("Compact catalogs"))
+    {
+      project::apply_compaction(plan, lv);
+      project::finish_compaction(pr, plan);
+      // Every id below a dropped entry has moved, so the snapshots in the ring no longer mean what
+      // their planes do
+      app.undo.clear();
+      invalidate_view(app);
+      changed = true;
+    }
+  }
   app.modified |= changed;
+  ImGui::End();
+}
+
+// -------------------------------------------------------------------------------------------------
+// Project: its member levels, tilesets and rule sets
+// -------------------------------------------------------------------------------------------------
+
+void project_panel(App& app)
+{
+  if (!ImGui::Begin("Project", &app.panels.project))
+  {
+    ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
+    return;
+  }
+  project::Project& pr = *app.project;
+  const Level& lv = *app.level;
+
+  if (app.project_path.empty())
+  {
+    // What opening a bare level gives: a project synthesized around it, with nowhere to save to
+    ImGui::TextWrapped("This level has no project folder yet. File > New project writes one.");
+  }
+  else
+  {
+    ImGui::Text("%s%s", pr.name.c_str(), app.project_modified ? " *" : "");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("%s", app.project_path.c_str());
+    }
+  }
+  if (input_text("Name", pr.name))
+  {
+    app.project_modified = true;
+  }
+
+  ImGui::SeparatorText("Levels");
+  const std::size_t open_member = project::find_level(pr, lv.settings.name.view());
+  for (std::size_t i = 0; i < pr.levels.size(); ++i)
+  {
+    project::LevelEntry& entry = pr.levels[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Remove from the project (the file stays on disk)"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kLevelMember,
+          .index = i,
+          .what = format<128>("level '%s' from the project", entry.name.c_str()),
+          .detail = "Its file stays on disk. Portals pointing at it will show as dangling."});
+    }
+    const bool is_open = (i == open_member);
+    if (is_open)
+    {
+      // The open one is the document: it is renamed through the level's own settings, not here
+      ImGui::TextDisabled("%s (open)", entry.name.c_str());
+    }
+    else
+    {
+      ImGui::SetNextItemWidth(140.0F);
+      if (input_text("##name", entry.name))
+      {
+        app.project_modified = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Open"))
+      {
+        // Leaves the unsaved-changes prompt to request_switch, as quitting does
+        request_switch(app, i);
+      }
+    }
+    ImGui::SameLine();
+    if (entry.missing)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      ImGui::Text("%s (file not found)", entry.file.c_str());
+      ImGui::PopStyleColor();
+    }
+    else
+    {
+      ImGui::TextDisabled(
+        "%dx%d, %u portal(s)  %s", entry.extents.width, entry.extents.height, entry.portal_count, entry.file.c_str());
+    }
+    ImGui::PopID();
+  }
+  if (pr.levels.empty())
+  {
+    ImGui::TextDisabled("No levels yet. Saving this one makes it the first.");
+  }
+  if (ImGui::SmallButton("Add a level..."))
+  {
+    open_file_dialog(app, FileAction::kAddLevel);
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Rescan"))
+  {
+    // What the index says is only as fresh as the last save this editor did
+    if (auto* job = prepare_job<RescanProjectJob>(app); job != nullptr)
+    {
+      job->project = app.project;
+      job->scratch = app.spare;
+      job->scratch_project = app.spare_project;
+      start_job(app);
+    }
+  }
+
+  ImGui::SeparatorText("Tilesets");
+  for (std::size_t i = 0; i < pr.tilesets.size(); ++i)
+  {
+    const level::TileSet& ts = pr.tilesets[i];
+    const bool outside =
+      !ts.image.empty() and !app.project_path.empty() and !project::is_inside(pr.root.view(), ts.image.view());
+    ImGui::PushID(static_cast<int>(i));
+    ImGui::BulletText("%s  %s", ts.name.c_str(), ts.image.empty() ? "(no atlas)" : ts.image.c_str());
+    if (outside)
+    {
+      // A reference that points outside the tree is allowed -- the import prompt's "Link in place"
+      // -- but it is what stops the folder being self-contained, so it is listed as such with the
+      // way to fix it beside it
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.80F, 0.40F, 1.0F});
+      ImGui::TextUnformatted("outside the project");
+      ImGui::PopStyleColor();
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Copy in"))
+      {
+        app.tileset = i;
+        copy_asset_into_project(app, FileAction::kAtlasImage, ts.image.view());
+      }
+    }
+    ImGui::PopID();
+  }
+  if (pr.tilesets.empty())
+  {
+    ImGui::TextDisabled("None; import one in Tilesets");
+  }
+  if (
+    !app.generators.seed_image.empty() and !app.project_path.empty() and
+    !project::is_inside(pr.root.view(), app.generators.seed_image.view()))
+  {
+    ImGui::BulletText("heightmap seed  %s", app.generators.seed_image.c_str());
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.80F, 0.40F, 1.0F});
+    ImGui::TextUnformatted("outside the project");
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy in##seed"))
+    {
+      copy_asset_into_project(app, FileAction::kSeedImage, app.generators.seed_image.view());
+    }
+  }
+
+  ImGui::SeparatorText("Rule sets");
+  for (std::size_t i = 0; i < pr.rules.size(); ++i)
+  {
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Delete rule set"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kRuleSet,
+          .index = i,
+          .what = format<128>("rule set '%s'", pr.rules[i].wfc.name.c_str()),
+          .detail = "Levels naming it fall back to the project's first set."});
+    }
+    const bool used = (i == project::rules_of(pr, lv));
+    ImGui::Text(
+      "%s%s  %zu tile(s), %zu terrain(s)",
+      pr.rules[i].wfc.name.c_str(),
+      used ? " (this level)" : "",
+      pr.rules[i].wfc.tiles.size(),
+      pr.rules[i].auto_tiles.terrains.size() + pr.rules[i].steps.terrains.size());
+    ImGui::PopID();
+  }
+  if (ImGui::SmallButton("Add a rule set"))
+  {
+    project::add_rules(pr, format<64>("rules_%zu", pr.rules.size() + 1));
+    app.project_modified = true;
+  }
   ImGui::End();
 }
 
 // -------------------------------------------------------------------------------------------------
 // Objects & paths
 // -------------------------------------------------------------------------------------------------
+
+/**
+ * @brief The two destination fields of a portal, as combos over what the project knows
+ *
+ * Levels address each other by name, and the project's index holds every member's name and the
+ * names of its portals, so both can be picked rather than typed -- which is the point: a typed path
+ * was indistinguishable from a working link. A value that resolves to nothing is kept and shown, in
+ * red and disabled, so it can be seen and replaced rather than silently dropped.
+ */
+bool portal_target(App& app, Portal& portal)
+{
+  const project::Project& pr = *app.project;
+  const Level& lv = *app.level;
+  bool changed = false;
+
+  const bool self = portal.target_level.empty() or portal.target_level == lv.settings.name;
+  const char* preview = self ? "(this level)" : portal.target_level.c_str();
+  if (ImGui::BeginCombo("Target level", preview))
+  {
+    if (ImGui::Selectable("(this level)", self))
+    {
+      portal.target_level.clear();
+      changed = true;
+    }
+    for (const project::LevelEntry& entry : pr.levels)
+    {
+      if (entry.name == lv.settings.name)
+      {
+        // Already offered as "(this level)"
+        continue;
+      }
+      if (ImGui::Selectable(entry.name.c_str(), portal.target_level == entry.name))
+      {
+        portal.target_level = entry.name;
+        portal.target_portal.clear();
+        changed = true;
+      }
+    }
+    // A name no member has: still listed, so it can be seen rather than silently replaced
+    if (!self and project::find_level(pr, portal.target_level.view()) == project::kNoLevel)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      ImGui::Selectable(
+        format<96>("%s (no such level)", portal.target_level.c_str()), true, ImGuiSelectableFlags_Disabled);
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndCombo();
+  }
+
+  // The destination's portals: from the live registry when it is this level, so one made this
+  // session is offered before any save; from the index otherwise, which is what a project knows
+  // about a level it has not loaded
+  const char* portal_preview = portal.target_portal.empty() ? "(none)" : portal.target_portal.c_str();
+  if (ImGui::BeginCombo("Target portal", portal_preview))
+  {
+    if (ImGui::Selectable("(none)", portal.target_portal.empty()))
+    {
+      portal.target_portal.clear();
+      changed = true;
+    }
+    bool listed = false;
+    const auto offer = [&portal, &changed, &listed](std::string_view name) {
+      listed = true;
+      if (ImGui::Selectable(
+            format<96>("%.*s", static_cast<int>(name.size()), name.data()), portal.target_portal == name))
+      {
+        portal.target_portal.assign(name);
+        changed = true;
+      }
+    };
+    if (self)
+    {
+      for (auto [e, label, other] : lv.registry.view<Label, Portal>().each())
+      {
+        offer(label.name.view());
+      }
+    }
+    else if (const std::size_t member = project::find_level(pr, portal.target_level.view());
+             member != project::kNoLevel)
+    {
+      const project::LevelEntry& entry = pr.levels[member];
+      const Name* names = project::portals_of(pr, entry);
+      for (std::uint32_t i = 0; i < entry.portal_count; ++i)
+      {
+        offer(names[i].view());
+      }
+    }
+    if (!listed)
+    {
+      ImGui::TextDisabled(self ? "This level has no other portal" : "That level had no portals when it was saved");
+    }
+    if (!portal.target_portal.empty() and portal_link_of(app, portal) == project::LinkState::kUnknownPortal)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      ImGui::Selectable(
+        format<96>("%s (no such portal)", portal.target_portal.c_str()), true, ImGuiSelectableFlags_Disabled);
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
 
 void objects_panel(App& app)
 {
@@ -972,16 +1318,32 @@ void objects_panel(App& app)
             .kind = DeleteKind::kObject, .entity = e, .what = format<128>("portal '%s'", label.name.c_str())});
       }
       ImGui::PopID();
+      // A link the project cannot follow is drawn red, with what is missing in the tooltip, so a
+      // typo is not indistinguishable from a working link
+      const auto link = portal_link_of(app, portal);
+      const bool dangling = link != project::LinkState::kResolved and link != project::LinkState::kSelf;
+      if (dangling)
+      {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.45F, 0.40F, 1.0F});
+      }
       if (ImGui::Selectable(
             format<128>(
               "portal: %s -> %s:%s##%u",
               label.name.c_str(),
-              portal.target_level.c_str(),
+              portal.target_level.empty() ? "(this level)" : portal.target_level.c_str(),
               portal.target_portal.c_str(),
               static_cast<unsigned>(e)),
             app.entity == e))
       {
         app.entity = e;
+      }
+      if (dangling)
+      {
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+        {
+          ImGui::SetTooltip("%s", link_message(link, portal));
+        }
       }
     }
     for (auto [e, label, marker] : reg.view<Label, Marker>().each())
@@ -1022,8 +1384,7 @@ void objects_panel(App& app)
     }
     if (auto* portal = reg.try_get<Portal>(e); portal != nullptr)
     {
-      changed |= input_text("Target level", portal->target_level);
-      changed |= input_text("Target portal", portal->target_portal);
+      changed |= portal_target(app, *portal);
       changed |= enum_combo("Exit facing", portal->exit);
       changed |= ImGui::Checkbox("Requires interaction", &portal->interact);
     }
@@ -1118,7 +1479,14 @@ void minimap_panel(App& app)
     options.tint = app.view.tint;
     image::Image img;
     if (render::minimap(
-          *app.level, app.assets.atlases(app.level->tilesets.size()), options, app.minimap_size, result, work, img)
+          *app.project,
+          *app.level,
+          app.assets.atlases(app.project->tilesets.size()),
+          options,
+          app.minimap_size,
+          result,
+          work,
+          img)
           .ok)
     {
       upload(app.minimap_texture, img, true);

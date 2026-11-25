@@ -25,6 +25,7 @@
 #include "lvl/core/memory.hpp"
 #include "lvl/core/status.hpp"
 #include "lvl/level/level.hpp"
+#include "lvl/project/project.hpp"
 
 namespace lvl::level
 {
@@ -33,6 +34,29 @@ enum class FileFormat
 {
   kJson,
   kBinary,
+};
+
+/**
+ * @brief How much of what a level draws on is written into its own file
+ *
+ * A level references its project's catalogs, seasons, tilesets and rule sets by id, so a file has to
+ * say which of them it carries.
+ *
+ * - <code>kStandalone</code> writes them all, so the file reads back on its own, into a project it
+ *   fills in as it goes. This is what <code>//tools:lvl_convert</code> emits and what exporting a
+ *   level writes, and it is the default: a file handed to someone else should work.
+ * - <code>kProject</code> writes only what the level itself owns -- its settings, path graphs,
+ *   objects and layers. The project's manifest carries the rest, so the file is smaller and a
+ *   project's levels cannot drift apart. Loading one needs a project that already holds the shared
+ *   data; its cells are read as the project ids they are.
+ *
+ * In binary the two are different file kinds (<code>binary::Kind::kLevel</code> and
+ * <code>kProjectLevel</code>), so a reader knows which it has before decoding.
+ */
+enum class LevelScope
+{
+  kStandalone,
+  kProject,
 };
 
 /// Format implied by <code>path</code>'s extension
@@ -65,27 +89,49 @@ struct IoContext
   jobs::Progress* progress = nullptr;
 };
 
-/// Saves a whole level
-Status save_level(const char* path, const Level& level, IoContext& ctx);
+/**
+ * @brief Saves a whole level
+ *
+ * The catalogs, seasons, tilesets and rule sets a level draws on belong to its
+ * <code>project</code>, not to the level. <code>scope</code> says whether they are written into the
+ * level's own file as well.
+ */
+Status save_level(
+  const char* path,
+  const project::Project& project,
+  const Level& level,
+  IoContext& ctx,
+  LevelScope scope = LevelScope::kStandalone);
 
 /**
  * @brief Loads a whole level into <code>level</code> (which is reset first)
  *
- * On failure <code>level</code> holds a partial document; load into a spare Level and swap on success.
+ * Either scope is accepted: a file that carries the shared sections replaces the project's with
+ * them, and one that does not leaves the project alone.
+ *
+ * On failure <code>level</code> holds a partial document, and <code>project</code> may hold
+ * entries interned from the file; load into a spare of each and swap both on success.
  */
-Status load_level(const char* path, Level& level, IoContext& ctx);
+Status load_level(const char* path, project::Project& project, Level& level, IoContext& ctx);
 
-/// Saves tileset <code>id</code> (with the catalog entries it references)
-Status save_tileset(const char* path, const Level& level, TileSetId id, IoContext& ctx);
+/// Saves tileset <code>id</code> (with the project catalog entries it references)
+Status save_tileset(const char* path, const project::Project& project, TileSetId id, IoContext& ctx);
 
-/// Loads a tileset file and appends it to <code>level</code> (interning its catalog entries)
-Status load_tileset(const char* path, Level& level, IoContext& ctx, TileSetId& id);
+/// Loads a tileset file and appends it to <code>level</code> (interning its catalog entries into
+/// <code>project</code>)
+Status load_tileset(const char* path, project::Project& project, IoContext& ctx, TileSetId& id);
 
-/// Saves the level's WFC rules
-Status save_wfc_rules(const char* path, const Level& level, IoContext& ctx);
+/// Saves rule set <code>index</code> (WFC, auto-tiling and height steps together)
+Status save_wfc_rules(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
 
-/// Replaces the level's WFC rules with a file's (its tilesets must exist in the level, by name)
-Status load_wfc_rules(const char* path, Level& level, IoContext& ctx);
+/**
+ * @brief Reads a rule-set file into the project, and says which set it landed in
+ *
+ * The file names the set it holds, so it replaces the project's set of that name or becomes a new
+ * one -- reading the same file twice does not leave two. Its tilesets must already be in the
+ * project, by name.
+ */
+Status load_wfc_rules(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
 
 /// Saves the level's path graphs (graphs, nodes and edges)
 Status save_paths(const char* path, const Level& level, IoContext& ctx);

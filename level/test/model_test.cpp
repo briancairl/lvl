@@ -19,9 +19,6 @@ TEST_F(LevelModel, DefaultLevelHasCatalogsAndLayers)
 {
   Level level{arena};
   create_default(level, Settings{.name = "test", .extents = {8, 4}});
-  EXPECT_EQ(level.semantics.size(), 1UL);
-  EXPECT_EQ(level.materials.size(), 1UL);
-  EXPECT_EQ(level.seasons.size(), 1UL);
   ASSERT_EQ(level.layers.size(), 4UL);
   EXPECT_EQ(extents(level.layers[1]), (Extents{8, 4}));
   EXPECT_LT(find_layer(level, LayerKind::kCollision), level.layers.size());
@@ -65,8 +62,9 @@ TEST_F(LevelModel, SlicingAndSeasonalVariants)
 {
   Level level{arena};
   create_default(level, Settings{.extents = {4, 4}});
-  const TileSetId id = add_tileset(level, "forest");
-  auto& ts = level.tilesets[id];
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  auto& ts = tilesets.back();
   ts.slice =
     SliceParams{.tile_width = 16, .tile_height = 16, .margin_x = 1, .margin_y = 1, .spacing_x = 2, .spacing_y = 2};
   ts.image_width = 1 + 4 * 16 + 3 * 2;
@@ -77,8 +75,10 @@ TEST_F(LevelModel, SlicingAndSeasonalVariants)
   EXPECT_EQ(r.x, 1 + 18);
   EXPECT_EQ(r.y, 1 + 18);
 
-  const MaterialId snow = intern_material(level, "snow");
-  ts.tiles[2].material = intern_material(level, "grass");
+  // Ids into the project's catalogs; this test only needs them to be distinct
+  constexpr MaterialId snow = 1;
+  constexpr MaterialId grass = 2;
+  ts.tiles[2].material = grass;
   set_seasonal_variant(ts, SeasonalVariant{.tile = 2, .season = "winter", .alternate = 6, .material = snow});
   EXPECT_EQ(seasonal_tile(ts, 2, "winter"), 6);
   EXPECT_EQ(seasonal_tile(ts, 2, "summer"), 2);
@@ -146,14 +146,16 @@ TEST_F(LevelModel, BatchTileEditWritesOnlyTheFieldsItIsGiven)
 {
   Level level{arena};
   create_default(level, Settings{.extents = {4, 4}});
-  const TileSetId id = add_tileset(level, "forest");
-  auto& ts = level.tilesets[id];
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  auto& ts = tilesets.back();
   ts.image_width = 4 * 16;
   ts.image_height = 16;
   reslice(ts);
   ASSERT_EQ(ts.tiles.size(), 4UL);
-  const SemanticId grass = intern_semantic(level, "grass");
-  ts.tiles[0].material = intern_material(level, "dirt");
+  constexpr SemanticId grass = 1;
+  constexpr MaterialId dirt = 2;
+  ts.tiles[0].material = dirt;
   ts.tiles[0].hidden = true;
   ts.tiles[0].scatter_weight = 3.0F;
   set_property(ts, 0, "sound", "step");
@@ -174,7 +176,7 @@ TEST_F(LevelModel, BatchTileEditWritesOnlyTheFieldsItIsGiven)
   EXPECT_EQ(ts.tiles[1].semantic, kNoSemantic);
   EXPECT_EQ(ts.tiles[0].collision, collision::kSolid);
   // Fields the edit does not carry are left alone
-  EXPECT_EQ(ts.tiles[0].material, intern_material(level, "dirt"));
+  EXPECT_EQ(ts.tiles[0].material, dirt);
   EXPECT_TRUE(ts.tiles[0].hidden);
   EXPECT_FALSE(ts.tiles[2].hidden);
   EXPECT_FLOAT_EQ(ts.tiles[0].scatter_weight, 3.0F);
@@ -203,37 +205,37 @@ TEST_F(LevelModel, DeriveCollisionAndMaterialsFromTiles)
 {
   Level level{arena};
   create_default(level, Settings{.extents = {3, 1}});
-  const TileSetId id = add_tileset(level, "t");
-  auto& ts = level.tilesets[id];
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  constexpr TileSetId id = 0;
+  auto& ts = tilesets.back();
   ts.image_width = 32;
   ts.image_height = 16;
   reslice(ts);
   ts.tiles[1].collision = collision::kSolid;
-  ts.tiles[1].material = intern_material(level, "stone");
+  ts.tiles[1].material = 1;
   auto& ground = plane<TileGrid>(level.layers[1]);
   ground.at(0, 0) = TileRef{id, 0};
   ground.at(1, 0) = TileRef{id, 1};
   const auto col = find_layer(level, LayerKind::kCollision);
-  derive_collision(level, col, "default");
+  derive_collision(tilesets, level, col, "default");
   const auto& mask = plane<MaskGrid>(level.layers[col]);
   EXPECT_EQ(mask.at(0, 0), collision::kNone);
   EXPECT_EQ(mask.at(1, 0), collision::kSolid);
 
   const auto mat = add_layer(level, LayerKind::kMaterial, "materials");
-  derive_materials(level, mat, "default");
+  derive_materials(tilesets, level, mat, "default");
   EXPECT_EQ(plane<IdGrid>(level.layers[mat]).at(1, 0), ts.tiles[1].material);
 }
 
-TEST_F(LevelModel, RemovingTilesetClearsCells)
+TEST_F(LevelModel, ClearingTilesetReferencesEmptiesAndRenumbersCells)
 {
   Level level{arena};
   create_default(level, Settings{.extents = {2, 1}});
-  add_tileset(level, "a");
-  add_tileset(level, "b");
   auto& ground = plane<TileGrid>(level.layers[1]);
   ground.at(0, 0) = TileRef{0, 3};
   ground.at(1, 0) = TileRef{1, 4};
-  remove_tileset(level, 0);
+  clear_tileset_refs(level, 0);
   EXPECT_TRUE(ground.at(0, 0).empty());
   EXPECT_EQ(ground.at(1, 0), (TileRef{0, 4}));
 }
@@ -284,22 +286,23 @@ TEST_F(LevelModel, WfcRulesLearnFromExample)
   ground.at(0, 1) = {0, 3};
   ground.at(1, 1) = {0, 3};
   ground.at(2, 1) = {0, 3};
-  learn(level.wfc, ground);
-  ASSERT_EQ(level.wfc.tiles.size(), 3UL);
-  const WfcTileId a = find_tile(level.wfc, {0, 1});
-  const WfcTileId b = find_tile(level.wfc, {0, 2});
-  const WfcTileId c = find_tile(level.wfc, {0, 3});
-  EXPECT_FLOAT_EQ(level.wfc.tiles[c].weight, 3.0F);
-  EXPECT_TRUE(allowed(level.wfc, a, b, Direction::kEast));
-  EXPECT_TRUE(allowed(level.wfc, b, a, Direction::kWest));
-  EXPECT_TRUE(allowed(level.wfc, b, a, Direction::kEast));
-  EXPECT_TRUE(allowed(level.wfc, c, a, Direction::kNorth));
-  EXPECT_FALSE(allowed(level.wfc, a, a, Direction::kEast));
-  EXPECT_FALSE(allowed(level.wfc, a, c, Direction::kNorth));
-  set_allowed(level.wfc, a, a, Direction::kEast, true);
-  EXPECT_TRUE(allowed(level.wfc, a, a, Direction::kWest));
-  remove_tile(level.wfc, a);
-  EXPECT_EQ(level.wfc.tiles.size(), 2UL);
+  WfcRules wfc{arena};
+  learn(wfc, ground);
+  ASSERT_EQ(wfc.tiles.size(), 3UL);
+  const WfcTileId a = find_tile(wfc, {0, 1});
+  const WfcTileId b = find_tile(wfc, {0, 2});
+  const WfcTileId c = find_tile(wfc, {0, 3});
+  EXPECT_FLOAT_EQ(wfc.tiles[c].weight, 3.0F);
+  EXPECT_TRUE(allowed(wfc, a, b, Direction::kEast));
+  EXPECT_TRUE(allowed(wfc, b, a, Direction::kWest));
+  EXPECT_TRUE(allowed(wfc, b, a, Direction::kEast));
+  EXPECT_TRUE(allowed(wfc, c, a, Direction::kNorth));
+  EXPECT_FALSE(allowed(wfc, a, a, Direction::kEast));
+  EXPECT_FALSE(allowed(wfc, a, c, Direction::kNorth));
+  set_allowed(wfc, a, a, Direction::kEast, true);
+  EXPECT_TRUE(allowed(wfc, a, a, Direction::kWest));
+  remove_tile(wfc, a);
+  EXPECT_EQ(wfc.tiles.size(), 2UL);
 }
 
 TEST_F(LevelModel, BatchWfcConstraintsWriteOnlyTheFieldsTheyAreGiven)
@@ -327,9 +330,7 @@ TEST_F(LevelModel, BatchWfcConstraintsWriteOnlyTheFieldsTheyAreGiven)
 
 TEST_F(LevelModel, WfcRulesFromAPaletteLayout)
 {
-  Level level{arena};
-  create_default(level, Settings{.extents = {2, 2}});
-  WfcRules& rules = level.wfc;
+  WfcRules rules{arena};
   // The tile an unrelated rule uses, and two tiles laid out side by side:  a b
   const WfcTileId other = add_tile(rules, TileRef{0, 9});
   memory::Arena scratch;
@@ -395,17 +396,18 @@ TEST_F(LevelModel, WfcDiagonalRules)
   ground.at(0, 1) = {0, 3};
   ground.at(1, 1) = {0, 3};
   ground.at(2, 1) = {0, 3};
-  learn(level.wfc, ground);
-  const WfcTileId a = find_tile(level.wfc, {0, 1});
-  const WfcTileId b = find_tile(level.wfc, {0, 2});
-  const WfcTileId c = find_tile(level.wfc, {0, 3});
-  EXPECT_TRUE(allowed(level.wfc, a, c, Direction::kSouthEast));
-  EXPECT_TRUE(allowed(level.wfc, a, c, Direction::kSouthWest));
-  EXPECT_TRUE(allowed(level.wfc, c, a, Direction::kNorthWest));
-  EXPECT_TRUE(allowed(level.wfc, c, b, Direction::kNorthEast));
-  EXPECT_FALSE(allowed(level.wfc, a, b, Direction::kSouthEast));
-  EXPECT_FALSE(allowed(level.wfc, c, c, Direction::kNorthEast));
-  EXPECT_EQ(diagonal_count(level.wfc), 4UL);  // a-c SE, a-c SW, b-c SE, b-c SW
+  WfcRules wfc{arena};
+  learn(wfc, ground);
+  const WfcTileId a = find_tile(wfc, {0, 1});
+  const WfcTileId b = find_tile(wfc, {0, 2});
+  const WfcTileId c = find_tile(wfc, {0, 3});
+  EXPECT_TRUE(allowed(wfc, a, c, Direction::kSouthEast));
+  EXPECT_TRUE(allowed(wfc, a, c, Direction::kSouthWest));
+  EXPECT_TRUE(allowed(wfc, c, a, Direction::kNorthWest));
+  EXPECT_TRUE(allowed(wfc, c, b, Direction::kNorthEast));
+  EXPECT_FALSE(allowed(wfc, a, b, Direction::kSouthEast));
+  EXPECT_FALSE(allowed(wfc, c, c, Direction::kNorthEast));
+  EXPECT_EQ(diagonal_count(wfc), 4UL);  // a-c SE, a-c SW, b-c SE, b-c SW
 
   // Corners derived from sides: a east of a, b south of a => b south-east of a
   WfcRules rules{arena};
@@ -424,64 +426,6 @@ TEST_F(LevelModel, WfcDiagonalRules)
   EXPECT_EQ(diagonal_count(rules), 2UL);
   EXPECT_EQ(scratch.utilized, 0UL);
   memory::destroy(scratch);
-}
-
-TEST_F(LevelModel, RemovingCatalogEntriesRemapsEverythingThatUsesThem)
-{
-  Level level{arena};
-  create_default(level, Settings{.extents = {2, 1}});
-  const SemanticId road = intern_semantic(level, "road");
-  const SemanticId river = intern_semantic(level, "river");
-  const MaterialId dirt = intern_material(level, "dirt");
-  const MaterialId snow = intern_material(level, "snow");
-  const auto sem = add_layer(level, LayerKind::kSemantic, "semantics");
-  const auto mat = add_layer(level, LayerKind::kMaterial, "materials");
-  plane<IdGrid>(level.layers[sem]).at(0, 0) = road;
-  plane<IdGrid>(level.layers[sem]).at(1, 0) = river;
-  plane<IdGrid>(level.layers[mat]).at(0, 0) = dirt;
-  plane<IdGrid>(level.layers[mat]).at(1, 0) = snow;
-  const TileSetId id = add_tileset(level, "t");
-  auto& ts = level.tilesets[id];
-  ts.image_width = 32;
-  ts.image_height = 16;
-  reslice(ts);
-  ts.tiles[0] = TileInfo{.semantic = river, .material = snow};
-  ts.tiles[1] = TileInfo{.semantic = road, .material = dirt};
-  set_seasonal_variant(ts, SeasonalVariant{.tile = 0, .season = "winter", .alternate = 1, .material = snow});
-  const WfcTileId w = add_tile(level.wfc, TileRef{id, 0});
-  level.wfc.tiles[w].semantic = river;
-
-  EXPECT_EQ(semantic_uses(level, road), 2UL);
-  EXPECT_EQ(semantic_uses(level, river), 3UL);
-  EXPECT_EQ(material_uses(level, snow), 3UL);
-
-  remove_semantic(level, road);
-  ASSERT_EQ(level.semantics.size(), 2UL);
-  EXPECT_EQ(level.semantics[1].name, std::string_view{"river"});
-  EXPECT_EQ(plane<IdGrid>(level.layers[sem]).at(0, 0), kNoSemantic);
-  EXPECT_EQ(plane<IdGrid>(level.layers[sem]).at(1, 0), 1);
-  EXPECT_EQ(ts.tiles[0].semantic, 1);
-  EXPECT_EQ(ts.tiles[1].semantic, kNoSemantic);
-  EXPECT_EQ(level.wfc.tiles[w].semantic, 1);
-
-  remove_material(level, dirt);
-  ASSERT_EQ(level.materials.size(), 2UL);
-  EXPECT_EQ(plane<IdGrid>(level.layers[mat]).at(0, 0), kNoMaterial);
-  EXPECT_EQ(plane<IdGrid>(level.layers[mat]).at(1, 0), 1);
-  EXPECT_EQ(ts.tiles[0].material, 1);
-  EXPECT_EQ(ts.seasonal[0].material, 1);
-  EXPECT_EQ(material_uses(level, 1), 3UL);
-}
-
-TEST_F(LevelModel, RemovingSeasonsKeepsAtLeastOne)
-{
-  Level level{arena};
-  create_default(level, Settings{.extents = {2, 2}});
-  level.seasons.push_back(Season{.name = "winter"});
-  remove_season(level, 0);
-  ASSERT_EQ(level.seasons.size(), 1UL);
-  EXPECT_EQ(level.seasons[0].name, std::string_view{"winter"});
-  EXPECT_DEATH(remove_season(level, 0), "at least one season");
 }
 
 TEST_F(LevelModel, AutoTileRulesFromANineSliceLayout)
@@ -583,11 +527,8 @@ TEST_F(LevelModel, AutoTileNeighborhoodsDistinguishTheExpectedPatterns)
 
 TEST_F(LevelModel, AutoTileVariantsAreSetRemovedAndFollowTilesets)
 {
-  Level level{arena};
-  create_default(level, Settings{.extents = {4, 4}});
-  add_tileset(level, "first");
-  add_tileset(level, "second");
-  AutoTerrain& terrain = level.auto_tiles.terrains[add_terrain(level.auto_tiles, arena, "grass")];
+  AutoTileRules auto_tiles{arena};
+  AutoTerrain& terrain = auto_tiles.terrains[add_terrain(auto_tiles, arena, "grass")];
   set_variant(terrain, kAllNeighbors, TileRef{1, 3});
   set_variant(terrain, kSideNeighbors, TileRef{0, 5});
   ASSERT_EQ(terrain.variants.size(), 2U);
@@ -601,12 +542,12 @@ TEST_F(LevelModel, AutoTileVariantsAreSetRemovedAndFollowTilesets)
 
   // Removing a tileset drops the variants that used it and renumbers the rest
   set_variant(terrain, kNoNeighbors, TileRef{0, 2});
-  remove_tileset(level, 0);
+  clear_tileset_refs(auto_tiles, 0);
   ASSERT_EQ(terrain.variants.size(), 1U);
   EXPECT_EQ(terrain.variants[0].tile, (TileRef{0, 4}));
 
-  remove_terrain(level.auto_tiles, 0);
-  EXPECT_TRUE(level.auto_tiles.terrains.empty());
+  remove_terrain(auto_tiles, 0);
+  EXPECT_TRUE(auto_tiles.terrains.empty());
 }
 
 TEST_F(LevelModel, AutoTileTakesTheWholeThirteenTileSetFromOneSelection)

@@ -90,7 +90,7 @@ Rgba id_color(std::uint32_t id)
 }
 
 void colorize(
-  const level::Level& level,
+  const project::Project& project,
   const level::Layer& layer,
   image::Image& out,
   const Atlases* atlases,
@@ -108,9 +108,9 @@ void colorize(
     {
       const TileRef t = g.values[i];
       Rgba c{0, 0, 0, 0};
-      if (!t.empty() and t.tileset < level.tilesets.size())
+      if (!t.empty() and t.tileset < project.tilesets.size())
       {
-        const TileIndex drawn = seasonal_tile(level.tilesets[t.tileset], t.tile, season);
+        const TileIndex drawn = seasonal_tile(project.tilesets[t.tileset], t.tile, season);
         if (
           atlases != nullptr and atlases->tile_colors != nullptr and t.tileset < atlases->count and
           drawn < atlases->tile_colors[t.tileset].size())
@@ -151,13 +151,17 @@ void colorize(
       Rgba c{0, 0, 0, 0};
       if (id != 0)
       {
+        // A retired entry reads as "none", which is what makes retiring one safe: the cells of a
+        // level that is not resident keep its id until a compaction, and must not draw as it
         if (layer.kind == LayerKind::kSemantic)
         {
-          c = (id < level.semantics.size()) ? level.semantics[id].color : id_color(id);
+          const bool known = id < project.semantics.size();
+          c = known ? (project.semantics[id].retired ? Rgba{0, 0, 0, 0} : project.semantics[id].color) : id_color(id);
         }
         else
         {
-          c = (id < level.materials.size()) ? level.materials[id].color : id_color(id);
+          const bool known = id < project.materials.size();
+          c = known ? (project.materials[id].retired ? Rgba{0, 0, 0, 0} : project.materials[id].color) : id_color(id);
         }
       }
       out.pixels[i] = c;

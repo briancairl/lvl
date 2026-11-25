@@ -139,9 +139,9 @@ struct Terrains
 };
 
 /// Tilesets aren't default-constructible (they need the arena), so the list is (de)serialized by hand
-template <typename S> void serialize_tilesets(S& s, Level& level)
+template <typename S> void serialize_tilesets(S& s, project::Project& project)
 {
-  auto count = static_cast<std::uint32_t>(level.tilesets.size());
+  auto count = static_cast<std::uint32_t>(project.tilesets.size());
   s.value4b(count);
   if constexpr (is_reader<S>)
   {
@@ -150,16 +150,16 @@ template <typename S> void serialize_tilesets(S& s, Level& level)
       s.adapter().error(bitsery::ReaderError::InvalidData);
       return;
     }
-    level.tilesets.clear();
+    project.tilesets.clear();
     for (std::uint32_t i = 0; i < count and s.adapter().error() == bitsery::ReaderError::NoError; ++i)
     {
-      level.tilesets.emplace_back(*level.arena);
-      s.object(level.tilesets.back());
+      project.tilesets.emplace_back(*project.arena);
+      s.object(project.tilesets.back());
     }
   }
   else
   {
-    for (auto& ts : level.tilesets)
+    for (auto& ts : project.tilesets)
     {
       s.object(ts);
     }
@@ -197,22 +197,49 @@ template <typename S> void serialize(S& s, Terrains& t)
 struct Meta
 {
   Level* level;
+  /// Holds the catalogs, seasons, tilesets and rule sets, when this file carries them
+  project::Project* project;
   ObjectRecords* records;
   memory::Vector<LayerHeader>* layers;
+  /**
+   * @brief The rule set this file carries, when it carries one
+   *
+   * Not serialized, and set by both sides before the block is touched, because the same code reads
+   * and writes it: the writer points it at the set the level uses, the reader at the empty set it
+   * made to read into.
+   */
+  project::RuleSet* rules = nullptr;
+  /**
+   * @brief Whether the shared sections are part of this block
+   *
+   * Not serialized: the header's <code>Kind</code> says which it is, so the writer sets it from the
+   * scope and the reader from the kind, before the block is touched.
+   */
+  bool shared = true;
 };
 
 template <typename S> void serialize(S& s, Meta& m)
 {
   Level& level = *m.level;
+  project::Project& project = *m.project;
   s.object(level.settings);
-  s.container(level.semantics, kMaxList);
-  s.container(level.materials, kMaxList);
-  s.container(level.seasons, 256);
-  serialize_tilesets(s, level);
-  s.object(level.wfc);
-  Terrains terrains{&level.auto_tiles, level.arena};
-  s.object(terrains);
-  s.container(level.steps.terrains, kMaxList);
+  if (m.shared)
+  {
+    s.container(project.semantics, kMaxList);
+    s.container(project.materials, kMaxList);
+    s.container(project.seasons, 256);
+    serialize_tilesets(s, project);
+    s.object(m.rules->wfc);
+    Terrains terrains{&m.rules->auto_tiles, project.arena};
+    s.object(terrains);
+    s.container(m.rules->steps.terrains, kMaxList);
+  }
+  else
+  {
+    // The rules are in the project, so the level has to name the set it means. Only a kProjectLevel
+    // file reaches this branch, and that kind is new, so no existing file's bytes move.
+    s.object(level.rules);
+  }
   s.container(level.graphs, kMaxList);
   s.container(m.records->portals, kMaxList);
   s.container(m.records->markers, kMaxList);
@@ -246,12 +273,18 @@ template <typename T> Status read_binary(const char* path, IoContext& ctx, binar
 
 }  // namespace
 
-Status save_level_binary(const char* path, const Level& level_in, IoContext& ctx)
+Status save_level_binary(
+  const char* path,
+  const project::Project& project,
+  const Level& level_in,
+  IoContext& ctx,
+  LevelScope scope)
 {
   // Bitsery's serializer takes non-const references; nothing is modified when writing
   Level& level = const_cast<Level&>(level_in);
+  project::Project& project_out = const_cast<project::Project&>(project);
   IoWorker& main = ctx.workers[0];
-  memory::Scope scope{main.scratch};
+  memory::Scope scratch_scope{main.scratch};
   const std::size_t layer_count = level.layers.size();
   progress_reset(ctx, layer_count * 2 + 1);
   progress_stage(ctx, "Encoding");
@@ -263,9 +296,13 @@ Status save_level_binary(const char* path, const Level& level_in, IoContext& ctx
   {
     headers.push_back(header_of(layer));
   }
-  Meta meta{&level, &records, &headers};
+  const bool shared = scope == LevelScope::kStandalone;
+  // The one set the level uses: a standalone file carries it, a project-scope file names it
+  project::RuleSet& rules = project_out.rules[project::rules_of(project_out, level)];
+  Meta meta{&level, &project_out, &records, &headers, &rules, shared};
   auto buffer = memory::make_vector<std::uint8_t>(main.scratch);
-  const std::size_t meta_size = binary::serialize(buffer, binary::Kind::kLevel, meta);
+  const std::size_t meta_size =
+    binary::serialize(buffer, shared ? binary::Kind::kLevel : binary::Kind::kProjectLevel, meta);
   progress_advance(ctx);
 
   // Checksums in parallel
@@ -290,7 +327,7 @@ Status save_level_binary(const char* path, const Level& level_in, IoContext& ctx
   return writer.commit();
 }
 
-Status load_level_binary(const char* path, Level& level, IoContext& ctx)
+Status load_level_binary(const char* path, project::Project& project, Level& level, IoContext& ctx)
 {
   // The layer chunks are read in place, so the whole file stays resident in the shared arena
   memory::Arena& shared = shared_arena(ctx);
@@ -307,19 +344,28 @@ Status load_level_binary(const char* path, Level& level, IoContext& ctx)
   progress_stage(ctx, "Decoding document");
   ObjectRecords records{shared};
   auto headers = memory::make_vector<LayerHeader>(shared);
-  Meta meta{&level, &records, &headers};
+  Meta meta{&level, &project, &records, &headers};
   binary::Reader reader{binary::InputAdapter{bytes, size}};
   binary::Header header;
   reader.object(header);
-  if (
-    reader.adapter().error() != bitsery::ReaderError::NoError or header.magic != binary::kMagic or
-    header.kind != binary::Kind::kLevel)
+  const bool level_kind = header.kind == binary::Kind::kLevel or header.kind == binary::Kind::kProjectLevel;
+  if (reader.adapter().error() != bitsery::ReaderError::NoError or header.magic != binary::kMagic or !level_kind)
   {
     return Status::error("%s: not a lvl binary level", path);
   }
+  // Which shape the metadata block has; a project-scope file leaves the project's own data alone
+  meta.shared = header.kind == binary::Kind::kLevel;
   if (header.version > static_cast<std::uint32_t>(kVersion))
   {
     return Status::error("%s: written by a newer editor (version %u)", path, static_cast<unsigned>(header.version));
+  }
+  if (meta.shared)
+  {
+    // A file that carries its rules carries exactly one set, the one its cells were tiled with, so
+    // it replaces the project's as its tilesets and seasons do
+    project.rules.clear();
+    project::add_rules(project, "");
+    meta.rules = &project.rules[0];
   }
   reader.object(meta);
   if (reader.adapter().error() != bitsery::ReaderError::NoError)
@@ -331,10 +377,17 @@ Status load_level_binary(const char* path, Level& level, IoContext& ctx)
   {
     return Status::error("%s: invalid grid size %dx%d", path, extents.width, extents.height);
   }
-  if (level.seasons.empty())
+  if (meta.shared)
   {
-    level.seasons.push_back(Season{.name = "default"});
+    if (project.seasons.empty())
+    {
+      project.seasons.push_back(Season{.name = "default"});
+    }
+    // The set it carried names itself, so the level takes its name from what it read
+    level.rules = project.rules[0].wfc.name;
   }
+  // A file written before projects names its destination level by path; a portal points at a member
+  migrate_portal_targets(project, path, records);
   if (Status s = restore(records, level.registry, level.graphs.size()); !s.ok)
   {
     return Status::error("%s: %s", path, s.message.c_str());
@@ -402,7 +455,7 @@ Status load_level_binary(const char* path, Level& level, IoContext& ctx)
     }
     for (const TileRef t : plane<TileGrid>(layer).values)
     {
-      if (!t.empty() and t.tileset >= level.tilesets.size())
+      if (!t.empty() and t.tileset >= project.tilesets.size())
       {
         return Status::error("%s: layer '%s' references missing tileset %u", path, layer.name.c_str(), t.tileset);
       }
@@ -487,16 +540,16 @@ remap(memory::Arena& arena, const memory::Vector<T>& file, memory::Vector<T>& ca
 
 }  // namespace
 
-Status save_tileset_binary(const char* path, const Level& level, TileSetId id, IoContext& ctx)
+Status save_tileset_binary(const char* path, const project::Project& project, TileSetId id, IoContext& ctx)
 {
   TileSetFile file{
-    const_cast<memory::Vector<SemanticType>*>(&level.semantics),
-    const_cast<memory::Vector<Material>*>(&level.materials),
-    const_cast<TileSet*>(&level.tilesets[id])};
+    const_cast<memory::Vector<SemanticType>*>(&project.semantics),
+    const_cast<memory::Vector<Material>*>(&project.materials),
+    const_cast<TileSet*>(&project.tilesets[id])};
   return binary::write_file(path, ctx.workers[0].scratch, binary::Kind::kTileSet, file);
 }
 
-Status load_tileset_binary(const char* path, Level& level, IoContext& ctx, TileSetId& id)
+Status load_tileset_binary(const char* path, project::Project& project, IoContext& ctx, TileSetId& id)
 {
   id = kNoTileSet;
   // Decoded into worker 1's scratch if there is one (worker 0's holds the file bytes)
@@ -508,16 +561,18 @@ Status load_tileset_binary(const char* path, Level& level, IoContext& ctx, TileS
   TileSetFile file{&semantics, &materials, &tileset};
   LVL_RETURN_IF_ERROR(read_binary(path, ctx, binary::Kind::kTileSet, file));
 
-  const auto semantic_map =
-    remap(temp, semantics, level.semantics, [&level](std::string_view n) { return intern_semantic(level, n); });
-  const auto material_map =
-    remap(temp, materials, level.materials, [&level](std::string_view n) { return intern_material(level, n); });
+  const auto semantic_map = remap(temp, semantics, project.semantics, [&project](std::string_view n) {
+    return project::intern_semantic(project, n);
+  });
+  const auto material_map = remap(temp, materials, project.materials, [&project](std::string_view n) {
+    return project::intern_material(project, n);
+  });
   const auto mapped = [](const memory::Vector<std::uint16_t>& map, std::uint16_t v) -> std::uint16_t {
     return (v < map.size()) ? map[v] : 0;
   };
 
-  id = add_tileset(level, tileset.name.view());
-  TileSet& ts = level.tilesets[id];
+  id = project::add_tileset(project, tileset.name.view());
+  TileSet& ts = project.tilesets[id];
   ts.image = tileset.image;
   ts.slice = tileset.slice;
   ts.image_width = tileset.image_width;
@@ -537,27 +592,29 @@ Status load_tileset_binary(const char* path, Level& level, IoContext& ctx, TileS
   return Status::okay();
 }
 
-Status save_wfc_binary(const char* path, const Level& level, IoContext& ctx)
+Status save_wfc_binary(const char* path, const project::Project& project, std::size_t index, IoContext& ctx)
 {
+  const project::RuleSet& set = project.rules[index];
   memory::Arena& temp = ctx.workers[ctx.worker_count > 1 ? 1 : 0].json;
   memory::Scope scope{temp};
   auto tilesets = memory::make_vector<Name>(temp);
-  for (const auto& ts : level.tilesets)
+  for (const auto& ts : project.tilesets)
   {
     tilesets.push_back(ts.name);
   }
   WfcFile file{
-    const_cast<memory::Vector<SemanticType>*>(&level.semantics),
+    const_cast<memory::Vector<SemanticType>*>(&project.semantics),
     &tilesets,
-    const_cast<WfcRules*>(&level.wfc),
-    const_cast<AutoTileRules*>(&level.auto_tiles),
-    const_cast<memory::Vector<StepTerrain>*>(&level.steps.terrains),
+    const_cast<WfcRules*>(&set.wfc),
+    const_cast<AutoTileRules*>(&set.auto_tiles),
+    const_cast<memory::Vector<StepTerrain>*>(&set.steps.terrains),
     &temp};
   return binary::write_file(path, ctx.workers[0].scratch, binary::Kind::kWfcRules, file);
 }
 
-Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
+Status load_wfc_binary(const char* path, project::Project& project, IoContext& ctx, std::size_t& index)
 {
+  index = project::kNoRules;
   memory::Arena& temp = ctx.workers[ctx.worker_count > 1 ? 1 : 0].json;
   memory::Scope scope{temp};
   auto semantics = memory::make_vector<SemanticType>(temp);
@@ -571,22 +628,23 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
   auto tileset_map = memory::make_vector<TileSetId>(temp, tilesets.size(), kNoTileSet);
   for (std::size_t i = 0; i < tilesets.size(); ++i)
   {
-    for (std::size_t k = 0; k < level.tilesets.size(); ++k)
+    for (std::size_t k = 0; k < project.tilesets.size(); ++k)
     {
-      if (level.tilesets[k].name == tilesets[i])
+      if (project.tilesets[k].name == tilesets[i])
       {
         tileset_map[i] = static_cast<TileSetId>(k);
       }
     }
   }
-  const auto semantic_map =
-    remap(temp, semantics, level.semantics, [&level](std::string_view n) { return intern_semantic(level, n); });
+  const auto semantic_map = remap(temp, semantics, project.semantics, [&project](std::string_view n) {
+    return project::intern_semantic(project, n);
+  });
   for (const auto& t : rules.tiles)
   {
     if (t.tile.tileset >= tileset_map.size() or tileset_map[t.tile.tileset] == kNoTileSet)
     {
       return Status::error(
-        "%s: WFC tile refers to tileset '%s', which this level doesn't have",
+        "%s: WFC tile refers to tileset '%s', which this project doesn't have",
         path,
         (t.tile.tileset < tilesets.size()) ? tilesets[t.tile.tileset].c_str() : "?");
     }
@@ -598,16 +656,20 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
       return Status::error("%s: adjacency refers to a missing WFC tile", path);
     }
   }
-  level.wfc.name = rules.name;
-  level.wfc.diagonals = rules.diagonals;
-  level.wfc.tiles.clear();
+  // The file carries one set, named; it replaces the project's set of that name or becomes a new
+  // one, so importing the same file twice does not leave two
+  index = project::intern_rules(project, rules.name.view());
+  project::RuleSet& out_set = project.rules[index];
+  out_set.wfc.name = rules.name;
+  out_set.wfc.diagonals = rules.diagonals;
+  out_set.wfc.tiles.clear();
   for (WfcTile t : rules.tiles)
   {
     t.tile.tileset = tileset_map[t.tile.tileset];
     t.semantic = (t.semantic < semantic_map.size()) ? semantic_map[t.semantic] : kNoSemantic;
-    level.wfc.tiles.push_back(t);
+    out_set.wfc.tiles.push_back(t);
   }
-  level.wfc.adjacency.assign(rules.adjacency.begin(), rules.adjacency.end());
+  out_set.wfc.adjacency.assign(rules.adjacency.begin(), rules.adjacency.end());
   // Terrains, with their tiles remapped the same way
   for (const AutoTerrain& terrain : auto_tiles.terrains)
   {
@@ -616,17 +678,18 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
       if (v.tile.tileset >= tileset_map.size() or tileset_map[v.tile.tileset] == kNoTileSet)
       {
         return Status::error(
-          "%s: terrain '%s' refers to tileset '%s', which this level doesn't have",
+          "%s: terrain '%s' refers to tileset '%s', which this project doesn't have",
           path,
           terrain.name.c_str(),
           (v.tile.tileset < tilesets.size()) ? tilesets[v.tile.tileset].c_str() : "?");
       }
     }
   }
-  level.auto_tiles.terrains.clear();
+  out_set.auto_tiles.terrains.clear();
   for (const AutoTerrain& terrain : auto_tiles.terrains)
   {
-    AutoTerrain& out = level.auto_tiles.terrains[add_terrain(level.auto_tiles, *level.arena, terrain.name.view())];
+    AutoTerrain& out =
+      out_set.auto_tiles.terrains[add_terrain(out_set.auto_tiles, *project.arena, terrain.name.view())];
     out.neighborhood = terrain.neighborhood;
     out.expand = terrain.expand;
     for (AutoVariant v : terrain.variants)
@@ -636,10 +699,10 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
     }
   }
   // Step terrains travel the same way; an empty slot stays empty rather than being remapped
-  level.steps.terrains.clear();
+  out_set.steps.terrains.clear();
   for (const StepTerrain& terrain : steps)
   {
-    StepTerrain& out = level.steps.terrains[add_step_terrain(level.steps, terrain.name.view())];
+    StepTerrain& out = out_set.steps.terrains[add_step_terrain(out_set.steps, terrain.name.view())];
     out.level_lo = terrain.level_lo;
     out.level_hi = terrain.level_hi;
     for (std::size_t i = 0; i < kStepTypeCount; ++i)
@@ -652,7 +715,7 @@ Status load_wfc_binary(const char* path, Level& level, IoContext& ctx)
       if (tile.tileset >= tileset_map.size() or tileset_map[tile.tileset] == kNoTileSet)
       {
         return Status::error(
-          "%s: step terrain '%s' refers to tileset '%s', which this level doesn't have",
+          "%s: step terrain '%s' refers to tileset '%s', which this project doesn't have",
           path,
           terrain.name.c_str(),
           (tile.tileset < tilesets.size()) ? tilesets[tile.tileset].c_str() : "?");

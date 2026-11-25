@@ -168,6 +168,9 @@ std::size_t diagonal_count(const WfcRules& rules);
  */
 void derive_diagonals(WfcRules& rules, memory::Arena& scratch);
 
+/// Drops the rule tiles naming tileset <code>id</code> and renumbers the rest
+void clear_tileset_refs(WfcRules& rules, TileSetId id);
+
 }  // namespace lvl::level
 
 template <> struct lvl::EnumNames<lvl::level::WaterRule>

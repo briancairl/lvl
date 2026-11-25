@@ -22,6 +22,7 @@ cc_library(
         "//core:jobs",
         "//core:memory",
         "//level:model",
+        "//project:model",
     ],
 )
 
@@ -32,6 +33,7 @@ cc_test(
     copts = LVL_COPTS,
     deps = [
         ":render",
+        "//project:model",
         "@googletest//:gtest_main",
     ],
 )

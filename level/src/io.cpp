@@ -7,11 +7,13 @@
 // C++ Standard Library
 #include <algorithm>
 #include <cstring>
+#include <string_view>
 
 // LVL
 #include "io_common.hpp"
 #include "lvl/core/file.hpp"
 #include "lvl/core/logging.hpp"
+#include "lvl/project/paths.hpp"
 
 namespace lvl::level
 {
@@ -47,66 +49,67 @@ Status logged(const char* what, const char* path, Status status)
 
 }  // namespace
 
-Status save_level(const char* path, const Level& level, IoContext& ctx)
+Status
+save_level(const char* path, const project::Project& project, const Level& level, IoContext& ctx, LevelScope scope)
 {
   check_context(ctx);
   return logged(
     "Saved level",
     path,
-    format_of(path) == FileFormat::kBinary ? io::save_level_binary(path, level, ctx)
-                                           : io::save_level_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::save_level_binary(path, project, level, ctx, scope)
+                                           : io::save_level_json(path, project, level, ctx, scope));
 }
 
-Status load_level(const char* path, Level& level, IoContext& ctx)
+Status load_level(const char* path, project::Project& project, Level& level, IoContext& ctx)
 {
   check_context(ctx);
   reset(level);
   return logged(
     "Loaded level",
     path,
-    format_of(path) == FileFormat::kBinary ? io::load_level_binary(path, level, ctx)
-                                           : io::load_level_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::load_level_binary(path, project, level, ctx)
+                                           : io::load_level_json(path, project, level, ctx));
 }
 
-Status save_tileset(const char* path, const Level& level, TileSetId id, IoContext& ctx)
+Status save_tileset(const char* path, const project::Project& project, TileSetId id, IoContext& ctx)
 {
   check_context(ctx);
-  LVL_ASSERT_LT(id, level.tilesets.size());
+  LVL_ASSERT_LT(id, project.tilesets.size());
   return logged(
     "Saved tileset",
     path,
-    format_of(path) == FileFormat::kBinary ? io::save_tileset_binary(path, level, id, ctx)
-                                           : io::save_tileset_json(path, level, id, ctx));
+    format_of(path) == FileFormat::kBinary ? io::save_tileset_binary(path, project, id, ctx)
+                                           : io::save_tileset_json(path, project, id, ctx));
 }
 
-Status load_tileset(const char* path, Level& level, IoContext& ctx, TileSetId& id)
+Status load_tileset(const char* path, project::Project& project, IoContext& ctx, TileSetId& id)
 {
   check_context(ctx);
   return logged(
     "Loaded tileset",
     path,
-    format_of(path) == FileFormat::kBinary ? io::load_tileset_binary(path, level, ctx, id)
-                                           : io::load_tileset_json(path, level, ctx, id));
+    format_of(path) == FileFormat::kBinary ? io::load_tileset_binary(path, project, ctx, id)
+                                           : io::load_tileset_json(path, project, ctx, id));
 }
 
-Status save_wfc_rules(const char* path, const Level& level, IoContext& ctx)
+Status save_wfc_rules(const char* path, const project::Project& project, std::size_t index, IoContext& ctx)
 {
   check_context(ctx);
   return logged(
     "Saved WFC rules",
     path,
-    format_of(path) == FileFormat::kBinary ? io::save_wfc_binary(path, level, ctx)
-                                           : io::save_wfc_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::save_wfc_binary(path, project, index, ctx)
+                                           : io::save_wfc_json(path, project, index, ctx));
 }
 
-Status load_wfc_rules(const char* path, Level& level, IoContext& ctx)
+Status load_wfc_rules(const char* path, project::Project& project, IoContext& ctx, std::size_t& index)
 {
   check_context(ctx);
   return logged(
     "Loaded WFC rules",
     path,
-    format_of(path) == FileFormat::kBinary ? io::load_wfc_binary(path, level, ctx)
-                                           : io::load_wfc_json(path, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::load_wfc_binary(path, project, ctx, index)
+                                           : io::load_wfc_json(path, project, ctx, index));
 }
 
 Status save_paths(const char* path, const Level& level, IoContext& ctx)
@@ -202,11 +205,14 @@ void collect(const Registry& registry, ObjectRecords& out, bool paths_only)
   {
     if (!paths_only and registry.all_of<Portal>(e))
     {
+      const Portal& portal = registry.get<Portal>(e);
       out.portals.push_back(PortalRecord{
         .name = registry.get<Label>(e).name,
         .position = registry.get<Position>(e),
         .extent = registry.get<Extent>(e),
-        .portal = registry.get<Portal>(e)});
+        .portal = portal,
+        // What goes in the file: a name now, in a field wide enough for the paths older ones hold
+        .target_level_field = Path{portal.target_level.view()}});
     }
     else if (!paths_only and registry.all_of<Marker>(e))
     {
@@ -233,6 +239,40 @@ void collect(const Registry& registry, ObjectRecords& out, bool paths_only)
       out.edges.push_back(EdgeRecord{
         .from = index_of(edge.from), .to = index_of(edge.to), .cost = edge.cost, .bidirectional = edge.bidirectional});
     }
+  }
+}
+
+void migrate_portal_targets(const project::Project& project, const char* path, ObjectRecords& records)
+{
+  for (PortalRecord& r : records.portals)
+  {
+    const std::string_view field = r.target_level_field.view();
+    r.portal.target_level.clear();
+    if (field.empty())
+    {
+      // "this level", which only the caller can check, so there is nothing to resolve
+      continue;
+    }
+    if (project::find_level(project, field) != project::kNoLevel)
+    {
+      r.portal.target_level.assign(field);
+      continue;
+    }
+    // Written as a path, as they were before projects: the member whose file has that name
+    if (const std::size_t member = project::find_level_by_file_name(project, field); member != project::kNoLevel)
+    {
+      r.portal.target_level = project.levels[member].name;
+      continue;
+    }
+    // Neither: the file name's stem is what the level would have been called. Kept as a name that
+    // does not resolve, and said so, rather than refusing the file over a portal the user can fix.
+    const std::string_view guess = project::stem(project::file_name(field));
+    if (!guess.empty() and guess.size() <= Name::kMaxLength)
+    {
+      r.portal.target_level.assign(guess);
+    }
+    LVL_LOG_WARN() << path << ": portal '" << r.name.c_str() << "' points at '" << r.target_level_field.c_str()
+                   << "', which is no level of this project";
   }
 }
 

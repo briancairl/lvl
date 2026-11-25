@@ -5,8 +5,12 @@
  *
  * lvl editor entry point.
  *
- *   lvl [level.json|level.lvlb] [--memory=MiB] [--frames=N] [--hidden] [--demo] [--smoke]
- *       [--screenshot=out.png]
+ *   lvl [level.json|level.lvlb|project.json|PROJECT_DIR] [--project=DIR] [--memory=MiB]
+ *       [--frames=N] [--hidden] [--demo] [--smoke] [--screenshot=out.png]
+ *
+ * The positional argument is a level, a project manifest or a project folder, told apart by whether
+ * there is a project.json to be found (a project is where its manifest is). --project=DIR is the
+ * same thing said explicitly.
  *
  * --frames=N exits after N frames (headless up/down tests); --hidden keeps the window invisible;
  * --smoke runs a scripted session (demo level, generators, undo, save/load, exports) and exits.
@@ -58,6 +62,11 @@ Options parse(int argc, char** argv)
     else if (std::strncmp(arg, "--frames=", 9) == 0)
     {
       o.frames = static_cast<std::size_t>(std::strtoull(arg + 9, nullptr, 10));
+    }
+    else if (std::strncmp(arg, "--project=", 10) == 0)
+    {
+      // The same as naming the folder positionally; initialize() tells a project from a level
+      o.path = arg + 10;
     }
     else if (std::strncmp(arg, "--screenshot=", 13) == 0)
     {

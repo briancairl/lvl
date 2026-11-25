@@ -50,6 +50,7 @@ The editor's layout (`editor/src/app.cpp`, `reserve_memory`):
 | arena | use |
 |---|---|
 | `documents[2]` | the open `level::Level` and a spare. Loads go into the spare and are swapped in on success; `level::reset()` rewinds a document wholesale |
+| `projects[2]` | the `project::Project` the open level draws on (catalogs, seasons, tilesets, rule sets) and a spare. A load interns the file's entries into the spare, which is swapped in with the document on success |
 | `assets[2]` | decoded atlas images and average tile colors. Reloads decode into the other arena, then swap |
 | `undo` | the undo ring (`editor::UndoStack`) |
 | `frame` | per-frame scratch, cleared every frame (overlay rebuilds, file listings, mini-preview) |
@@ -98,10 +99,11 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tilesets (slicing, `TileInfo`, properties, `SeasonalVariant`), catalogs and seasons, `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). `io`: level/tileset/rules/path files in JSON and binary |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
+| `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
-| `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
-| `//editor` | `undo`, `jobs` (background jobs), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by the editor's overlays, the layer export and the mini-preview), `compose` (full map PNG, mini-preview, `export_layer_png`) |
+| `//editor` | `undo`, `jobs` (background jobs, incl. `RescanProjectJob` and `CompactCatalogsJob`), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `panels.cpp` (including the Project panel: members, tilesets, rule sets), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -144,6 +146,26 @@ JSON load, not save, is the wall.
 Catalogs, seasons and tilesets are referenced by name in JSON. Standalone tileset/WFC/path files carry
 the catalog entries they use and are remapped by name on load.
 
+**`level::LevelScope` says how much of what a level draws on goes into its own file.** A level
+references its project's catalogs, seasons, tilesets and rule sets by id, so the file has to say
+which of them it carries.
+
+- `kStandalone` writes them all, so the file reads back on its own into a project it fills in as it
+  goes. It is the default, it is what `//tools:lvl_convert` emits and what exporting a level writes,
+  and it is byte-for-byte what a level file has always been -- a file handed to someone else should
+  work.
+- `kProject` writes only what the level owns: its settings, path graphs, objects and layers. The
+  manifest carries the rest, so the file is smaller and a project's levels cannot drift apart.
+  Loading one needs a project that already holds the shared data, and its cells are read as the
+  project ids they are.
+
+Loading accepts either: a file that carries the shared sections **replaces** the project's with them
+(each section, not just some -- that is why the JSON loader clears the tilesets as the seasons and
+the three rule kinds already did), and one that does not leaves the project untouched. In binary the
+two are different file kinds, `binary::Kind::kLevel` and `kProjectLevel`, so a reader knows which
+shape the metadata block has before decoding it; `Meta::shared` carries that and is itself never
+serialized.
+
 ### Editor jobs
 
 Long operations are concrete job types (`editor/include/lvl/editor/jobs.hpp`) with `run(Progress&)`,
@@ -163,21 +185,192 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 - **Bookmarks**: user-editable, serialized to `config_path("file_dialog_places.txt")`.
 - **Devices**.
 
-Imports and exports of the open level's data (tilesets, WFC rules, path graphs, atlas and seed
-images, the PNG exports) open in the **current project folder**: the folder the open level lives in,
-or the working directory while it has no path yet. Choosing a file elsewhere in one of them does not
-move the remembered folder. Level open/save and style profiles keep using the last folder the dialog
-was used in.
+**Each action says which of the project's folders its files belong in** (`Setup::folder`), so the
+table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: an atlas opens
+in `assets/atlases/`, a seed image in `assets/images/`, a tileset in `tilesets/`, rules in `rules/`,
+path graphs in `paths/`, every PNG export in `artifacts/`. The folder is created on demand, so one
+the user deleted does not make the dialog open nowhere.
 
-### Recent levels
+A level, a project manifest and a style profile belong to no folder of the open project, so they
+open where the dialog was last used -- and choosing a file elsewhere in one of the project actions
+does not move that remembered folder. With no project folder yet, those actions fall back to the
+folder the open level lives in and then to the working directory, which is the behaviour before
+projects and still what a bare level file gets.
 
-File > Open recent lists the last `RecentFiles::kCapacity` (10) levels opened or saved, newest
-first. `editor/src/recent.cpp` keeps the list in `App::recent` (fixed `Path`s, so no heap) and
+### Projects
+
+A project is a **folder** with a fixed sub-folder tree, and everything it needs lives inside it, so
+the whole folder can be moved, copied or committed as one thing. Its manifest is always
+`project.json` in the root, which makes "is this a project folder?" one existence check
+(`project::is_project_root`).
+
+```
+shoreline/                 the project root; its name is the project's default name
+  project.json             the manifest
+  levels/                  one file per level ("lvl-level")
+  tilesets/                one file per tileset ("lvl-tileset")
+  rules/                   one file per rule set ("lvl-wfc": WFC + auto-tiling + height steps)
+  paths/                   exported/imported path graphs ("lvl-paths")
+  assets/
+    atlases/               tileset atlas images, copied in on import
+    images/                heightmap seed images and layer image imports
+  artifacts/               PNG exports: the full map, the mini-preview, layer images
+```
+
+`project::Folder` names those folders and `subfolder`/`resolve`/`relativize` compose paths against
+the root. Every path a project file stores is **relative to the root** with `/` separators, whatever
+the platform; a path that stays absolute is one that points outside the tree, which is how a
+deliberately external reference is expressed. Composing a path can overflow a `Path`, and the inputs
+are the user's, so those functions return a `Status` rather than truncating: a truncated path would
+name a different file. `ensure_tree` creates the whole tree and is idempotent.
+
+**Assets are copied in, not linked.** Choosing an atlas or a seed image from outside the project
+goes through `plan_copy`, which says where the copy would land (`assets/atlases/` or
+`assets/images/`), whether it would be renamed around a different file of that name (`forest.png` ->
+`forest-2.png`), and whether the identical bytes are already there — so the confirmation dialog can
+say exactly what will happen before `apply_copy` does it.
+
+`plan_copy` makes **both** the source and the root absolute against the working directory before it
+compares them (`absolute_path`). Either can be relative -- a source is whatever the user gave, a
+root is wherever the manifest was written -- and neither can be compared with the other until they
+are in the same frame of reference. Resolving the source against the *root* instead reads
+`forest.png` as `<root>/forest.png`, so an outside file looks like one already inside and is stored
+under a path that names nothing.
+
+`editor::request_import` is the gate: it plans the copy and, for a file outside the tree, records an
+`App::pending_import` that `import_prompt` draws as a modal beside the other prompts — **Copy into
+the project** (what Enter takes), **Link in place** or **Cancel**. Three cases never reach it: a
+file already inside the tree is relativized and stored, a project with no folder yet has nowhere to
+copy to so the path is stored as it is, and nothing is stored at all until the user answers.
+
+What the prompt says comes from the plan rather than from a guess: "it will be copied to X", "a
+different file of that name is already there, so the copy will be X-2", or "the same bytes are
+already at X, which will be used". **Link in place** is deliberately offered, because a reference
+may point outside on purpose — and the Project panel then lists every such reference in amber with a
+**Copy in** button (`copy_asset_into_project`, the same prompt), which is how a project built with
+outside references is made self-contained afterwards.
+
+**The manifest is always JSON**, the one deliberate exception to "binary is a translation of the
+same data": it is a few kilobytes of names, never on a hot path, and a fixed name is what makes the
+existence check work. Levels, tilesets, rule sets and path graphs keep both formats. The manifest
+never stores the project's own location — `Project::root` comes from where the file was read, and
+`save_project` sets it from where the manifest is written, so writing one somewhere else moves the
+project there and a moved folder still works.
+
+**The tilesets and rule sets are not in the manifest; it names their files.** `save_project` writes
+each one through the standalone `lvl-tileset` and `lvl-wfc` formats the editor already imports and
+exports, and `load_project` reads them back. That is what those formats existing buys:
+per-tileset and per-rule-set diffs stay small, and a project is a folder of files a person can read
+rather than one large document. `Project::tileset_files`/`rule_files` are parallel to `tilesets` and
+to `rules` — where each one is written and was read from. A part with no file yet gets one
+from its name (`project_file`: anything a file name should not hold becomes `-`, so
+`cliffs / rock!` gives `tilesets/cliffs-rock.tileset.json`), and that choice is recorded, so
+renaming a tileset does not move its file or orphan the one the manifest already names.
+
+They are read **in the order the manifest lists them**, because each one appends and so takes the
+next id — the ids the member levels' cells hold. A tileset file that will not load therefore fails
+the whole project instead of being skipped, since skipping it would shift every id after it.
+
+**Only one level is ever resident**, because a level carries whole grid planes and a project may
+hold many. The others are an index: a `LevelEntry` each, holding the name, the file, the grid size
+and the names of the level's portals and markers. That is enough to list the project, to offer a
+portal a destination, and to say whether a link still resolves (`portal_link` ->
+`kResolved`/`kSelf`/`kUnknownLevel`/`kUnknownPortal`) without loading one sibling. Opening a project
+reads one small file. The portal/marker names live in one flat `object_names` table that each entry
+spans into; it is reserved to `kMaxObjectNames` up front and never grown, so the rebuild every level
+save does reuses the same block instead of leaving the old one behind in the bump arena.
+`set_level_objects` is that rebuild, and `remove_level` compacts the table the same way.
+
+Levels address each other **by name**, not by path, so moving a level's file within `levels/` does
+not break the portals pointing at it. `Portal::target_level` is a `Name` into the index.
+
+**A file still carries that field `Path`-wide**, because it held a path before projects and a path
+does not fit a `Name`. `PortalRecord::target_level_field` is the wire form, and
+`level::migrate_portal_targets` (called by both loaders, before `restore`) turns it into a member's
+name: a string that already names a member is kept, a path is matched to the member whose file has
+that name (`find_level_by_file_name`), and anything else is reduced to the file name's stem -- what
+the level would have been called -- and logged as a **warning**. A portal that does not resolve is
+something to fix in the editor, not a reason to refuse the file.
+
+**The open level is a member, and the index follows it.** `editor::refresh_level_entry` runs
+whenever a level is saved or loaded: it finds the member by name (how levels address each other),
+falling back to the file so a level saved under a new name takes the new name rather than becoming a
+second member, adds it if it is new, and rebuilds what the index says -- the grid size and the names
+of its portals and markers, read from the live registry. It marks the project modified only when
+the index now says something *different*, compared before the name table is rebuilt: it runs on
+every load as well as every save, and loading a member re-reads what the manifest already said, so
+a project must not report unsaved changes merely for having been opened. That is also what makes a bare level file
+open as a single-member project, with no "no project" branch anywhere.
+
+In the editor the two destination fields are **combos, not text boxes**, which is the point: a typed
+path was indistinguishable from a working link. The target level is picked from the project's
+members (plus "(this level)"), and the target portal from the live registry when the destination is
+this level -- so a portal made this session is offered before any save -- or from that member's name
+span otherwise, which is what a project knows about a level it has not loaded. `portal_link_of`
+answers whether a link can be followed, `link_message` says what is missing, and a dangling portal
+draws red in the objects list and in the viewport with that message as its tooltip. A value naming
+nothing is still listed, red and disabled, so it can be seen and replaced rather than silently
+dropped.
+
+**The Project panel** (View > Project) lists the members -- each with its grid size, portal count
+and file, red when the file is not where the manifest says -- with Open, rename, and a delete button
+that removes the member from the index and leaves its file on disk. The open level is shown as
+"(open)" and renamed through its own settings rather than here, since it is the document. Below it
+are the tilesets and the rule sets, each rule set with a delete button and the one this level uses
+marked. "Add a level..." records an existing file as a member; "Rescan" runs `RescanProjectJob`.
+
+**A member level is saved in project scope**, so the manifest stays the one authority for the
+catalogs, seasons, tilesets and rules its cells name and the project's levels cannot drift apart. A
+level with no project folder is saved standalone, as a level file has always been. That is also why
+Ctrl+S writes the **manifest first and synchronously**, then starts the level save: a member's file
+means nothing without the manifest, and writing it first keeps the two out of each other's way.
+
+**Switching level** goes through `request_switch`, which uses the same prompt quitting does, since
+the open document is about to be replaced either way (Save and switch / Discard and switch /
+Cancel). The load itself is `LoadLevelJob` with `keep_project` set: a member carries none of the
+shared sections, so it is read into the open project rather than the spare and `finish_job` does not
+swap the project. `decode_atlases` is a separate flag because the two are separate questions: a
+switch leaves the tilesets as the same objects, so **the atlases are not decoded again** -- not
+re-decoding them on every switch is most of the point of the project owning them -- while opening a
+project has just read new tilesets in and needs them. Both are one job, because only one job runs at
+a time: opening a project reads the manifest synchronously and then loads its first member with
+`decode_atlases` on, rather than starting an atlas job the level load would have displaced.
+
+**New project / Open project / Save project** are synchronous rather than jobs: a manifest and the
+files it names are kilobytes and never on a hot path. What needs a job is the level that follows,
+which is `LoadLevelJob` as it stands. A new project is made by choosing where `project.json` goes,
+rather than by picking a folder: that needs no directory-picking mode and matches `save_project`,
+which takes the project to be wherever its manifest is written.
+
+**New project keeps the project the open level draws on** and gives it a home on disk -- it creates
+the tree, names the project after the folder if it has no name yet, and writes the manifest. It
+deliberately does *not* replace it with an empty one (which is what `project::create_project` does,
+for a caller that wants that): making a project out of the level you have open must not throw away
+the tilesets, catalogs and rules its cells name. The level is not a member until it is saved into
+the tree.
+
+`App::project_path` and `App::project_modified` sit beside `App::path` and `App::modified`. The two
+pairs are separate because the two things are saved separately -- editing a tileset or a rule set
+changes the project, not the level that happens to be open -- and the title's star, the quit prompt
+and the browser's "leave site?" prompt all mean "either has changes".
+
+### Recent levels and projects
+
+File > Open recent lists the last `RecentFiles::kCapacity` (10) levels **and projects** opened or
+saved, newest first. A project is what you reopen, so opening or creating one records its manifest
+beside the levels; the stored format is unchanged (one path per line), because a manifest is told
+from a level by the same check the command line uses -- its file name is `project.json`. Such an
+entry is listed by its *folder* (every manifest is called the same thing) and marked "(project)",
+and choosing it opens the project, which goes on to load its first member. `editor/src/recent.cpp` keeps the list in `App::recent` (fixed `Path`s, so no heap) and
 writes it to `config_path("recent_files.txt")` as one path per line whenever it changes; it is read
 back the first time the menu is drawn or an entry is recorded. `finish_job` records a path once a
 level load or save succeeds, and drops one whose load failed, so a file that has gone away leaves
 the list when it is next tried; until then the menu shows it disabled. "Clear the list" empties it.
-Choosing an entry replaces the open document just as "Open..." does.
+Choosing a level entry replaces the open document just as "Open..." does.
+
+The positional command-line argument takes a level, a project manifest or a project **folder**, told
+apart by whether there is a `project.json` to be found -- one existence check, because a project is
+where its manifest is. `--project=DIR` is the same thing said explicitly, through the same code.
 
 ### Quitting
 
@@ -217,7 +410,37 @@ tiles, count)` does the writing; like the single-tile fields, it is not undoable
 
 ### Three kinds of tile adjacency rules
 
-A level holds three, and the "Tile adjacency rules" window has a tab for each:
+The **project** holds all three, as one `project::RuleSet`, and the "Tile adjacency rules" window has a tab
+for each. They are one set because they are used as one: a terrain's border tiles, a cliff's step
+tiles and the WFC tiles beside them all come from the same tileset. The set's name is `wfc.name` --
+the one the rules file already carries -- so there is no second name to keep in step.
+
+**A project holds a list of sets, and a level names the one it uses** (`Level::rules`), because its
+levels differ by biome: a cave tileset and an overworld tileset want separate adjacency graphs,
+separate terrains and separate cliff art. One global set would force every tile of every tileset
+into one WFC graph, and "only what the layout shows" would then forbid cross-biome neighbours
+between levels that never touch. A project always holds at least one set, as it always holds at
+least one season, so `project::rules_of(project, level)` always resolves -- to the set the level
+names, or the first when it names none or names one that has gone, which is what a level written
+before the sets were plural gets. `editor::rule_set(app)` is that lookup for the open level, and is
+what every panel reads.
+
+`Level::rules` is deliberately **not** part of `Settings`: it is a reference to the project rather
+than a setting of the level, and the two formats carry it differently. A standalone file carries its
+rules, which name themselves, so the loader takes the level's set name from what it read and no new
+field is needed; only a project-scope file has to say which set it means, and it does so at the
+document's top level in JSON and in the `kProjectLevel`-only branch of the binary metadata block.
+Both of those are places no file written before now has bytes in, so `Settings` keeps its layout and
+every existing `.lvlb` still reads.
+
+Reading a rule-set file interns the set **by name** (`project::intern_rules`), so reading the same
+file twice does not leave two. The project's blank starting set is deliberately *not* taken over by
+the first set read in: "the project has one empty set" cannot tell that set apart from one the user
+has just added and not filled yet, so the second rules file read into a project would silently
+replace the first. A project that has only ever had rules imported therefore keeps an unused set,
+which the user can remove -- the cost of the other way round is losing a rule set without saying
+so. For the same reason the manifest rebuilds `rule_files` from where the sets actually landed
+rather than assuming they come back in order, and refuses two files holding a set of the same name.
 
 - **WFC** (`level::WfcRules`): a permission relation on pairs, per direction -- what *may* sit next
   to what. The WFC generator solves it over a region.
@@ -463,8 +686,56 @@ Rows of layers, semantic types, materials, seasons, path graphs, portals/markers
 start with a delete button (`delete_button`). `request_delete` records a `PendingDelete`, and
 `process_deletes` (once per frame, after every panel has drawn and never while a job runs) shows a
 confirmation dialog listing what else changes, then applies it; Shift+click skips the dialog.
-Deleting a catalog entry (`level::remove_semantic`/`remove_material`) turns everything that used it
-into "none" and renumbers later ids.
+**Deleting a catalog entry retires it; it does not renumber.** Catalog ids are stored in millions of
+cells across a project's levels, only one of which is resident, so erasing an entry and shifting the
+ids after it would silently turn every sibling level's cells into something else.
+`project::remove_semantic`/`remove_material` therefore set `retired` on the entry and leave its id
+where it is. Everything the project itself holds is resident, so tile metadata, seasonal variants
+and the rule sets' WFC tiles are cleared outright, as are the open level's cells; a sibling's cells
+keep the id, and a retired entry reads as "none" everywhere (`render::colorize` draws it
+transparent), which is what makes leaving them safe.
+
+`project::intern_semantic`/`intern_material` give a retired entry's name its id back, so a file
+naming it does not append a duplicate -- but they deliberately do **not** un-retire it. Interning is
+what reading a file does, and a file must not quietly undo the project's decision to remove an
+entry.
+
+Retirement is the **manifest's** to carry, so it does not survive opening a *standalone* level:
+such a file carries the catalogs itself and is the whole source of the project it is read into, so
+the project that comes back has nothing retired. That is the right answer rather than a gap -- there
+is no manifest in the picture to have recorded the decision -- but it is worth knowing, because it
+means "I removed an entry" is a fact about a project on disk and not about a level file. The catalogs panel lists a retired entry greyed as "(removed)" with a **Restore** button
+beside it, which is the one way back; hiding it would leave the user wondering why the ids below it
+never close up. Every picker skips retired entries, since nothing new should be given one.
+
+**Compaction is the only thing that renumbers**, and it is a deliberate act. It is planned once
+(`project::plan_compaction` -> a `CatalogPlan`: the new id of every entry, or `kRetiredEntry`),
+applied to every level of the project (`apply_compaction`), and only then are the entries dropped
+and the project's own references rewritten (`finish_compaction`) -- in that order, because until
+the last step the plan's old ids are what the project's vectors are indexed by. The catalogs panel
+offers it when `needs_compaction` says there is something to do, and clears the undo history, since
+every id below a dropped entry has moved out from under the snapshots in the ring. `editor::CompactCatalogsJob` is what drives it across a
+project: it plans once, then loads, renumbers and saves every member but the open one, which the UI
+thread does in `finish_job` since a job may not touch the document. A member is written back in
+**project scope** whatever it was read in, because the plan is the project's: a file carrying its own
+copy of the catalogs would be left naming the old ids beside the new cells. If a member cannot be
+read or written the job stops, says which, and the entries are **not** dropped, so the ids on disk
+and the ids in the project still agree.
+
+`editor::RescanProjectJob` is the other half: it reads every member and rebuilds what the index says
+about it, for files changed outside the editor. Both jobs stage through the **spare** document and
+project -- the pair a load already uses -- rather than carving a document out of the job arena,
+which is the right size by construction where a fraction of the job arena is not: exhausting an
+arena is an assert, not a `Status`. Only one job runs at a time, so nothing else is staging into
+them. Reading a whole level to learn its grid size and object names is wasteful, and both formats
+could read "everything but the cells" cheaply, but that is new I/O surface and is left until a
+rescan is slow enough to matter.
+
+`project::remove_tileset` keeps erasing and renumbering -- it drops the tileset and calls all four
+`clear_tileset_refs` overloads, for the open level and the three rule kinds -- but it returns a
+`Status` and **refuses outright** once the project has more than one member level, since the others
+are not resident to renumber. `project::semantic_uses`/`material_uses` only count the resident
+level, so the confirmation says "in this level" rather than claiming to know the project.
 
 ### Undo
 
@@ -501,15 +772,44 @@ one check to mark required:
 
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors, JSON zero-heap check, jobs/random, images.
-- `//level`: model operations (resize, seasons, derivation, tileset removal, portals/paths/routes, WFC
+- `//level`: model operations (resize, derivation, clearing a tileset's references, portals/paths/routes, WFC
   rule learning, rules from a palette layout, a step terrain read from either block shape, batch
   tile and constraint edits (scatter weight included), terrains from a
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
   selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
-  stability, standalone files moving between levels, malformed/truncated files, a level whose layers
+  stability, a project-scope save leaving the shared sections out and round-tripping against a
+  project that already holds them while leaving it untouched, a project-scope level naming the rule
+  set it uses and resolving to it in a project that holds the sets in another order, a standalone
+  level carrying only the set it uses and taking its name from it, a portal target written as a path
+  becoming the member whose file it names, one that names no member keeping a stem and warning
+  rather than failing, the standalone scope being the
+  default and still reading into an empty project, standalone files moving between levels,
+  malformed/truncated files, a level whose layers
   and file are bigger than one worker's share, saves split across waves and saves streamed layer by
   layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
   layer, headers at their widest.
+- `//project`: path composition (the folder names, joins that refuse to truncate, resolve/relativize
+  round trips, a path outside the root staying absolute, and a part's file name made from any name
+  the user might give it), `ensure_tree` being idempotent, copying
+  an asset in (a plain copy, a rename around a name clash, identical bytes reused, a file already
+  inside, and a file beside the project staying outside it when the root and the source are both
+  relative), the level index (members added/found/renamed, each member's object names and their spans
+  surviving a re-save, a portal link validated without loading its target, removal compacting the
+  name table), seasons (added, found, removed, the cycle never empty), catalogs interned by name and
+  removing an entry remapping the resident level's cells, tile metadata, seasonal variants and WFC
+  rule tiles, tilesets (added, found, removed with the level's references following, and refused
+  once the project holds several levels),
+  rule sets (found, added, interned by name, a level resolving to the set it names and falling back
+  when it names none or one that has gone, removal keeping at least one), catalog removal retiring
+  an entry rather than moving the ids after it (what the project holds and the open level's cells
+  cleared, a sibling's left, interning the name again giving its id back without bringing it back),
+  compaction planned once and applied to every level together,
+  and the manifest (round trip carrying the tilesets' and rule sets' own files, several rule sets
+  each getting their own file and coming back in the order the manifest lists them, a part keeping
+  the file it was given across a rename and a new one getting its own, saving elsewhere moving the
+  project there, a named tileset file that has gone refusing the project, stable when written twice,
+  missing level files flagged, create/open, named after its folder, which entries are retired, and
+  every malformed shape refused).
 - `//procgen`: masked fills (a height band, a ground type, the two together, the scatter being even
   and staying put under a different mask, scatter weights deciding the shares (a weight of zero,
   negative weights, all-zero and equal weights coming to the same thing), regions and clipping,
@@ -532,10 +832,13 @@ one check to mark required:
   fallback (edges around painted centers, a path drawn one cell at a time, stability once the rules
   hold, corner fills with `diagonals`, tiles the rules do not know, rules that cannot express the
   shape).
-- `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export.
+- `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export,
+  one layer exported as a pixel per cell, a retired catalog entry drawing as nothing.
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
-  worker's scratch), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
+  worker's scratch; a rescan reading every member with only one resident and reporting one it cannot
+  read; a compaction rewriting every member but the open one, in project scope, with the entries
+  still in place), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
   paths: demo level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
   editor), undo/redo, save/load
@@ -545,7 +848,20 @@ one check to mark required:
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
   layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of
-  a step, and redrawing changing nothing),
+  a step, and redrawing changing nothing), saving making the open level a member of its project and
+  a portal resolving against it (its own portals from the live registry, a level no member is named
+  after and a portal a member does not have both reported), deleting a catalog entry retiring it and
+  the project then saying it has something to compact, the panel's own compaction dropping exactly
+  the entries retired for it,
+  a project written to disk (its tree made and its manifest written, the open level saved into
+  `levels/` becoming its first member and its file carrying none of the shared sections, a second
+  member from a save under another name, a portal into that sibling resolving from the index alone,
+  switching to it without replacing the project or decoding the atlases again, the compaction job
+  rewriting the other member, a rescan leaving every member with a size, Ctrl+S writing the manifest
+  and the level, and the whole project read back with both levels, its tilesets and itself in the
+  recent list); a layer written to the project's artifacts folder as a PNG; an atlas chosen from
+  outside the project asking first, with the plan naming where it would land, and once copied in
+  being stored relative to the root and asking nothing;
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.
