@@ -1793,11 +1793,9 @@ void smoke(App& app)
     {
       report(app, Status::error("creating a project did not write its manifest"));
     }
-    Path levels;
-    if (project::subfolder(pr.root.view(), project::Folder::kLevels, levels).ok and !file::exists(levels.c_str()))
-    {
-      report(app, Status::error("creating a project did not make its folder tree"));
-    }
+    // The folder tree is not checked here: file::exists is for regular files, as it says, and
+    // //project:project_test checks ensure_tree properly with is_directory. The save below is the
+    // evidence that matters anyway -- it writes into levels/, which only works if the tree is there.
     // Into the project's own levels/ folder, which is what makes it a member
     file_action(app, FileAction::kSaveLevel, "smoke_project/levels/demo.json");
     break;
