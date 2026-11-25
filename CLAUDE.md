@@ -222,9 +222,20 @@ name a different file. `ensure_tree` creates the whole tree and is idempotent.
 goes through `plan_copy`, which says where the copy would land (`assets/atlases/` or
 `assets/images/`), whether it would be renamed around a different file of that name (`forest.png` ->
 `forest-2.png`), and whether the identical bytes are already there — so the confirmation dialog can
-say exactly what will happen before `apply_copy` does it. A file already inside the tree is simply
-relativized. Keeping the copy optional is deliberate: a reference may stay absolute, and the project
-can be made self-contained later.
+say exactly what will happen before `apply_copy` does it.
+
+`editor::request_import` is the gate: it plans the copy and, for a file outside the tree, records an
+`App::pending_import` that `import_prompt` draws as a modal beside the other prompts — **Copy into
+the project** (what Enter takes), **Link in place** or **Cancel**. Three cases never reach it: a
+file already inside the tree is relativized and stored, a project with no folder yet has nowhere to
+copy to so the path is stored as it is, and nothing is stored at all until the user answers.
+
+What the prompt says comes from the plan rather than from a guess: "it will be copied to X", "a
+different file of that name is already there, so the copy will be X-2", or "the same bytes are
+already at X, which will be used". **Link in place** is deliberately offered, because a reference
+may point outside on purpose — and the Project panel then lists every such reference in amber with a
+**Copy in** button (`copy_asset_into_project`, the same prompt), which is how a project built with
+outside references is made self-contained afterwards.
 
 **The manifest is always JSON**, the one deliberate exception to "binary is a translation of the
 same data": it is a few kilobytes of names, never on a hot path, and a fixed name is what makes the
@@ -833,8 +844,9 @@ one check to mark required:
   member from a save under another name, a portal into that sibling resolving from the index alone,
   switching to it without replacing the project or decoding the atlases again, the compaction job
   rewriting the other member, a rescan leaving every member with a size, Ctrl+S writing the manifest
-  and the level, and the whole project read back with both levels, its tilesets and itself at the
-  top of the recent list),
+  and the level, and the whole project read back with both levels, its tilesets and itself in the
+  recent list); an atlas chosen from outside the project asking first, with the plan naming where it
+  would land, and once copied in being stored relative to the root and asking nothing;
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

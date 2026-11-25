@@ -32,6 +32,7 @@
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
+#include "lvl/project/paths.hpp"
 #include "lvl/render/compose.hpp"
 
 namespace lvl::editor
@@ -386,6 +387,26 @@ enum class FileAction : std::uint8_t
   kLoadStyle,
 };
 
+/**
+ * @brief A file chosen from outside the project, waiting for the user to say what to do with it
+ *
+ * Everything a project needs should live inside its folder, so the whole folder can be moved,
+ * copied or committed as one thing. Choosing an atlas or a seed image from elsewhere therefore asks
+ * first rather than storing the outside path quietly. <code>project::plan_copy</code> has already
+ * worked out exactly what copying would do, so the prompt can say it before anything is written.
+ *
+ * A file already inside the tree never gets here: it is simply relativized.
+ */
+struct PendingImport
+{
+  /// What wanted the file; kNone when nothing is pending
+  FileAction action = FileAction::kNone;
+  /// What the user picked, as the dialog gave it
+  Path source;
+  /// Where a copy would land and what copying would do (see project::plan_copy)
+  project::CopyPlan plan;
+};
+
 /// The most recently opened or saved levels (File > Open recent), newest first
 struct RecentFiles
 {
@@ -436,6 +457,9 @@ struct App
    */
   Path project_path;
   bool project_modified = false;
+
+  /// An asset chosen from outside the project, waiting on the copy-in prompt
+  PendingImport pending_import;
 
   Assets assets;
   Overlays overlays;

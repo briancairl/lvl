@@ -116,6 +116,14 @@ void start_job(App& app);
 /// Opens the file dialog for <code>action</code>
 void open_file_dialog(App& app, FileAction action);
 
+/**
+ * @brief Raises the copy-into-project prompt for an asset the project already references
+ *
+ * How the Project panel's "Copy in" works: the same prompt the import dialogs raise, so a project
+ * that was built with references pointing outside can be made self-contained afterwards.
+ */
+void copy_asset_into_project(App& app, FileAction action, std::string_view path);
+
 /// True while the file dialog is open
 bool file_dialog_open();
 

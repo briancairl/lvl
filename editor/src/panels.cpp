@@ -1045,13 +1045,49 @@ void project_panel(App& app)
   }
 
   ImGui::SeparatorText("Tilesets");
-  for (const level::TileSet& ts : pr.tilesets)
+  for (std::size_t i = 0; i < pr.tilesets.size(); ++i)
   {
+    const level::TileSet& ts = pr.tilesets[i];
+    const bool outside =
+      !ts.image.empty() and !app.project_path.empty() and !project::is_inside(pr.root.view(), ts.image.view());
+    ImGui::PushID(static_cast<int>(i));
     ImGui::BulletText("%s  %s", ts.name.c_str(), ts.image.empty() ? "(no atlas)" : ts.image.c_str());
+    if (outside)
+    {
+      // A reference that points outside the tree is allowed -- the import prompt's "Link in place"
+      // -- but it is what stops the folder being self-contained, so it is listed as such with the
+      // way to fix it beside it
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.80F, 0.40F, 1.0F});
+      ImGui::TextUnformatted("outside the project");
+      ImGui::PopStyleColor();
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Copy in"))
+      {
+        app.tileset = i;
+        copy_asset_into_project(app, FileAction::kAtlasImage, ts.image.view());
+      }
+    }
+    ImGui::PopID();
   }
   if (pr.tilesets.empty())
   {
     ImGui::TextDisabled("None; import one in Tilesets");
+  }
+  if (
+    !app.generators.seed_image.empty() and !app.project_path.empty() and
+    !project::is_inside(pr.root.view(), app.generators.seed_image.view()))
+  {
+    ImGui::BulletText("heightmap seed  %s", app.generators.seed_image.c_str());
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.95F, 0.80F, 0.40F, 1.0F});
+    ImGui::TextUnformatted("outside the project");
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy in##seed"))
+    {
+      copy_asset_into_project(app, FileAction::kSeedImage, app.generators.seed_image.view());
+    }
   }
 
   ImGui::SeparatorText("Rule sets");

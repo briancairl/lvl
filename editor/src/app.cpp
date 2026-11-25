@@ -573,6 +573,135 @@ void exit_prompt(App& app)
   ImGui::EndPopup();
 }
 
+/// Stores the chosen image, by whatever route the user and the project left open
+void apply_import(App& app, FileAction action, std::string_view stored)
+{
+  switch (action)
+  {
+  case FileAction::kAtlasImage:
+    if (app.tileset < app.project->tilesets.size())
+    {
+      app.project->tilesets[app.tileset].image.assign(stored);
+      // The atlas belongs to a tileset, which belongs to the project
+      app.project_modified = true;
+      reload_atlases(app);
+    }
+    break;
+  case FileAction::kSeedImage:
+    app.generators.seed_image.assign(stored);
+    break;
+  default:
+    break;
+  }
+}
+
+/**
+ * @brief Takes an image the user chose, asking first if it is outside the project
+ *
+ * A file already inside the tree is simply relativized, which is what makes a project portable
+ * without the user thinking about it. One outside raises the prompt below; with no project folder
+ * yet there is nowhere to copy to, so the path is stored as it is.
+ */
+void request_import(App& app, FileAction action, const char* path)
+{
+  project::Project& pr = *app.project;
+  if (app.project_path.empty() or pr.root.empty())
+  {
+    apply_import(app, action, std::string_view{path});
+    return;
+  }
+  const project::Folder folder =
+    (action == FileAction::kAtlasImage) ? project::Folder::kAtlases : project::Folder::kImages;
+  project::CopyPlan plan;
+  if (const Status s = project::plan_copy(pr.root.view(), folder, std::string_view{path}, app.memory.frame, plan);
+      !s.ok)
+  {
+    report(app, s);
+    return;
+  }
+  if (plan.inside)
+  {
+    // Already in the tree: nothing to ask, and the stored path is its relative one
+    apply_import(app, action, plan.destination.view());
+    return;
+  }
+  app.pending_import = PendingImport{.action = action, .plan = plan};
+  app.pending_import.source.assign(path);
+}
+
+/// The copy-into-project prompt, drawn once a frame beside the other modals
+void import_prompt(App& app)
+{
+  if (app.pending_import.action == FileAction::kNone)
+  {
+    return;
+  }
+  if (!ImGui::IsPopupOpen("Copy into the project?"))
+  {
+    ImGui::OpenPopup("Copy into the project?");
+  }
+  if (!ImGui::BeginPopupModal("Copy into the project?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    return;
+  }
+  const PendingImport& pending = app.pending_import;
+  const std::string_view name = project::file_name(pending.source.view());
+  ImGui::Text("'%.*s' is outside the project.", static_cast<int>(name.size()), name.data());
+  ImGui::TextWrapped("Keeping everything inside the project folder is what makes it portable.");
+  ImGui::Spacing();
+  // plan_copy has already worked out what copying would do, so this says it rather than guessing
+  if (pending.plan.identical)
+  {
+    ImGui::TextWrapped("The same bytes are already at %s, which will be used.", pending.plan.destination.c_str());
+  }
+  else if (pending.plan.renamed)
+  {
+    ImGui::TextWrapped(
+      "A different file of that name is already there, so the copy will be %s.", pending.plan.destination.c_str());
+  }
+  else
+  {
+    ImGui::TextWrapped("It will be copied to %s.", pending.plan.destination.c_str());
+  }
+  ImGui::Spacing();
+
+  const FileAction action = pending.action;
+  if (ImGui::Button("Copy into the project") or ImGui::IsKeyPressed(ImGuiKey_Enter))
+  {
+    const Status s =
+      project::apply_copy(app.project->root.view(), pending.plan, pending.source.view(), app.memory.frame);
+    // The relative path is what the project file stores, so a moved folder still works
+    const Path stored = pending.plan.destination;
+    app.pending_import = PendingImport{};
+    ImGui::CloseCurrentPopup();
+    if (s.ok)
+    {
+      apply_import(app, action, stored.view());
+    }
+    else
+    {
+      report(app, s);
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Link in place"))
+  {
+    // Deliberately allowed: a reference may point outside on purpose, and the Project panel lists
+    // every one of them with a button to copy it in later
+    const Path outside = pending.source;
+    app.pending_import = PendingImport{};
+    ImGui::CloseCurrentPopup();
+    apply_import(app, action, outside.view());
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel") or ImGui::IsKeyPressed(ImGuiKey_Escape))
+  {
+    app.pending_import = PendingImport{};
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 void error_popup(App& app)
 {
   if (app.show_error)
@@ -1983,7 +2112,53 @@ void smoke(App& app)
     }
     break;
   }
-  case 37:
+  case 37: {
+    // An asset from outside the project asks before anything is stored, and says what copying
+    // would do. The demo level wrote its atlas into the working directory, which is outside.
+    project::Project& pr = *app.project;
+    file_action(app, FileAction::kAtlasImage, "lvl_demo_atlas.png");
+    if (app.pending_import.action != FileAction::kAtlasImage)
+    {
+      report(app, Status::error("choosing an atlas from outside the project did not ask first"));
+    }
+    const project::CopyPlan plan = app.pending_import.plan;
+    const Path source = app.pending_import.source;
+    if (plan.inside)
+    {
+      report(app, Status::error("a file outside the project was planned as already inside it"));
+    }
+    if (plan.destination != std::string_view{"assets/atlases/lvl_demo_atlas.png"})
+    {
+      report(app, Status::error(format<200>("the copy would land at '%s'", plan.destination.c_str())));
+    }
+    // What the prompt's "Copy into the project" button does
+    app.pending_import = PendingImport{};
+    if (const Status copied = project::apply_copy(pr.root.view(), plan, source.view(), app.memory.frame); !copied.ok)
+    {
+      report(app, copied);
+    }
+    Path absolute;
+    if (project::resolve(pr.root.view(), plan.destination.view(), absolute).ok and !file::exists(absolute.c_str()))
+    {
+      report(app, Status::error("the atlas was not copied into the project"));
+    }
+    // And now that it is inside, choosing it asks nothing and is stored relative to the root --
+    // which is what makes the folder portable
+    file_action(app, FileAction::kAtlasImage, absolute.c_str());
+    if (app.pending_import.action != FileAction::kNone)
+    {
+      report(app, Status::error("a file already inside the project asked anyway"));
+    }
+    if (pr.tilesets[app.tileset].image != plan.destination)
+    {
+      report(
+        app,
+        Status::error(
+          format<200>("an atlas inside the project was stored as '%s'", pr.tilesets[app.tileset].image.c_str())));
+    }
+    break;
+  }
+  case 38:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -1992,7 +2167,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 38:
+  case 39:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -2281,6 +2456,7 @@ void frame(App& app)
   }
   file_dialog(app);
   exit_prompt(app);
+  import_prompt(app);
   process_deletes(app);
   job_progress(app);
   error_popup(app);
@@ -2294,6 +2470,14 @@ void frame(App& app)
   {
     request_exit(app, true);
   }
+}
+
+void copy_asset_into_project(App& app, FileAction action, std::string_view path)
+{
+  // request_import does the asking; this exists so the Project panel can reach it, since the panel
+  // is a different translation unit and the prompt's own helpers are file-local
+  const Path source{path};
+  request_import(app, action, source.c_str());
 }
 
 void request_switch(App& app, std::size_t index)
@@ -2560,15 +2744,10 @@ void file_action(App& app, FileAction action, const char* path)
     });
     break;
   case FileAction::kAtlasImage:
-    if (app.tileset < app.project->tilesets.size())
-    {
-      app.project->tilesets[app.tileset].image.assign(path);
-      app.modified = true;
-      reload_atlases(app);
-    }
-    break;
   case FileAction::kSeedImage:
-    app.generators.seed_image.assign(path);
+    // Everything a project needs should live inside its folder, so a file from outside asks first
+    // (see import_prompt). One already inside, or with no project to be inside of, is taken as is.
+    request_import(app, action, path);
     break;
   case FileAction::kExportPng:
   case FileAction::kExportMinimap:
