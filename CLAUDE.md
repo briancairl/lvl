@@ -327,15 +327,23 @@ pairs are separate because the two things are saved separately -- editing a tile
 changes the project, not the level that happens to be open -- and the title's star, the quit prompt
 and the browser's "leave site?" prompt all mean "either has changes".
 
-### Recent levels
+### Recent levels and projects
 
-File > Open recent lists the last `RecentFiles::kCapacity` (10) levels opened or saved, newest
-first. `editor/src/recent.cpp` keeps the list in `App::recent` (fixed `Path`s, so no heap) and
+File > Open recent lists the last `RecentFiles::kCapacity` (10) levels **and projects** opened or
+saved, newest first. A project is what you reopen, so opening or creating one records its manifest
+beside the levels; the stored format is unchanged (one path per line), because a manifest is told
+from a level by the same check the command line uses -- its file name is `project.json`. Such an
+entry is listed by its *folder* (every manifest is called the same thing) and marked "(project)",
+and choosing it opens the project, which goes on to load its first member. `editor/src/recent.cpp` keeps the list in `App::recent` (fixed `Path`s, so no heap) and
 writes it to `config_path("recent_files.txt")` as one path per line whenever it changes; it is read
 back the first time the menu is drawn or an entry is recorded. `finish_job` records a path once a
 level load or save succeeds, and drops one whose load failed, so a file that has gone away leaves
 the list when it is next tried; until then the menu shows it disabled. "Clear the list" empties it.
-Choosing an entry replaces the open document just as "Open..." does.
+Choosing a level entry replaces the open document just as "Open..." does.
+
+The positional command-line argument takes a level, a project manifest or a project **folder**, told
+apart by whether there is a `project.json` to be found -- one existence check, because a project is
+where its manifest is. `--project=DIR` is the same thing said explicitly, through the same code.
 
 ### Quitting
 
@@ -815,7 +823,8 @@ one check to mark required:
   member from a save under another name, a portal into that sibling resolving from the index alone,
   switching to it without replacing the project or decoding the atlases again, the compaction job
   rewriting the other member, a rescan leaving every member with a size, Ctrl+S writing the manifest
-  and the level, and the whole project read back with both levels and its tilesets),
+  and the level, and the whole project read back with both levels, its tilesets and itself at the
+  top of the recent list),
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

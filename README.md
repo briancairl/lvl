@@ -126,4 +126,10 @@ the files its tilesets and rule sets live in (`tilesets/forest.tileset.json`,
 `rules/forest.rules.json` — the same standalone formats, one file each), and an index of its member
 levels. A file handed to someone on its own still carries everything it needs.
 
+Open a project by naming its folder or its `project.json`, a level by naming the file:
+
+```bash
+lvl shoreline/
+```
+
 See [CLAUDE.md](CLAUDE.md) for the design tenets and code layout.

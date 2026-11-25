@@ -18,6 +18,7 @@
 #include "lvl/core/file.hpp"
 #include "lvl/core/logging.hpp"
 #include "lvl/editor/config.hpp"
+#include "lvl/project/paths.hpp"
 
 namespace lvl::editor
 {
@@ -162,11 +163,16 @@ void recent_files_menu(App& app)
   for (std::size_t i = 0; i < app.recent.count; ++i)
   {
     const Path& path = app.recent.paths[i];
-    const std::string_view name = file_name(path.view());
+    // A project manifest is listed by its folder, since "project.json" is the same for all of them
+    const bool is_project = file_name(path.view()) == project::kManifestName;
+    const std::string_view name = is_project ? file_name(project::parent_path(path.view())) : file_name(path.view());
     const bool present = file::exists(path.c_str());
     ImGui::PushID(static_cast<int>(i));
     if (ImGui::MenuItem(
-          format<Path::capacity()>("%.*s", static_cast<int>(name.size()), name.data()), nullptr, false, present))
+          format<Path::capacity()>(is_project ? "%.*s (project)" : "%.*s", static_cast<int>(name.size()), name.data()),
+          nullptr,
+          false,
+          present))
     {
       chosen = path;
     }
@@ -186,7 +192,9 @@ void recent_files_menu(App& app)
   }
   else if (!chosen.empty())
   {
-    file_action(app, FileAction::kOpenLevel, chosen.c_str());
+    // A project is reopened as a project, which goes on to load its first member
+    const bool is_project = file_name(chosen.view()) == project::kManifestName;
+    file_action(app, is_project ? FileAction::kOpenProject : FileAction::kOpenLevel, chosen.c_str());
   }
 }
 

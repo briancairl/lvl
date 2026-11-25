@@ -1937,6 +1937,11 @@ void smoke(App& app)
     {
       report(app, Status::error("a project just opened already reports unsaved changes"));
     }
+    // And it is what you reopen, so it is the newest thing in the recent list
+    if (app.recent.count == 0 or app.recent.paths[0] != app.project_path)
+    {
+      report(app, Status::error("opening a project did not put it at the top of the recent list"));
+    }
     break;
   }
   case 37:
@@ -2103,7 +2108,24 @@ Status initialize(App& app, const MemoryConfig& config, const char* path)
   }
   if (path != nullptr and path[0] != '\0')
   {
-    file_action(app, FileAction::kOpenLevel, path);
+    // One positional argument, three things it can be: a project folder, a project manifest, or a
+    // level. A project is where its manifest is, so "is this a project?" is one existence check
+    // either way, and opening one goes on to load its first member.
+    Path manifest;
+    if (
+      project::is_project_root(std::string_view{path}) and
+      project::join(std::string_view{path}, project::kManifestName, manifest).ok)
+    {
+      file_action(app, FileAction::kOpenProject, manifest.c_str());
+    }
+    else if (project::file_name(std::string_view{path}) == project::kManifestName)
+    {
+      file_action(app, FileAction::kOpenProject, path);
+    }
+    else
+    {
+      file_action(app, FileAction::kOpenLevel, path);
+    }
   }
   return Status::okay();
 }
@@ -2345,6 +2367,8 @@ void file_action(App& app, FileAction action, const char* path)
       {
         app.project_path.assign(path);
         app.project_modified = false;
+        // A project is what you reopen, so it goes in the recent list beside the levels
+        remember_recent_file(app, app.project_path.view());
         // The open level is not a member of it until it is saved into the tree
         app.modified = true;
       }
@@ -2365,6 +2389,7 @@ void file_action(App& app, FileAction action, const char* path)
       app.project_path.assign(path);
       app.project_modified = false;
       app.tileset = 0;
+      remember_recent_file(app, app.project_path.view());
       invalidate_view(app);
       // The project's own first member replaces whatever level is open, and brings the new
       // tilesets' atlases in with it -- one job, since only one runs at a time. A project with no
