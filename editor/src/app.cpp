@@ -121,6 +121,7 @@ Status add_member(App& app, std::string_view name, std::string_view file, level:
     relative.assign(file);
   }
 
+  bool changed = false;
   std::size_t index = project::find_level(pr, name);
   if (index == project::kNoLevel)
   {
@@ -128,6 +129,7 @@ Status add_member(App& app, std::string_view name, std::string_view file, level:
     {
       index = by_file;
       project::rename_level(pr, index, name);
+      changed = true;
     }
   }
   if (index == project::kNoLevel)
@@ -141,7 +143,9 @@ Status add_member(App& app, std::string_view name, std::string_view file, level:
         static_cast<int>(name.size()),
         name.data());
     }
+    changed = true;
   }
+  changed = changed or pr.levels[index].file != relative or pr.levels[index].missing;
   pr.levels[index].file = relative;
   pr.levels[index].missing = false;
 
@@ -156,6 +160,18 @@ Status add_member(App& app, std::string_view name, std::string_view file, level:
   {
     markers.push_back(label.name);
   }
+
+  // Whether the index now says anything different, compared before set_level_objects rebuilds the
+  // name table. This runs on every load as well as every save, and loading a member re-reads what
+  // the manifest already said: a project must not report unsaved changes for being opened.
+  const project::LevelEntry& entry = pr.levels[index];
+  const auto same_names = [](const Name* was, std::size_t was_count, const memory::Vector<Name>& now) {
+    return was_count == now.size() and std::equal(now.begin(), now.end(), was);
+  };
+  changed = changed or entry.extents != lv.settings.extents or
+    !same_names(project::portals_of(pr, entry), entry.portal_count, portals) or
+    !same_names(project::markers_of(pr, entry), entry.marker_count, markers);
+
   const Status s = project::set_level_objects(
     pr,
     index,
@@ -166,7 +182,7 @@ Status add_member(App& app, std::string_view name, std::string_view file, level:
       .markers = markers.data(),
       .marker_count = markers.size()},
     app.memory.frame);
-  app.project_modified = app.project_modified or s.ok;
+  app.project_modified = app.project_modified or (s.ok and changed);
   return s;
 }
 
@@ -1953,10 +1969,17 @@ void smoke(App& app)
     {
       report(app, Status::error("a project just opened already reports unsaved changes"));
     }
-    // And it is what you reopen, so it is the newest thing in the recent list
-    if (app.recent.count == 0 or app.recent.paths[0] != app.project_path)
+    // And it is in the recent list, so it can be reopened as a project. Not necessarily at the
+    // top: the member level it went on to load was touched after it, and the list is ordered by
+    // what was touched last.
+    bool listed = false;
+    for (std::size_t i = 0; i < app.recent.count; ++i)
     {
-      report(app, Status::error("opening a project did not put it at the top of the recent list"));
+      listed = listed or app.recent.paths[i] == app.project_path;
+    }
+    if (!listed)
+    {
+      report(app, Status::error("opening a project did not record it in the recent list"));
     }
     break;
   }

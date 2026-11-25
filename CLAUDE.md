@@ -272,7 +272,10 @@ something to fix in the editor, not a reason to refuse the file.
 whenever a level is saved or loaded: it finds the member by name (how levels address each other),
 falling back to the file so a level saved under a new name takes the new name rather than becoming a
 second member, adds it if it is new, and rebuilds what the index says -- the grid size and the names
-of its portals and markers, read from the live registry. That is also what makes a bare level file
+of its portals and markers, read from the live registry. It marks the project modified only when
+the index now says something *different*, compared before the name table is rebuilt: it runs on
+every load as well as every save, and loading a member re-reads what the manifest already said, so
+a project must not report unsaved changes merely for having been opened. That is also what makes a bare level file
 open as a single-member project, with no "no project" branch anywhere.
 
 In the editor the two destination fields are **combos, not text boxes**, which is the point: a typed
