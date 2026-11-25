@@ -186,16 +186,20 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 - **Devices**.
 
 **Each action says which of the project's folders its files belong in** (`Setup::folder`), so the
-table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: an atlas opens
-in `assets/atlases/`, a seed image in `assets/images/`, a tileset in `tilesets/`, rules in `rules/`,
-path graphs in `paths/`, every PNG export in `artifacts/`. The folder is created on demand, so one
-the user deleted does not make the dialog open nowhere.
+table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: a level opens
+in `levels/`, an atlas in `assets/atlases/`, a seed image in `assets/images/`, a tileset in
+`tilesets/`, rules in `rules/`, path graphs in `paths/`, every PNG export in `artifacts/`. The
+folder is created on demand, so one the user deleted does not make the dialog open nowhere. Saving a
+level offers `levels/` even when the open level's file is somewhere else, because a save into the
+tree is what makes it a member; the name it already has is still what is suggested.
 
-A level, a project manifest and a style profile belong to no folder of the open project, so they
-open where the dialog was last used -- and choosing a file elsewhere in one of the project actions
-does not move that remembered folder. With no project folder yet, those actions fall back to the
-folder the open level lives in and then to the working directory, which is the behaviour before
-projects and still what a bare level file gets.
+Only two actions belong to no folder of the open project: a **project manifest**, since putting one
+somewhere is what *makes* a project there, so it cannot open inside one; and a **style profile**,
+which is a per-user setting rather than part of any project. Those open where the dialog was last
+used, and choosing a file elsewhere in one of the project actions does not move that remembered
+folder. With no project folder yet every action falls back to the folder the open level lives in and
+then to the working directory -- the behaviour before projects, and still what a bare level file
+gets -- and every action updates the remembered folder again, since they all share it.
 
 ### Projects
 
@@ -888,7 +892,8 @@ one check to mark required:
   and the level, and the whole project read back with both levels, its tilesets and itself in the
   recent list); a layer written to the project's artifacts folder as a PNG; an atlas chosen from
   outside the project asking first, with the plan naming where it would land, and once copied in
-  being stored relative to the root and asking nothing;
+  being stored relative to the root and asking nothing; saving a level and exporting a tileset each
+  offering the project folder that kind of file belongs in;
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

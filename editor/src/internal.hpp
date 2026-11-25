@@ -127,6 +127,14 @@ void copy_asset_into_project(App& app, FileAction action, std::string_view path)
 /// True while the file dialog is open
 bool file_dialog_open();
 
+/**
+ * @brief The folder the open dialog is showing (empty when none is open)
+ *
+ * Valid once the dialog has drawn a frame. The scripted session checks with it that each kind of
+ * file opens where it belongs in the project tree (see <code>Setup::folder</code>).
+ */
+Path file_dialog_directory();
+
 /// Closes the file dialog without running its action
 void close_file_dialog(App& app);
 

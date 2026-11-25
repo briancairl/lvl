@@ -2281,6 +2281,32 @@ void smoke(App& app)
     break;
   }
   case 38:
+    // Each kind of file opens where it belongs in the project tree, which there now is one of.
+    // The dialog has to draw a frame before it reports a folder, so this takes a step each.
+    open_file_dialog(app, FileAction::kSaveLevel);
+    break;
+  case 39: {
+    // The level's own file is in levels/ already, but the point is that the dialog says so rather
+    // than offering wherever it was last used
+    const Path directory = file_dialog_directory();
+    if (project::file_name(directory.view()) != std::string_view{"levels"})
+    {
+      report(app, Status::error(format<200>("saving a level offered '%s'", directory.c_str())));
+    }
+    close_file_dialog(app);
+    open_file_dialog(app, FileAction::kSaveTileSet);
+    break;
+  }
+  case 40: {
+    const Path directory = file_dialog_directory();
+    if (project::file_name(directory.view()) != std::string_view{"tilesets"})
+    {
+      report(app, Status::error(format<200>("exporting a tileset offered '%s'", directory.c_str())));
+    }
+    close_file_dialog(app);
+    break;
+  }
+  case 41:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2289,7 +2315,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 39:
+  case 42:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
