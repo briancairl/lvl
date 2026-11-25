@@ -59,8 +59,9 @@ struct Setup
    *
    * Set for every action that reads or writes part of a project, which is what makes this table say
    * outright where each kind of file lives rather than leaving it to the dialog's last folder.
-   * Left unset for a level, a project manifest and a style profile: none of them belongs to a
-   * folder of the open project, so those open wherever the dialog was last used.
+   * Left unset only for a project manifest and a style profile: a manifest is what *makes* a
+   * project somewhere, so it cannot open inside one, and a style profile is a per-user setting that
+   * belongs to no project at all. Those two open wherever the dialog was last used.
    */
   std::optional<project::Folder> folder;
   /// Suggested file name (saves)
@@ -101,9 +102,12 @@ Path project_directory(const App& app)
  * yet it falls back to the folder the open level lives in, and then to the working directory --
  * the behaviour before projects, which is still what a bare level file gets.
  */
+/// Whether the open project has a folder on disk for a dialog to open inside
+bool has_tree(const App& app) { return !app.project_path.empty() and !app.project->root.empty(); }
+
 Path folder_directory(const App& app, project::Folder folder)
 {
-  if (!app.project_path.empty() and !app.project->root.empty())
+  if (has_tree(app))
   {
     Path out;
     if (project::subfolder(app.project->root.view(), folder, out).ok)
@@ -129,15 +133,29 @@ Setup setup(const App& app, FileAction action)
   {
   case FileAction::kNone:
     break;
-  case FileAction::kNewProject:
+  case FileAction::kNewProject: {
     // A project is where its manifest is, so putting project.json somewhere is what makes a project
     // there. Picking the file rather than the folder means no directory-picking mode is needed, and
     // it matches what save_project does with the path it is given.
+    //
+    // The suggested name carries a folder, because the tree is created beside the manifest: accept
+    // it and the project lands in a folder of its own, named after the level. Accepting a bare
+    // "project.json" would scatter levels/, tilesets/, assets/ and the rest directly into whatever
+    // folder the dialog happened to be in, which is recoverable only by hand. The folder is still
+    // only a suggestion -- it can be renamed or deleted in the name box like any other.
+    Path suggested;
+    const std::string_view name = lv.settings.name.empty() ? std::string_view{"project"} : lv.settings.name.view();
+    if (!project::project_file(project::Folder::kRoot, name, "", suggested).ok)
+    {
+      suggested.assign("project");
+    }
     return Setup{
-      .title = "New project (choose where project.json goes)",
+      .title = "New project (choose where its folder goes)",
       .filters = kProjectFilters,
       .save = true,
-      .name = "project.json"};
+      .name = format<160>(
+        "%s/%.*s", suggested.c_str(), static_cast<int>(project::kManifestName.size()), project::kManifestName.data())};
+  }
   case FileAction::kOpenProject:
     return Setup{.title = "Open project", .filters = kProjectFilters};
   case FileAction::kSaveProjectAs:
@@ -148,14 +166,19 @@ Setup setup(const App& app, FileAction action)
       .folder = project::Folder::kRoot,
       .name = "project.json"};
   case FileAction::kOpenLevel:
-    return Setup{.title = "Open level", .filters = kLevelFilters};
+    // A level of the open project lives in levels/, as every other part of it lives in its own
+    // folder; one from elsewhere is a navigation away, which is the same trade the imports make
+    return Setup{.title = "Open level", .filters = kLevelFilters, .folder = project::Folder::kLevels};
   case FileAction::kAddLevel:
     return Setup{.title = "Add a level to this project", .filters = kLevelFilters, .folder = project::Folder::kLevels};
   case FileAction::kSaveLevel:
+    // Deliberately levels/ even when the open level's file is elsewhere: a save into the tree is
+    // what makes it a member, and the name it already has is still what is suggested
     return Setup{
       .title = "Save level",
       .filters = kLevelFilters,
       .save = true,
+      .folder = project::Folder::kLevels,
       .name = app.path.empty() ? FixedString<160>{format<160>("%s.json", lv.settings.name.c_str())}
                                : FixedString<160>{std::filesystem::path{app.path.c_str()}.filename().string()}};
   case FileAction::kLoadTileSet:
@@ -288,8 +311,8 @@ void open_file_dialog(App& app, FileAction action)
   refresh_places(app);
   const Setup s = setup(app, action);
   app.dialog.action = action;
-  // Each kind of file opens where it belongs in the project tree (see Setup::folder); a level, a
-  // manifest or a style profile belongs to no folder of it, and opens where the dialog was last used
+  // Each kind of file opens where it belongs in the project tree (see Setup::folder); a manifest
+  // and a style profile belong to no folder of it, and open where the dialog was last used
   const Path directory = s.folder.has_value() ? folder_directory(app, *s.folder) : app.dialog.directory;
   IGFD::FileDialogConfig config;
   config.path = directory.c_str();
@@ -313,8 +336,10 @@ void file_dialog(App& app)
   if (dialog().IsOk())
   {
     const std::string path = dialog().GetFilePathName(IGFD_ResultMode_AddIfNoFileExt);
-    // An import or export elsewhere does not move the folder the other dialogs remember
-    if (!setup(app, action).folder.has_value())
+    // Choosing a file elsewhere in one of the project actions does not move the folder the dialogs
+    // without a home in the tree remember. With no tree yet every dialog shares that one folder, so
+    // every dialog updates it -- which is the behaviour before projects
+    if (!has_tree(app) or !setup(app, action).folder.has_value())
     {
       app.dialog.directory.assign(dialog().GetCurrentPath());
     }
@@ -329,6 +354,8 @@ void file_dialog(App& app)
 }
 
 bool file_dialog_open() { return dialog().IsOpened(kKey); }
+
+Path file_dialog_directory() { return Path{dialog().GetCurrentPath()}; }
 
 void close_file_dialog(App& app)
 {

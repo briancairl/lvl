@@ -18,6 +18,7 @@
 #include "internal.hpp"
 #include "lvl/core/logging.hpp"
 #include "lvl/core/random.hpp"
+#include "lvl/project/paths.hpp"
 
 namespace lvl::editor
 {
@@ -923,12 +924,24 @@ void start_heightmap(App& app)
     report(app, Status::error("no height layer selected"));
     return;
   }
+  // The seed image is stored relative to the project root, as an atlas is, and is read from a job
+  // that has no project to resolve it against -- so it is resolved here, on the UI thread, and
+  // before prepare_job, since a prepared job that is never started would leave the slot busy
+  Path seed_image;
+  if (p.seed_weight > 0.0F and !g.seed_image.empty())
+  {
+    if (const Status s = project::resolve(app.project->root.view(), g.seed_image.view(), seed_image); !s.ok)
+    {
+      report(app, s);
+      return;
+    }
+  }
   if (auto* job = prepare_job<HeightmapJob>(app); job != nullptr)
   {
     job->params = p;
     job->seed = lv.settings.seed;
     job->extents = lv.settings.extents;
-    job->seed_image = (p.seed_weight > 0.0F) ? g.seed_image : Path{};
+    job->seed_image = seed_image;
     start_job(app);
   }
 }

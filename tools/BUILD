@@ -17,6 +17,7 @@ cc_binary(
         "//core:memory",
         "//level:io",
         "//project:model",
+        "//project:paths",
         "//render",
     ],
 )

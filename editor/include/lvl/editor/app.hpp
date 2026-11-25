@@ -540,6 +540,15 @@ struct App
     std::size_t assets = 0;
   } smoke_check;
 
+  /**
+   * @brief The start-up prompt is up: open a recent project, or make one
+   *
+   * Set when the editor starts with nothing named on the command line, which is the one moment the
+   * user has not yet said what they are working on. Dismissing it leaves the blank level the editor
+   * has always started with, so the prompt is a shortcut and never a gate.
+   */
+  bool welcome = false;
+
   bool confirm_exit = false;
   /**
    * @brief The member level a switch is waiting on, while the open one has unsaved changes

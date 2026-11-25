@@ -186,16 +186,20 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 - **Devices**.
 
 **Each action says which of the project's folders its files belong in** (`Setup::folder`), so the
-table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: an atlas opens
-in `assets/atlases/`, a seed image in `assets/images/`, a tileset in `tilesets/`, rules in `rules/`,
-path graphs in `paths/`, every PNG export in `artifacts/`. The folder is created on demand, so one
-the user deleted does not make the dialog open nowhere.
+table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: a level opens
+in `levels/`, an atlas in `assets/atlases/`, a seed image in `assets/images/`, a tileset in
+`tilesets/`, rules in `rules/`, path graphs in `paths/`, every PNG export in `artifacts/`. The
+folder is created on demand, so one the user deleted does not make the dialog open nowhere. Saving a
+level offers `levels/` even when the open level's file is somewhere else, because a save into the
+tree is what makes it a member; the name it already has is still what is suggested.
 
-A level, a project manifest and a style profile belong to no folder of the open project, so they
-open where the dialog was last used -- and choosing a file elsewhere in one of the project actions
-does not move that remembered folder. With no project folder yet, those actions fall back to the
-folder the open level lives in and then to the working directory, which is the behaviour before
-projects and still what a bare level file gets.
+Only two actions belong to no folder of the open project: a **project manifest**, since putting one
+somewhere is what *makes* a project there, so it cannot open inside one; and a **style profile**,
+which is a per-user setting rather than part of any project. Those open where the dialog was last
+used, and choosing a file elsewhere in one of the project actions does not move that remembered
+folder. With no project folder yet every action falls back to the folder the open level lives in and
+then to the working directory -- the behaviour before projects, and still what a bare level file
+gets -- and every action updates the remembered folder again, since they all share it.
 
 ### Projects
 
@@ -236,6 +240,21 @@ root is wherever the manifest was written -- and neither can be compared with th
 are in the same frame of reference. Resolving the source against the *root* instead reads
 `forest.png` as `<root>/forest.png`, so an outside file looks like one already inside and is stored
 under a path that names nothing.
+
+**Every read of a stored asset path goes through `project::resolve` first**, because the path is
+relative to the project *root* and the process working directory is wherever the editor was started
+-- so the two are not the same folder and resolving against the wrong one simply fails to find the
+file. `editor::load_atlases` resolves each tileset's atlas (for both the probe and the decode),
+`//tools:lvl_convert` resolves it the same way, and the heightmap's seed image is resolved on the UI
+thread before `HeightmapJob` starts, since a job has no project to resolve it against. `resolve`
+passes an absolute path through unchanged, which is what a deliberately external reference is, and
+with an empty root it leaves the path alone -- so a bare level file behaves as it always did. The
+working directory is deliberately **not** changed to the root: a `chdir` would silently re-point the
+recent-files list, the dialog's remembered folder and every relative path on the command line.
+
+An atlas that will not load is not logged -- it draws red in the Tilesets panel -- so the scripted
+session checks `App::assets::status` itself after the atlas it copied in is reloaded (smoke step
+38), which is the one thing that would otherwise let this break again unnoticed.
 
 `editor::request_import` is the gate: it plans the copy and, for a file outside the tree, records an
 `App::pending_import` that `import_prompt` draws as a modal beside the other prompts — **Copy into
@@ -342,6 +361,13 @@ which is `LoadLevelJob` as it stands. A new project is made by choosing where `p
 rather than by picking a folder: that needs no directory-picking mode and matches `save_project`,
 which takes the project to be wherever its manifest is written.
 
+**The dialog suggests a folder of its own**, `<level name>/project.json` rather than a bare
+`project.json` (`project::project_file` slug-ifies the level's name, so any name the user gave it
+makes a file name). The tree is created beside the manifest, so accepting a bare `project.json`
+scatters `levels/`, `tilesets/`, `assets/` and the rest into whatever folder the dialog happened to
+be in, which is recoverable only by hand. It is only a suggestion -- the folder can be renamed or
+dropped in the name box like any other part of a save name.
+
 **New project keeps the project the open level draws on** and gives it a home on disk -- it creates
 the tree, names the project after the folder if it has no name yet, and writes the manifest. It
 deliberately does *not* replace it with an empty one (which is what `project::create_project` does,
@@ -353,6 +379,25 @@ the tree.
 pairs are separate because the two things are saved separately -- editing a tileset or a rule set
 changes the project, not the level that happens to be open -- and the title's star, the quit prompt
 and the browser's "leave site?" prompt all mean "either has changes".
+
+### Starting up
+
+Started with nothing named on the command line, the editor raises a **start-up prompt**
+(`editor::welcome_prompt`, `App::welcome`): the recent *projects* that are still on disk, each named
+by its folder, plus **New project...** and **Open project...**. That is the one question start-up
+has an answer to, and the manifest is always called the same thing, so reaching a project through
+File > Open would otherwise have the user navigating to a folder to pick a file whose name they
+already know.
+
+It is deliberately an **escape rather than a gate**: **Not now** (and Escape) leaves the blank level
+the editor has always started with, and New project turns that into a project at any time. It never
+appears when a level, a manifest or a project folder was named, nor after `--demo`, because those
+have already said what to work on. Choosing something clears `App::welcome` *before* the action
+runs, so the file dialog does not open underneath the modal; a job in flight or an open dialog
+clears it too, so the prompt cannot sit over the progress dialog.
+
+The scripted session (`--smoke`) is **not** exempt: step 0 checks the prompt came up and that making
+a level puts it away, so the one path a user takes is the path the test takes.
 
 ### Recent levels and projects
 
@@ -840,7 +885,8 @@ one check to mark required:
   read; a compaction rewriting every member but the open one, in project scope, with the entries
   still in place), `//editor:undo_test`, `//editor:style_test` (style profile round trip, partial and bad files).
 - `//editor:up_down_test` (tag `display`): `lvl --smoke` drives a scripted session through the UI code
-  paths: demo level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
+  paths: the start-up prompt coming up with nothing named and going away once a level is made, demo
+  level, generators (incl. WFC with corner rules, the adjacency rules window and the neighbor
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
@@ -861,7 +907,8 @@ one check to mark required:
   and the level, and the whole project read back with both levels, its tilesets and itself in the
   recent list); a layer written to the project's artifacts folder as a PNG; an atlas chosen from
   outside the project asking first, with the plan naming where it would land, and once copied in
-  being stored relative to the root and asking nothing;
+  being stored relative to the root and asking nothing; saving a level and exporting a tileset each
+  offering the project folder that kind of file belongs in;
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

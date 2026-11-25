@@ -43,6 +43,13 @@ void load_atlases(
 {
   constexpr std::size_t kMiB = 1UL << 20;
   constexpr std::size_t kSlack = 64;
+  // A tileset's atlas is stored relative to the project root, which is what lets a project folder be
+  // moved or handed over whole. The process working directory is not that root -- it is wherever the
+  // editor was started -- so every read of one goes through resolve first. A reference that points
+  // outside the tree was stored absolute, and resolve passes it through unchanged.
+  const auto atlas_path = [&project](std::string_view stored, Path& out) {
+    return project::resolve(project.root.view(), stored, out);
+  };
   out.count = std::min(project.tilesets.size(), kMaxJobTileSets);
   if (progress != nullptr)
   {
@@ -66,7 +73,12 @@ void load_atlases(
       out.status[i] = Status::error("no atlas image set");
       continue;
     }
-    out.status[i] = image::probe(ts.image.c_str(), memory.workers[0].scratch, info[i]);
+    Path file;
+    out.status[i] = atlas_path(ts.image.view(), file);
+    if (out.status[i].ok)
+    {
+      out.status[i] = image::probe(file.c_str(), memory.workers[0].scratch, info[i]);
+    }
     pending[i] = out.status[i].ok;
   }
 
@@ -122,7 +134,12 @@ void load_atlases(
     // The reserved slot, as an arena the decoder allocates the pixels from
     memory::Arena slot;
     memory::initialize(slot, slots[i], info[i].pixel_bytes() + kSlack, "atlas-pixels");
-    out.status[i] = image::load(project.tilesets[i].image.c_str(), slot, work, out.images[i]);
+    Path file;
+    out.status[i] = atlas_path(project.tilesets[i].image.view(), file);
+    if (out.status[i].ok)
+    {
+      out.status[i] = image::load(file.c_str(), slot, work, out.images[i]);
+    }
     pending[i] = false;
     if (progress != nullptr)
     {

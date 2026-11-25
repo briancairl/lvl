@@ -517,6 +517,106 @@ void job_progress(App& app)
   }
 }
 
+/**
+ * @brief The start-up prompt: open one of the recent projects, or make a new one
+ *
+ * A project is what the editor is for, and it is also the thing that is tedious to reach through
+ * the menus on a cold start -- the manifest is always called the same thing, so File > Open would
+ * have the user navigating to a folder to pick a file whose name they already know. This asks the
+ * one question that start-up has an answer to, and asks it only when the command line did not
+ * already answer it.
+ *
+ * It is deliberately an escape rather than a gate: behind it is the blank level the editor has
+ * always started with, and New project turns that into a project at any time.
+ */
+void welcome_prompt(App& app)
+{
+  if (!app.welcome)
+  {
+    return;
+  }
+  // Every way out of the prompt clears the flag first, so a job in flight means something has
+  // already been chosen; the modal must not sit over the progress dialog
+  if (busy(app) or file_dialog_open())
+  {
+    app.welcome = false;
+    return;
+  }
+  load_recent_files(app);
+  if (!ImGui::IsPopupOpen("Welcome to lvl"))
+  {
+    ImGui::OpenPopup("Welcome to lvl");
+  }
+  ImGui::SetNextWindowSize(ImVec2{480, 0});
+  if (!ImGui::BeginPopupModal("Welcome to lvl", nullptr, ImGuiWindowFlags_NoResize))
+  {
+    return;
+  }
+  ImGui::TextWrapped("Open one of your projects, or start a new one.");
+  ImGui::Spacing();
+  // The recent list holds levels as well, and entries whose file has gone away. Neither belongs in
+  // a start-up prompt: a level is not what you reopen, and a path that no longer resolves is worse
+  // than a shorter list. Both are still reachable through File > Open recent, which says which of
+  // its entries are missing rather than hiding them
+  Path chosen;
+  std::size_t listed = 0;
+  ImGui::BeginChild("projects", ImVec2{0, 6 * ImGui::GetTextLineHeightWithSpacing()}, ImGuiChildFlags_Borders);
+  for (std::size_t i = 0; i < app.recent.count; ++i)
+  {
+    const Path& path = app.recent.paths[i];
+    if (project::file_name(path.view()) != project::kManifestName or !file::exists(path.c_str()))
+    {
+      continue;
+    }
+    ++listed;
+    // Every manifest is called the same thing, so a project is named by its folder
+    const std::string_view name = project::file_name(project::parent_path(path.view()));
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Selectable(format<Path::capacity()>("%.*s", static_cast<int>(name.size()), name.data())))
+    {
+      chosen = path;
+    }
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("%s", path.c_str());
+    }
+    ImGui::PopID();
+  }
+  if (listed == 0)
+  {
+    ImGui::TextDisabled("No projects yet.");
+  }
+  ImGui::EndChild();
+  ImGui::Spacing();
+  const bool make = ImGui::Button("New project...");
+  ImGui::SameLine();
+  // Offered beside the list because a project the editor has not seen before is in neither: a fresh
+  // checkout of someone else's project has an empty recent list
+  const bool open = ImGui::Button("Open project...");
+  ImGui::SameLine();
+  const bool skip = ImGui::Button("Not now") or ImGui::IsKeyPressed(ImGuiKey_Escape);
+  if (!chosen.empty() or make or open or skip)
+  {
+    app.welcome = false;
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+  // Acted on once the popup is closed out, so the file dialog does not open underneath it
+  if (!chosen.empty())
+  {
+    // A project is opened as a project, which goes on to load its first member
+    file_action(app, FileAction::kOpenProject, chosen.c_str());
+  }
+  else if (make)
+  {
+    open_file_dialog(app, FileAction::kNewProject);
+  }
+  else if (open)
+  {
+    open_file_dialog(app, FileAction::kOpenProject);
+  }
+}
+
 /// "Save changes before quitting?"
 void exit_prompt(App& app)
 {
@@ -1140,7 +1240,19 @@ void smoke(App& app)
   switch (step)
   {
   case 0:
+    // Started with nothing named, so the start-up prompt should be up. It is a modal, but it stops
+    // nothing: the scripted session answers it the way a user would who wants no project yet, by
+    // going on to make a level. The prompt is drawn and dismissed through the same code a click
+    // takes, which is the point of checking it here rather than skipping it in scripted runs
+    if (!app.welcome)
+    {
+      report(app, Status::error("the start-up prompt did not come up with nothing on the command line"));
+    }
     demo_level(app);
+    if (app.welcome)
+    {
+      report(app, Status::error("the start-up prompt stayed up after a level was made"));
+    }
     break;
   case 1:
     start_heightmap(app);
@@ -2169,6 +2281,39 @@ void smoke(App& app)
     break;
   }
   case 38:
+    // The atlas just copied in is stored relative to the project root, and the reload that followed
+    // had to resolve it against that root rather than against the working directory. An atlas that
+    // will not load only draws red in the Tilesets panel, which is why this is checked here
+    if (app.tileset < app.project->tilesets.size() and !app.assets.status[app.tileset].ok)
+    {
+      report(app, app.assets.status[app.tileset]);
+    }
+    // Each kind of file opens where it belongs in the project tree, which there now is one of.
+    // The dialog has to draw a frame before it reports a folder, so this takes a step each.
+    open_file_dialog(app, FileAction::kSaveLevel);
+    break;
+  case 39: {
+    // The level's own file is in levels/ already, but the point is that the dialog says so rather
+    // than offering wherever it was last used
+    const Path directory = file_dialog_directory();
+    if (project::file_name(directory.view()) != std::string_view{"levels"})
+    {
+      report(app, Status::error(format<200>("saving a level offered '%s'", directory.c_str())));
+    }
+    close_file_dialog(app);
+    open_file_dialog(app, FileAction::kSaveTileSet);
+    break;
+  }
+  case 40: {
+    const Path directory = file_dialog_directory();
+    if (project::file_name(directory.view()) != std::string_view{"tilesets"})
+    {
+      report(app, Status::error(format<200>("exporting a tileset offered '%s'", directory.c_str())));
+    }
+    close_file_dialog(app);
+    break;
+  }
+  case 41:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2177,7 +2322,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 39:
+  case 42:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -2351,6 +2496,11 @@ Status initialize(App& app, const MemoryConfig& config, const char* path)
       file_action(app, FileAction::kOpenLevel, path);
     }
   }
+  else
+  {
+    // Nothing named on the command line, so ask what to work on (welcome_prompt)
+    app.welcome = true;
+  }
   return Status::okay();
 }
 
@@ -2465,6 +2615,7 @@ void frame(App& app)
     ImGui::ShowDemoWindow(&app.panels.demo);
   }
   file_dialog(app);
+  welcome_prompt(app);
   exit_prompt(app);
   import_prompt(app);
   process_deletes(app);
@@ -2819,6 +2970,8 @@ void file_action(App& app, FileAction action, const char* path)
 void demo_level(App& app)
 {
   using namespace level;
+  // --demo says what to work on, which is what the start-up prompt would otherwise be asking
+  app.welcome = false;
   // A code-generated atlas: 8 columns x 3 rows of 16x16 tiles
   //   row 0: deep water, shallow water, sand, grass, meadow, forest, rock, snow
   //   row 1: the same in winter (ice, frozen shore, snowy sand/grass/meadow/forest/rock, snow)

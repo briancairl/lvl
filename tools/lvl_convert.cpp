@@ -28,6 +28,7 @@
 #include "lvl/core/logging.hpp"
 #include "lvl/core/memory.hpp"
 #include "lvl/level/io.hpp"
+#include "lvl/project/paths.hpp"
 #include "lvl/project/project.hpp"
 #include "lvl/render/compose.hpp"
 
@@ -245,7 +246,13 @@ int main(int argc, char** argv)
       for (std::size_t i = 0; i < count; ++i)
       {
         new (&colors[i]) memory::Vector<image::Rgba>{memory::ArenaAllocator<image::Rgba>{atlas_arena}};
-        if (const Status s = image::load(project.tilesets[i].image.c_str(), atlas_arena, atlases[i]); !s.ok)
+        // Stored relative to the project root (empty for a standalone level, which leaves the path
+        // as it is), never relative to the working directory the tool happens to run in
+        Path atlas;
+        const Status located = project::resolve(project.root.view(), project.tilesets[i].image.view(), atlas);
+        // A path that will not resolve is the same kind of failure as one that will not load, and
+        // is reported the same way: a warning, and that tileset drawn as flat colors
+        if (const Status s = located.ok ? image::load(atlas.c_str(), atlas_arena, atlases[i]) : located; !s.ok)
         {
           std::fprintf(
             stderr,
