@@ -87,6 +87,23 @@ Status export_png(
   std::size_t workers = 1,
   jobs::Progress* progress = nullptr);
 
+/**
+ * @brief Saves one layer as a PNG, one pixel per cell
+ *
+ * The same colours the editor's overlay draws (<code>colorize</code>), so what is written is what
+ * the layer looks like on screen: a heightmap as its ramp, a semantic or material layer as its
+ * catalog colours, a tile layer as each tile's average colour. One pixel per cell rather than per
+ * texel, because what a layer has to say is per cell -- a map-sized render of the tiles is what
+ * <code>export_png</code> is for.
+ */
+Status export_layer_png(
+  const char* path,
+  const project::Project& project,
+  const level::Layer& layer,
+  const Atlases* atlases,
+  std::string_view season,
+  memory::Arena& scratch);
+
 /// Renders and saves the mini-preview as PNG
 Status export_minimap_png(
   const char* path,

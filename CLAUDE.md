@@ -102,7 +102,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
 | `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
-| `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by both the editor's overlays and exports), `compose` (full map PNG, mini-preview) |
+| `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by the editor's overlays, the layer export and the mini-preview), `compose` (full map PNG, mini-preview, `export_layer_png`) |
 | `//editor` | `undo`, `jobs` (background jobs, incl. `RescanProjectJob` and `CompactCatalogsJob`), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `panels.cpp` (including the Project panel: members, tilesets, rule sets), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
@@ -185,11 +185,17 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 - **Bookmarks**: user-editable, serialized to `config_path("file_dialog_places.txt")`.
 - **Devices**.
 
-Imports and exports of the open level's data (tilesets, WFC rules, path graphs, atlas and seed
-images, the PNG exports) open in the **current project folder**: the folder the open level lives in,
-or the working directory while it has no path yet. Choosing a file elsewhere in one of them does not
-move the remembered folder. Level open/save and style profiles keep using the last folder the dialog
-was used in.
+**Each action says which of the project's folders its files belong in** (`Setup::folder`), so the
+table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: an atlas opens
+in `assets/atlases/`, a seed image in `assets/images/`, a tileset in `tilesets/`, rules in `rules/`,
+path graphs in `paths/`, every PNG export in `artifacts/`. The folder is created on demand, so one
+the user deleted does not make the dialog open nowhere.
+
+A level, a project manifest and a style profile belong to no folder of the open project, so they
+open where the dialog was last used -- and choosing a file elsewhere in one of the project actions
+does not move that remembered folder. With no project folder yet, those actions fall back to the
+folder the open level lives in and then to the working directory, which is the behaviour before
+projects and still what a bare level file gets.
 
 ### Projects
 
@@ -827,7 +833,7 @@ one check to mark required:
   hold, corner fills with `diagonals`, tiles the rules do not know, rules that cannot express the
   shape).
 - `//render`: tile colors, compose with seasons and overlays, size refusal, mini-preview, PNG export,
-  a retired catalog entry drawing as nothing.
+  one layer exported as a pixel per cell, a retired catalog entry drawing as nothing.
 - `//editor:jobs_test` (atlas loading: a large atlas with small worker arenas; too little job or asset
   memory reported per atlas; a level saved and loaded through `JobMemory` whose layers exceed a
   worker's scratch; a rescan reading every member with only one resident and reporting one it cannot
@@ -853,8 +859,9 @@ one check to mark required:
   switching to it without replacing the project or decoding the atlases again, the compaction job
   rewriting the other member, a rescan leaving every member with a size, Ctrl+S writing the manifest
   and the level, and the whole project read back with both levels, its tilesets and itself in the
-  recent list); an atlas chosen from outside the project asking first, with the plan naming where it
-  would land, and once copied in being stored relative to the root and asking nothing;
+  recent list); a layer written to the project's artifacts folder as a PNG; an atlas chosen from
+  outside the project asking first, with the plan naming where it would land, and once copied in
+  being stored relative to the root and asking nothing;
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

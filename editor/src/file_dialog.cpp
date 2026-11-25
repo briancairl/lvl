@@ -15,6 +15,7 @@
 // C++ Standard Library
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
 
@@ -53,8 +54,15 @@ struct Setup
   const char* title = "Open";
   const char* filters = "All files{.*}";
   bool save = false;
-  /// Import or export of the open level's data: the dialog opens in the project folder
-  bool project = false;
+  /**
+   * @brief Which of the project's folders this kind of file belongs in
+   *
+   * Set for every action that reads or writes part of a project, which is what makes this table say
+   * outright where each kind of file lives rather than leaving it to the dialog's last folder.
+   * Left unset for a level, a project manifest and a style profile: none of them belongs to a
+   * folder of the open project, so those open wherever the dialog was last used.
+   */
+  std::optional<project::Folder> folder;
   /// Suggested file name (saves)
   FixedString<160> name;
 };
@@ -85,6 +93,34 @@ Path project_directory(const App& app)
   return Path{"."};
 }
 
+/**
+ * @brief Where the project's <code>folder</code> is, for a dialog to open in
+ *
+ * Inside the project tree once there is one, which is the point of the tree: an atlas opens in
+ * `assets/atlases/`, an export in `artifacts/`, a tileset in `tilesets/`. With no project folder
+ * yet it falls back to the folder the open level lives in, and then to the working directory --
+ * the behaviour before projects, which is still what a bare level file gets.
+ */
+Path folder_directory(const App& app, project::Folder folder)
+{
+  if (!app.project_path.empty() and !app.project->root.empty())
+  {
+    Path out;
+    if (project::subfolder(app.project->root.view(), folder, out).ok)
+    {
+      // Created on demand, since a project's tree is made when it is saved and a folder the user
+      // deleted should not make the dialog open nowhere
+      std::error_code ec;
+      std::filesystem::create_directories(std::filesystem::path{out.c_str()}, ec);
+      if (!ec)
+      {
+        return out;
+      }
+    }
+  }
+  return project_directory(app);
+}
+
 Setup setup(const App& app, FileAction action)
 {
   const project::Project& pr = *app.project;
@@ -106,11 +142,15 @@ Setup setup(const App& app, FileAction action)
     return Setup{.title = "Open project", .filters = kProjectFilters};
   case FileAction::kSaveProjectAs:
     return Setup{
-      .title = "Save project as", .filters = kProjectFilters, .save = true, .project = true, .name = "project.json"};
+      .title = "Save project as",
+      .filters = kProjectFilters,
+      .save = true,
+      .folder = project::Folder::kRoot,
+      .name = "project.json"};
   case FileAction::kOpenLevel:
     return Setup{.title = "Open level", .filters = kLevelFilters};
   case FileAction::kAddLevel:
-    return Setup{.title = "Add a level to this project", .filters = kLevelFilters, .project = true};
+    return Setup{.title = "Add a level to this project", .filters = kLevelFilters, .folder = project::Folder::kLevels};
   case FileAction::kSaveLevel:
     return Setup{
       .title = "Save level",
@@ -119,43 +159,62 @@ Setup setup(const App& app, FileAction action)
       .name = app.path.empty() ? FixedString<160>{format<160>("%s.json", lv.settings.name.c_str())}
                                : FixedString<160>{std::filesystem::path{app.path.c_str()}.filename().string()}};
   case FileAction::kLoadTileSet:
-    return Setup{.title = "Import tileset", .filters = kDataFilters, .project = true};
+    return Setup{.title = "Import tileset", .filters = kDataFilters, .folder = project::Folder::kTileSets};
   case FileAction::kSaveTileSet:
     return Setup{
       .title = "Export tileset",
       .filters = kDataFilters,
       .save = true,
-      .project = true,
+      .folder = project::Folder::kTileSets,
       .name = format<160>(
         "%s.tileset.json", app.tileset < pr.tilesets.size() ? pr.tilesets[app.tileset].name.c_str() : "tileset")};
   case FileAction::kAtlasImage:
-    return Setup{.title = "Choose atlas image", .filters = kImageFilters, .project = true};
+    return Setup{.title = "Choose atlas image", .filters = kImageFilters, .folder = project::Folder::kAtlases};
   case FileAction::kSeedImage:
-    return Setup{.title = "Choose seed image", .filters = kImageFilters, .project = true};
+    return Setup{.title = "Choose seed image", .filters = kImageFilters, .folder = project::Folder::kImages};
   case FileAction::kLoadWfc:
-    return Setup{.title = "Import WFC rules", .filters = kDataFilters, .project = true};
+    return Setup{.title = "Import WFC rules", .filters = kDataFilters, .folder = project::Folder::kRules};
   case FileAction::kSaveWfc:
     return Setup{
-      .title = "Export WFC rules", .filters = kDataFilters, .save = true, .project = true, .name = "rules.wfc.json"};
+      .title = "Export WFC rules",
+      .filters = kDataFilters,
+      .save = true,
+      .folder = project::Folder::kRules,
+      .name = "rules.wfc.json"};
   case FileAction::kLoadPaths:
-    return Setup{.title = "Import path graphs", .filters = kDataFilters, .project = true};
+    return Setup{.title = "Import path graphs", .filters = kDataFilters, .folder = project::Folder::kPaths};
   case FileAction::kSavePaths:
     return Setup{
-      .title = "Export path graphs", .filters = kDataFilters, .save = true, .project = true, .name = "paths.json"};
+      .title = "Export path graphs",
+      .filters = kDataFilters,
+      .save = true,
+      .folder = project::Folder::kPaths,
+      .name = "paths.json"};
   case FileAction::kExportPng:
     return Setup{
       .title = "Export map as PNG",
       .filters = kPngFilters,
       .save = true,
-      .project = true,
+      .folder = project::Folder::kArtifacts,
       .name = format<160>("%s.png", lv.settings.name.c_str())};
   case FileAction::kExportMinimap:
     return Setup{
       .title = "Export mini-preview as PNG",
       .filters = kPngFilters,
       .save = true,
-      .project = true,
+      .folder = project::Folder::kArtifacts,
       .name = format<160>("%s.preview.png", lv.settings.name.c_str())};
+  case FileAction::kExportLayerImage:
+    return Setup{
+      .title = "Export layer as PNG",
+      .filters = kPngFilters,
+      .save = true,
+      .folder = project::Folder::kArtifacts,
+      // <level>.<layer>.png, so a project's artifacts folder says which level and layer each is
+      .name = format<160>(
+        "%s.%s.png",
+        lv.settings.name.c_str(),
+        app.layer < lv.layers.size() ? lv.layers[app.layer].name.c_str() : "layer")};
   case FileAction::kSaveStyle:
     return Setup{.title = "Save style profile", .filters = kStyleFilters, .save = true, .name = "style.json"};
   case FileAction::kLoadStyle:
@@ -229,9 +288,9 @@ void open_file_dialog(App& app, FileAction action)
   refresh_places(app);
   const Setup s = setup(app, action);
   app.dialog.action = action;
-  // Imports and exports of the open level's data start in the project folder; everything else in
-  // the folder the dialog was last used in
-  const Path directory = s.project ? project_directory(app) : app.dialog.directory;
+  // Each kind of file opens where it belongs in the project tree (see Setup::folder); a level, a
+  // manifest or a style profile belongs to no folder of it, and opens where the dialog was last used
+  const Path directory = s.folder.has_value() ? folder_directory(app, *s.folder) : app.dialog.directory;
   IGFD::FileDialogConfig config;
   config.path = directory.c_str();
   config.fileName = s.name.c_str();
@@ -255,7 +314,7 @@ void file_dialog(App& app)
   {
     const std::string path = dialog().GetFilePathName(IGFD_ResultMode_AddIfNoFileExt);
     // An import or export elsewhere does not move the folder the other dialogs remember
-    if (!setup(app, action).project)
+    if (!setup(app, action).folder.has_value())
     {
       app.dialog.directory.assign(dialog().GetCurrentPath());
     }

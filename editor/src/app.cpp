@@ -992,6 +992,10 @@ void main_menu(App& app)
         {
           open_file_dialog(app, FileAction::kExportMinimap);
         }
+        if (ImGui::MenuItem("Selected layer as PNG...", nullptr, false, app.layer < app.level->layers.size()))
+        {
+          open_file_dialog(app, FileAction::kExportLayerImage);
+        }
         ImGui::EndMenu();
       }
       if constexpr (web::kAvailable)
@@ -2110,9 +2114,15 @@ void smoke(App& app)
     {
       report(app, Status::error("opening a project did not record it in the recent list"));
     }
+    // A layer as a PNG, one pixel per cell, into the project's own artifacts folder
+    file_action(app, FileAction::kExportLayerImage, "smoke_project/artifacts/demo.layer.png");
     break;
   }
   case 37: {
+    if (!file::exists("smoke_project/artifacts/demo.layer.png"))
+    {
+      report(app, Status::error("exporting a layer as a PNG wrote nothing"));
+    }
     // An asset from outside the project asks before anything is stored, and says what copying
     // would do. The demo level wrote its atlas into the working directory, which is outside.
     project::Project& pr = *app.project;
@@ -2751,6 +2761,7 @@ void file_action(App& app, FileAction action, const char* path)
     break;
   case FileAction::kExportPng:
   case FileAction::kExportMinimap:
+  case FileAction::kExportLayerImage:
     if (auto* job = prepare_job<ExportJob>(app); job != nullptr)
     {
       job->project = app.project;
@@ -2760,6 +2771,10 @@ void file_action(App& app, FileAction action, const char* path)
       job->options.season = view_season(app);
       job->options.tint = app.view.tint;
       job->minimap = (action == FileAction::kExportMinimap);
+      if (action == FileAction::kExportLayerImage)
+      {
+        job->layer = app.layer;
+      }
       job->max_size = app.minimap_size;
       job->path.assign(path);
       start_job(app);

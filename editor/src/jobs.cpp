@@ -299,7 +299,17 @@ void ReloadAtlasesJob::run(jobs::Progress& progress)
 
 void ExportJob::run(jobs::Progress& progress)
 {
-  if (minimap)
+  if (layer != static_cast<std::size_t>(-1))
+  {
+    progress.reset(1);
+    progress.stage("Writing the layer");
+    result = (layer < level->layers.size())
+      ? render::export_layer_png(
+          path.c_str(), *project, level->layers[layer], &atlases, options.season, memory->general)
+      : Status::error("the layer was removed before the export ran");
+    progress.advance();
+  }
+  else if (minimap)
   {
     progress.reset(1);
     progress.stage("Rendering mini-preview");

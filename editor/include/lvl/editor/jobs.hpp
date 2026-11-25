@@ -242,6 +242,14 @@ struct ExportJob
   render::ComposeOptions options;
   /// Mini-preview instead of the full map
   bool minimap = false;
+  /**
+   * @brief One layer, one pixel per cell, instead of the map
+   *
+   * <code>project::kNoLevel</code> when the whole map is wanted. One pixel per cell is cheap enough
+   * that this could be done on the UI thread, but it goes through the same job as the other exports
+   * so that one path reports progress, errors and the modal.
+   */
+  std::size_t layer = static_cast<std::size_t>(-1);
   int max_size = 256;
   Path path;
   JobMemory* memory = nullptr;

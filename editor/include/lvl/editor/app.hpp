@@ -383,6 +383,8 @@ enum class FileAction : std::uint8_t
   kSavePaths,
   kExportPng,
   kExportMinimap,
+  /// The selected layer as a PNG, one pixel per cell (what its overlay draws)
+  kExportLayerImage,
   kSaveStyle,
   kLoadStyle,
 };

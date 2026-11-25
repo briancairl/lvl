@@ -1,4 +1,5 @@
 // C++ Standard Library
+#include <cstdio>
 #include <string>
 
 // GTest
@@ -139,6 +140,19 @@ TEST_F(Render, ExportPngs)
   ASSERT_TRUE(image::load(mini.c_str(), doc, tmp, loaded).ok);
   EXPECT_EQ(loaded.width, 24);  // 6 cells, at most 4x upscaled
   memory::pop(scratch, tmp);
+}
+
+TEST_F(Render, ExportsOneLayerAsAPixelPerCell)
+{
+  const std::string path = std::string{::testing::TempDir()} + "layer.png";
+  std::remove(path.c_str());
+  // The tile layer the fixture filled: 6x4 cells, so 6x4 pixels
+  const Status s = render::export_layer_png(path.c_str(), *pr, level->layers[1], &atlases, {}, scratch);
+  ASSERT_TRUE(s.ok) << s.message.c_str();
+  image::Info info;
+  ASSERT_TRUE(image::probe(path.c_str(), scratch, info).ok);
+  EXPECT_EQ(info.width, 6);
+  EXPECT_EQ(info.height, 4);
 }
 
 TEST_F(Render, ARetiredCatalogEntryDrawsAsNothing)

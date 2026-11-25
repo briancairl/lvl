@@ -352,6 +352,37 @@ Status export_png(
   return status;
 }
 
+Status export_layer_png(
+  const char* path,
+  const project::Project& project,
+  const level::Layer& layer,
+  const Atlases* atlases,
+  std::string_view season,
+  memory::Arena& scratch)
+{
+  const level::Extents size = level::extents(layer);
+  if (size.width <= 0 or size.height <= 0)
+  {
+    return Status::error("the layer has no cells to write");
+  }
+  // One for the pixels, one for the PNG encoder, as the other exports do
+  memory::Arena result;
+  memory::Arena work;
+  memory::push(scratch, result, memory::available(scratch) / 4, "layer-result");
+  memory::push(scratch, work, "layer-work");
+  image::Image img = image::create(result, size.width, size.height);
+  Status status =
+    img.empty() ? Status::error("not enough memory for a %dx%d image", size.width, size.height) : Status::okay();
+  if (status.ok)
+  {
+    colorize(project, layer, img, atlases, season);
+    status = image::save_png(path, img, work);
+  }
+  memory::pop(scratch, work);
+  memory::pop(scratch, result);
+  return status;
+}
+
 Status export_minimap_png(
   const char* path,
   const project::Project& project,
