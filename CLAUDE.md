@@ -241,6 +241,21 @@ are in the same frame of reference. Resolving the source against the *root* inst
 `forest.png` as `<root>/forest.png`, so an outside file looks like one already inside and is stored
 under a path that names nothing.
 
+**Every read of a stored asset path goes through `project::resolve` first**, because the path is
+relative to the project *root* and the process working directory is wherever the editor was started
+-- so the two are not the same folder and resolving against the wrong one simply fails to find the
+file. `editor::load_atlases` resolves each tileset's atlas (for both the probe and the decode),
+`//tools:lvl_convert` resolves it the same way, and the heightmap's seed image is resolved on the UI
+thread before `HeightmapJob` starts, since a job has no project to resolve it against. `resolve`
+passes an absolute path through unchanged, which is what a deliberately external reference is, and
+with an empty root it leaves the path alone -- so a bare level file behaves as it always did. The
+working directory is deliberately **not** changed to the root: a `chdir` would silently re-point the
+recent-files list, the dialog's remembered folder and every relative path on the command line.
+
+An atlas that will not load is not logged -- it draws red in the Tilesets panel -- so the scripted
+session checks `App::assets::status` itself after the atlas it copied in is reloaded (smoke step
+38), which is the one thing that would otherwise let this break again unnoticed.
+
 `editor::request_import` is the gate: it plans the copy and, for a file outside the tree, records an
 `App::pending_import` that `import_prompt` draws as a modal beside the other prompts — **Copy into
 the project** (what Enter takes), **Link in place** or **Cancel**. Three cases never reach it: a

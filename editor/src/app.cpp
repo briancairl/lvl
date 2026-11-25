@@ -2281,6 +2281,13 @@ void smoke(App& app)
     break;
   }
   case 38:
+    // The atlas just copied in is stored relative to the project root, and the reload that followed
+    // had to resolve it against that root rather than against the working directory. An atlas that
+    // will not load only draws red in the Tilesets panel, which is why this is checked here
+    if (app.tileset < app.project->tilesets.size() and !app.assets.status[app.tileset].ok)
+    {
+      report(app, app.assets.status[app.tileset]);
+    }
     // Each kind of file opens where it belongs in the project tree, which there now is one of.
     // The dialog has to draw a frame before it reports a folder, so this takes a step each.
     open_file_dialog(app, FileAction::kSaveLevel);
