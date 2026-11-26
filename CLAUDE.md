@@ -105,7 +105,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`, `TileGroup` multi-tile stamps), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`, `TileGroup` multi-tile stamps), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials`/`derive_semantics` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
 | `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, the `ScatterProfile`s its levels are populated from (`find_scatter`/`add_scatter`/`remove_scatter`/`add_scatter_object`/`remove_scatter_object`/`validate_scatter`), and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `scatter` (`scatter_groups`: tile groups placed over an area, whole and clear of each other), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by the editor's overlays, the layer export and the mini-preview), `compose` (full map PNG, mini-preview, `export_layer_png`) |
@@ -825,6 +825,44 @@ tiles drawn in the positions the rule would put them in (the edited one outlined
 the pair is allowed. The "Preview pairs" checkbox in either window turns it off (`App::wfc_preview`),
 and the neighbor editor falls back to its plain text tooltip.
 
+### Deriving a layer from the tiles
+
+Three passes recompute a per-cell layer from what the tile layers' metadata says, so the data the
+game is given follows the art rather than being kept in step by hand:
+
+- **`derive_collision`** unions the collision masks of the tiles on every visible tile layer.
+- **`derive_materials`** takes the topmost non-empty tile that has a material.
+- **`derive_semantics`** squashes **chosen** tile layers into a semantic layer: each cell takes the
+  semantic type of the **topmost** tile that has one, which is what makes the result mean what the
+  map looks like -- a path drawn over grass is a path, and the grass under it gets no say.
+
+The third differs from the other two in two ways, both deliberate.
+
+**The layers are chosen, not taken as read.** The layers that say what the ground *is* are rarely
+all of them: the cliff faces of a height-stepped map are drawn over the ground they stand on without
+replacing what it is, and a decoration layer of flowers is not a different kind of ground. So it
+reads exactly the layers it is given, **visible or not** -- picking them is the point, and hiding a
+layer to see under it must not change what a refresh writes.
+
+**Precedence is the level's layer order, not the order the caller lists them in.** Layer order is
+draw order, so "the one on top wins" is a property of the level and cannot be inverted by writing
+the call the other way round. The implementation builds the chosen layers' planes top-first in
+`scratch` and stops each cell at the first tile that has a semantic type, which is also why a tile
+with no semantic type does not mask the one below it.
+
+`keep_unmatched` says what happens to a cell no chosen layer accounts for: cleared to `kNoSemantic`
+(the layer then says exactly what the tiles say), or left as it was -- which is how semantics painted
+by hand or written by the water-shedding pass survive a refresh. With no layers named at all every
+cell is unmatched, so the layer is cleared or left alone entire. A tile's semantic type is read from
+the tile as **drawn** during the season, as `derive_collision` reads its collision mask.
+
+In the editor it is **Edit > Refresh semantics from tiles...**, a dialog rather than a menu item
+because the layers are chosen; which of them wins is not a choice, so the dialog states the rule
+instead of offering one, and lists the tile layers top-first as the viewport stacks them.
+`editor::refresh_semantics` is the command (`App::derive`, a `SemanticDerive`): it adds a semantic
+layer if the level has none, takes the undo snapshot, and reports how many cells changed. It is one
+undoable layer edit, not a job.
+
 ### Deleting
 
 Rows of layers, semantic types, materials, seasons, path graphs, portals/markers, tile groups,
@@ -918,7 +956,11 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors (including a file written before a field existed still reading, via
   the header version in the serializer's context), JSON zero-heap check, jobs/random, images.
-- `//level`: model operations (resize, derivation, clearing a tileset's references, portals/paths/routes, WFC
+- `//level`: model operations (resize, derivation -- including semantics squashed from chosen tile
+  layers: the topmost tile that has a semantic type winning, a tile with none not masking the one
+  below it, precedence following the level's order and not the caller's list, a subset of the layers,
+  the unmatched cells cleared or kept, no layers named at all, and the tile read as drawn in the
+  season -- clearing a tileset's references, portals/paths/routes, WFC
   rule learning, rules from a palette layout, a step terrain read from either block shape, batch
   tile and constraint edits (scatter weight included), tile groups spanning one packed cell table
   (replaced by name, removed with the table compacted, holes and cells outside the footprint, a
@@ -1008,7 +1050,9 @@ one check to mark required:
   multi-tile paint stamp, a tile group made out of the palette selection, chosen, stamped holes and
   all, and deleted (which stops the stamping), a scatter profile naming that group placing it over
   the map (every placement whole, none written over another, and the profile marking the project
-  modified) and then removed with its objects, a thirteen-tile terrain taken from one palette selection and painted (the
+  modified) and then removed with its objects, the semantic layer refreshed from two tile layers (the
+  topmost winning, dropping it re-reading the one below, and the unmatched cells kept and then
+  cleared), a thirteen-tile terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
   layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of

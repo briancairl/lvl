@@ -268,6 +268,14 @@ void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const 
  */
 void apply_scatter(App& app);
 
+/**
+ * @brief Squashes the tile layers <code>App::derive</code> names into its semantic layer
+ *
+ * What Edit > Refresh semantics from tiles runs. Takes the undo snapshot, adds a semantic layer if
+ * the level has none, and records how many cells changed in <code>SemanticDerive::changed</code>.
+ */
+void refresh_semantics(App& app);
+
 /// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked
 bool deselect_all_button(App& app);
 

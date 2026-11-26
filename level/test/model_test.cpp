@@ -316,6 +316,145 @@ TEST_F(LevelModel, DeriveCollisionAndMaterialsFromTiles)
   EXPECT_EQ(plane<IdGrid>(level.layers[mat]).at(1, 0), ts.tiles[1].material);
 }
 
+TEST_F(LevelModel, DeriveSemanticsSquashesTheChosenTileLayersTopFirst)
+{
+  constexpr SemanticId kGrass = 1;
+  constexpr SemanticId kPath = 2;
+  constexpr SemanticId kRock = 3;
+
+  Level level{arena};
+  create_default(level, Settings{.extents = {4, 1}});
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  constexpr TileSetId id = 0;
+  auto& ts = tilesets.back();
+  ts.image_width = 16 * 4;
+  ts.image_height = 16;
+  reslice(ts);
+  ASSERT_EQ(ts.tiles.size(), 4UL);
+  // Tile 0 has no semantic type at all, so it never has a say
+  ts.tiles[1].semantic = kGrass;
+  ts.tiles[2].semantic = kPath;
+  ts.tiles[3].semantic = kRock;
+
+  // Layer 1 is the default ground layer; two more go above it. Every plane is taken after the last
+  // add_layer, since adding one may move the layer vector
+  const auto middle = add_layer(level, LayerKind::kTiles, "middle");
+  const auto top = add_layer(level, LayerKind::kTiles, "top");
+  const auto semantic = add_layer(level, LayerKind::kSemantic, "semantics");
+  auto& ground = plane<TileGrid>(level.layers[1]);
+  auto& middle_tiles = plane<TileGrid>(level.layers[middle]);
+  auto& top_tiles = plane<TileGrid>(level.layers[top]);
+
+  // Cell 0: grass only. Cell 1: grass with a path over it. Cell 2: grass, a path, and rock on top.
+  // Cell 3: grass under a tile that has no semantic type of its own
+  ground.at(0, 0) = TileRef{id, 1};
+  ground.at(1, 0) = TileRef{id, 1};
+  ground.at(2, 0) = TileRef{id, 1};
+  ground.at(3, 0) = TileRef{id, 1};
+  middle_tiles.at(1, 0) = TileRef{id, 2};
+  middle_tiles.at(2, 0) = TileRef{id, 2};
+  top_tiles.at(2, 0) = TileRef{id, 3};
+  top_tiles.at(3, 0) = TileRef{id, 0};
+
+  // All three layers, listed bottom-up
+  const std::size_t all[] = {1, middle, top};
+  std::size_t changed = derive_semantics(tilesets, level, semantic, all, 3, "default", false, arena);
+  const auto& ids = plane<IdGrid>(level.layers[semantic]);
+  EXPECT_EQ(changed, 4UL);
+  EXPECT_EQ(ids.at(0, 0), kGrass);
+  EXPECT_EQ(ids.at(1, 0), kPath);
+  EXPECT_EQ(ids.at(2, 0), kRock);
+  // A tile with no semantic type does not mask the one below it
+  EXPECT_EQ(ids.at(3, 0), kGrass);
+
+  // Precedence is the level's order, not the order the layers are listed in
+  const std::size_t reversed[] = {top, middle, 1};
+  EXPECT_EQ(derive_semantics(tilesets, level, semantic, reversed, 3, "default", false, arena), 0UL);
+  EXPECT_EQ(ids.at(2, 0), kRock);
+
+  // Only the bottom layer: the path and the rock stop counting
+  const std::size_t bottom[] = {1};
+  changed = derive_semantics(tilesets, level, semantic, bottom, 1, "default", false, arena);
+  EXPECT_EQ(changed, 2UL);
+  for (int x = 0; x < 4; ++x)
+  {
+    EXPECT_EQ(ids.at(x, 0), kGrass) << x;
+  }
+
+  // Running it twice over changes nothing
+  EXPECT_EQ(derive_semantics(tilesets, level, semantic, bottom, 1, "default", false, arena), 0UL);
+}
+
+TEST_F(LevelModel, DeriveSemanticsClearsOrKeepsWhatTheTilesDoNotAccountFor)
+{
+  constexpr SemanticId kGrass = 1;
+  constexpr SemanticId kPainted = 2;
+
+  Level level{arena};
+  create_default(level, Settings{.extents = {3, 1}});
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  auto& ts = tilesets.back();
+  ts.image_width = 32;
+  ts.image_height = 16;
+  reslice(ts);
+  ts.tiles[1].semantic = kGrass;
+  const auto semantic = add_layer(level, LayerKind::kSemantic, "semantics");
+  plane<TileGrid>(level.layers[1]).at(0, 0) = TileRef{0, 1};
+  auto& ids = plane<IdGrid>(level.layers[semantic]);
+  // Cells 1 and 2 were painted by hand; no tile accounts for them
+  ids.at(1, 0) = kPainted;
+  ids.at(2, 0) = kPainted;
+
+  const std::size_t layers[] = {1};
+  EXPECT_EQ(derive_semantics(tilesets, level, semantic, layers, 1, "default", true, arena), 1UL);
+  EXPECT_EQ(ids.at(0, 0), kGrass);
+  EXPECT_EQ(ids.at(1, 0), kPainted);
+  EXPECT_EQ(ids.at(2, 0), kPainted);
+
+  // Without keep_unmatched the layer says exactly what the tiles say
+  EXPECT_EQ(derive_semantics(tilesets, level, semantic, layers, 1, "default", false, arena), 2UL);
+  EXPECT_EQ(ids.at(0, 0), kGrass);
+  EXPECT_EQ(ids.at(1, 0), kNoSemantic);
+  EXPECT_EQ(ids.at(2, 0), kNoSemantic);
+
+  // No layers named at all: every cell is unmatched, so the layer is cleared entire or left alone
+  ids.at(1, 0) = kPainted;
+  EXPECT_EQ(derive_semantics(tilesets, level, semantic, nullptr, 0, "default", true, arena), 0UL);
+  EXPECT_EQ(ids.at(1, 0), kPainted);
+  EXPECT_EQ(derive_semantics(tilesets, level, semantic, nullptr, 0, "default", false, arena), 2UL);
+  EXPECT_EQ(ids.at(0, 0), kNoSemantic);
+  EXPECT_EQ(ids.at(1, 0), kNoSemantic);
+}
+
+TEST_F(LevelModel, DeriveSemanticsReadsTheTileAsDrawnInTheSeason)
+{
+  constexpr SemanticId kGrass = 1;
+  constexpr SemanticId kSnow = 2;
+
+  Level level{arena};
+  create_default(level, Settings{.extents = {1, 1}});
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  auto& ts = tilesets.back();
+  ts.image_width = 32;
+  ts.image_height = 16;
+  reslice(ts);
+  ts.tiles[0].semantic = kGrass;
+  ts.tiles[1].semantic = kSnow;
+  set_seasonal_variant(ts, SeasonalVariant{.tile = 0, .season = "winter", .alternate = 1});
+  const auto semantic = add_layer(level, LayerKind::kSemantic, "semantics");
+  plane<TileGrid>(level.layers[1]).at(0, 0) = TileRef{0, 0};
+  const auto& ids = plane<IdGrid>(level.layers[semantic]);
+  const std::size_t layers[] = {1};
+
+  derive_semantics(tilesets, level, semantic, layers, 1, "summer", false, arena);
+  EXPECT_EQ(ids.at(0, 0), kGrass);
+  derive_semantics(tilesets, level, semantic, layers, 1, "winter", false, arena);
+  EXPECT_EQ(ids.at(0, 0), kSnow);
+}
+
 TEST_F(LevelModel, ClearingTilesetReferencesEmptiesAndRenumbersCells)
 {
   Level level{arena};

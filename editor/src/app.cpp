@@ -996,10 +996,168 @@ void resize_popup(App& app, bool open)
   }
 }
 
+}  // namespace
+
+void refresh_semantics(App& app)
+{
+  level::Level& lv = *app.level;
+  SemanticDerive& d = app.derive;
+  memory::Scope scope{app.memory.frame};
+  auto chosen = memory::make_vector<std::size_t>(app.memory.frame);
+  for (std::size_t i = 0; i < lv.layers.size() and i < kMaxDeriveLayers; ++i)
+  {
+    if (d.layers.test(i) and lv.layers[i].kind == level::LayerKind::kTiles)
+    {
+      chosen.push_back(i);
+    }
+  }
+  // A level with no semantic layer gets one, so the command works on a map that never had one
+  std::size_t target = d.layer;
+  if (target >= lv.layers.size() or lv.layers[target].kind != level::LayerKind::kSemantic)
+  {
+    target = level::find_layer(lv, level::LayerKind::kSemantic);
+    if (target >= lv.layers.size())
+    {
+      target = level::add_layer(lv, level::LayerKind::kSemantic, "semantics");
+    }
+    d.layer = target;
+  }
+  app.undo.snapshot(lv, target, "Refresh semantics");
+  d.changed = level::derive_semantics(
+    app.project->tilesets,
+    lv,
+    target,
+    chosen.data(),
+    chosen.size(),
+    view_season(app),
+    d.keep_unmatched,
+    app.memory.frame);
+  d.ran = true;
+  app.modified = app.modified or d.changed > 0;
+  invalidate_layer(app, target);
+  LVL_LOG_INFO() << "Refreshed semantics from " << chosen.size() << " tile layer(s): " << d.changed
+                 << " cell(s) changed";
+}
+
+namespace
+{
+
+/**
+ * @brief Edit > Refresh semantics from tiles: squash one or more tile layers into a semantic layer
+ *
+ * A dialog rather than a menu item because the layers are chosen. Which of them wins is not a
+ * choice, so the dialog says what the rule is instead of offering one: the level's layer order is
+ * the order they are drawn in, so the layer on top has the last word.
+ */
+void semantics_popup(App& app, bool open)
+{
+  level::Level& lv = *app.level;
+  SemanticDerive& d = app.derive;
+  if (open)
+  {
+    // Every tile layer to begin with, which is what the collision and material derivations do
+    d.layers.reset();
+    for (std::size_t i = 0; i < lv.layers.size() and i < kMaxDeriveLayers; ++i)
+    {
+      d.layers.set(i, lv.layers[i].kind == level::LayerKind::kTiles);
+    }
+    d.layer = level::find_layer(lv, level::LayerKind::kSemantic);
+    d.ran = false;
+    ImGui::OpenPopup("Refresh semantics");
+  }
+  if (!ImGui::BeginPopupModal("Refresh semantics", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    return;
+  }
+  ImGui::TextDisabled("Each cell takes the semantic type of the topmost tile that has one.");
+
+  // The target: an existing semantic layer, or one made on the way
+  const std::size_t none = lv.layers.size();
+  const bool have_target = d.layer < none and lv.layers[d.layer].kind == level::LayerKind::kSemantic;
+  if (have_target)
+  {
+    if (ImGui::BeginCombo("Semantic layer", lv.layers[d.layer].name.c_str()))
+    {
+      for (std::size_t i = 0; i < lv.layers.size(); ++i)
+      {
+        if (
+          lv.layers[i].kind == level::LayerKind::kSemantic and
+          ImGui::Selectable(format<96>("%s##%zu", lv.layers[i].name.c_str(), i), i == d.layer))
+        {
+          d.layer = i;
+        }
+      }
+      ImGui::EndCombo();
+    }
+  }
+  else
+  {
+    ImGui::TextDisabled("The level has no semantic layer; one will be added.");
+  }
+
+  // Listed top first, as the viewport stacks them, so the order on screen is the order of precedence
+  ImGui::SeparatorText("From these tile layers (topmost first)");
+  std::size_t tile_layers = 0;
+  for (std::size_t n = lv.layers.size(); n > 0; --n)
+  {
+    const std::size_t i = n - 1;
+    if (lv.layers[i].kind != level::LayerKind::kTiles or i >= kMaxDeriveLayers)
+    {
+      continue;
+    }
+    ++tile_layers;
+    bool on = d.layers.test(i);
+    if (ImGui::Checkbox(format<96>("%s##derive%zu", lv.layers[i].name.c_str(), i), &on))
+    {
+      d.layers.set(i, on);
+    }
+    if (!lv.layers[i].visible)
+    {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(hidden; it still counts)");
+    }
+  }
+  if (tile_layers == 0)
+  {
+    ImGui::TextDisabled("The level has no tile layers.");
+  }
+  ImGui::SeparatorText("");
+  ImGui::Checkbox("Keep the cells no chosen layer accounts for", &d.keep_unmatched);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("On: a cell no tile on a chosen layer gives a semantic type for keeps what it has, so "
+                      "semantics painted by hand or written by the water-shedding pass survive. Off: it is "
+                      "cleared, so the layer says exactly what the tiles say.");
+  }
+  if (d.ran)
+  {
+    ImGui::TextDisabled("%zu cell(s) changed.", d.changed);
+  }
+
+  const bool ready = (d.count() > 0);
+  ImGui::BeginDisabled(!ready);
+  if (ImGui::Button("Refresh"))
+  {
+    refresh_semantics(app);
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) and !ready)
+  {
+    ImGui::SetTooltip("Choose at least one tile layer to read");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Close") or ImGui::IsKeyPressed(ImGuiKey_Escape))
+  {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 void main_menu(App& app)
 {
   bool open_new = false;
   bool open_resize = false;
+  bool open_semantics = false;
   if (ImGui::BeginMainMenuBar())
   {
     if (ImGui::BeginMenu("File"))
@@ -1151,6 +1309,7 @@ void main_menu(App& app)
         invalidate_layer(app, c);
         app.modified = true;
       }
+      open_semantics = ImGui::MenuItem("Refresh semantics from tiles...") or open_semantics;
       if (ImGui::MenuItem("Derive materials from tiles"))
       {
         std::size_t m = level::find_layer(*app.level, level::LayerKind::kMaterial);
@@ -1222,6 +1381,7 @@ void main_menu(App& app)
   }
   new_level_popup(app, open_new);
   resize_popup(app, open_resize);
+  semantics_popup(app, open_semantics);
 }
 
 /// One scripted action per idle frame (see App::smoke); closes the editor when done
@@ -2483,7 +2643,84 @@ void smoke(App& app)
     }
     break;
   }
-  case 45:
+  case 45: {
+    // Refreshing the semantic layer from the tile layers: the topmost tile that has a semantic type
+    // is the one that lands, which is the whole point of reading them as a stack
+    level::Level& lv = *app.level;
+    project::Project& pr = *app.project;
+    if (app.tileset >= pr.tilesets.size() or pr.tilesets[app.tileset].tiles.size() < 2)
+    {
+      report(app, Status::error("no tileset to read semantic types from"));
+      break;
+    }
+    const level::SemanticId under = project::intern_semantic(pr, "under");
+    const level::SemanticId over = project::intern_semantic(pr, "over");
+    level::TileSet& ts = pr.tilesets[app.tileset];
+    ts.tiles[0].semantic = under;
+    ts.tiles[1].semantic = over;
+    // A second tile layer above the ground one; every plane is taken after the last add_layer,
+    // since adding one may move the layer vector
+    const std::size_t ground = 1;
+    if (ground >= lv.layers.size() or lv.layers[ground].kind != level::LayerKind::kTiles)
+    {
+      report(app, Status::error("the level has no ground tile layer"));
+      break;
+    }
+    const std::size_t above = level::add_layer(lv, level::LayerKind::kTiles, "over");
+    const std::size_t semantic = level::find_layer(lv, level::LayerKind::kSemantic) < lv.layers.size()
+      ? level::find_layer(lv, level::LayerKind::kSemantic)
+      : level::add_layer(lv, level::LayerKind::kSemantic, "semantics");
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    plane<level::TileGrid>(lv.layers[ground]).at(0, 0) = level::TileRef{tileset, 0};
+    plane<level::TileGrid>(lv.layers[ground]).at(1, 0) = level::TileRef{tileset, 0};
+    plane<level::TileGrid>(lv.layers[above]).at(0, 0) = level::TileRef{tileset, 1};
+
+    app.derive = SemanticDerive{};
+    app.derive.layer = semantic;
+    app.derive.layers.set(ground, true);
+    app.derive.layers.set(above, true);
+    refresh_semantics(app);
+    {
+      const auto& ids = plane<level::IdGrid>(lv.layers[semantic]);
+      if (ids.at(0, 0) != over)
+      {
+        report(app, Status::error("the topmost tile layer did not win the squash"));
+      }
+      if (ids.at(1, 0) != under)
+      {
+        report(app, Status::error("a cell only the lower layer covers did not take its semantic type"));
+      }
+    }
+    // Reading only the lower layer puts that cell back to what the ground says
+    app.derive.layers.set(above, false);
+    refresh_semantics(app);
+    {
+      const auto& ids = plane<level::IdGrid>(lv.layers[semantic]);
+      if (ids.at(0, 0) != under or app.derive.changed != 1)
+      {
+        report(app, Status::error("dropping the top layer did not re-read the one below it"));
+      }
+    }
+    // And a cell no chosen layer accounts for is cleared, unless that is turned off. This level is a
+    // populated project member, so the cell has to be emptied to be unaccounted for at all
+    plane<level::TileGrid>(lv.layers[ground]).at(2, 0) = level::kEmptyTile;
+    plane<level::TileGrid>(lv.layers[above]).at(2, 0) = level::kEmptyTile;
+    plane<level::IdGrid>(lv.layers[semantic]).at(2, 0) = over;
+    app.derive.keep_unmatched = true;
+    refresh_semantics(app);
+    if (plane<level::IdGrid>(lv.layers[semantic]).at(2, 0) != over)
+    {
+      report(app, Status::error("keeping the unmatched cells did not keep one"));
+    }
+    app.derive.keep_unmatched = false;
+    refresh_semantics(app);
+    if (plane<level::IdGrid>(lv.layers[semantic]).at(2, 0) != level::kNoSemantic)
+    {
+      report(app, Status::error("a cell no chosen layer accounts for was not cleared"));
+    }
+    break;
+  }
+  case 46:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2492,7 +2729,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 46:
+  case 47:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

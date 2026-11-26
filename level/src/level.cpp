@@ -244,4 +244,76 @@ void derive_materials(const TileSets& tilesets, Level& level, std::size_t materi
     });
 }
 
+std::size_t derive_semantics(
+  const TileSets& tilesets,
+  Level& level,
+  std::size_t semantic_layer,
+  const std::size_t* tile_layers,
+  std::size_t count,
+  std::string_view season,
+  bool keep_unmatched,
+  memory::Arena& scratch)
+{
+  LVL_ASSERT_LT(semantic_layer, level.layers.size());
+  LVL_ASSERT(level.layers[semantic_layer].kind == LayerKind::kSemantic);
+  auto& out = plane<IdGrid>(level.layers[semantic_layer]);
+
+  memory::Scope scope{scratch};
+  // The chosen tile layers' planes, top first, so a cell stops at the first tile that has a
+  // semantic type. Built from the level's own order rather than the caller's list, which is what
+  // makes "the layer on top wins" a property of the level and not of how the call was written
+  auto planes = memory::make_vector<const TileGrid*>(scratch);
+  planes.reserve(count);
+  for (std::size_t n = level.layers.size(); n > 0; --n)
+  {
+    const std::size_t index = n - 1;
+    const Layer& layer = level.layers[index];
+    if (layer.kind != LayerKind::kTiles or index == semantic_layer)
+    {
+      continue;
+    }
+    if (std::find(tile_layers, tile_layers + count, index) == tile_layers + count)
+    {
+      continue;
+    }
+    const auto& g = plane<TileGrid>(layer);
+    if (g.extents == out.extents)
+    {
+      planes.push_back(&g);
+    }
+  }
+
+  std::size_t changed = 0;
+  for (std::size_t i = 0; i < out.values.size(); ++i)
+  {
+    SemanticId value = kNoSemantic;
+    for (const TileGrid* g : planes)
+    {
+      const TileRef t = g->values[i];
+      if (t.empty() or t.tileset >= tilesets.size())
+      {
+        continue;
+      }
+      const TileSet& ts = tilesets[t.tileset];
+      const TileIndex drawn = seasonal_tile(ts, t.tile, season);
+      if (drawn >= ts.tiles.size())
+      {
+        continue;
+      }
+      if (const SemanticId s = ts.tiles[drawn].semantic; s != kNoSemantic)
+      {
+        value = s;
+        break;
+      }
+    }
+    if (value == kNoSemantic and keep_unmatched)
+    {
+      continue;
+    }
+    changed += (out.values[i] == value) ? 0U : 1U;
+    out.values[i] = value;
+  }
+  return changed;
+}
+
 }  // namespace lvl::level

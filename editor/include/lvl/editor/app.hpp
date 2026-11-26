@@ -334,6 +334,35 @@ struct Generators
   procgen::StepFillResult step_result;
 };
 
+/// Most layers Edit > Refresh semantics from tiles can choose between
+inline constexpr std::size_t kMaxDeriveLayers = 128;
+
+/**
+ * @brief What Edit > Refresh semantics from tiles squashes (App::derive)
+ *
+ * The tile layers are chosen rather than taken as read, because the layers that say what the ground
+ * *is* are rarely all of them: the cliff faces of a height-stepped map are drawn over the ground
+ * they stand on without replacing what it is. Which of them wins is not a choice -- it follows the
+ * level's layer order, so the one on top does (see <code>level::derive_semantics</code>).
+ */
+struct SemanticDerive
+{
+  /// The semantic layer written
+  std::size_t layer = 0;
+  /// Which tile layers are ticked, by layer index
+  std::bitset<kMaxDeriveLayers> layers;
+  /// Leave the cells no ticked layer gives a semantic type for, rather than clearing them
+  bool keep_unmatched = false;
+  /// Cells the last run changed, so the menu can report it
+  std::size_t changed = 0;
+  /// Whether a run has happened, so "0 cells changed" can be told from "not run yet"
+  bool ran = false;
+
+  [[nodiscard]] bool has(std::size_t index) const { return index < kMaxDeriveLayers and layers.test(index); }
+
+  [[nodiscard]] std::size_t count() const { return layers.count(); }
+};
+
 /// What a delete button removes
 enum class DeleteKind : std::uint8_t
 {
@@ -517,6 +546,8 @@ struct App
   TileSelection selection;
   /// What the batch metadata edit applies to the selected tiles
   level::TileEdit batch;
+  /// What Edit > Refresh semantics from tiles reads and writes
+  SemanticDerive derive;
   /// The tile group the paint tool stamps, if one is chosen
   GroupSelection group;
   /// Name the next group taken from the palette selection gets
