@@ -93,13 +93,19 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 - Floats are written as their shortest round-trip decimal (`json::shortest`).
 - Each binary file starts with a header: magic `LVLB`, a kind, and the editor version
   (`core/include/lvl/core/binary.hpp`).
+- **That version is the (de)serializer's context** (`binary::Version`), so a `serialize` overload can
+  ask `binary::has_version(s, 300)` whether the file it is reading has a field that was appended
+  later. Binary files are positional, so appending a field to a type moves no bytes but is simply
+  not there in an older file; without the version the read would run off the end. Writing is always
+  the newest shape, since it writes `kVersion`. That is what keeps every file an earlier editor
+  wrote readable, and `//core:serialization_test` checks it against bytes with an older header.
 
 ## Layout
 
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`, `TileGroup` multi-tile stamps), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
 | `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
 | `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by the editor's overlays, the layer export and the mini-preview), `compose` (full map PNG, mini-preview, `export_layer_png`) |
@@ -427,6 +433,44 @@ path yet, via the save dialog, and cancelling that dialog cancels quitting), Qui
 or Cancel. In the browser, `web::set_unsaved_changes()` arms the page's `beforeunload` "leave site?"
 prompt while there are unsaved changes.
 
+### Tile groups
+
+A **tile group** is a named thing drawn across several tiles -- a house, a tree, a rock -- stamped
+onto the map as one thing. A group lives **in the tileset** (`level::TileGroup`,
+`level/tileset.hpp`), not in a level or a rule set, because every tile it names is one of that
+tileset's: so it travels with the atlas it was cut from, it is written by the standalone
+`lvl-tileset` file a project already saves each tileset through, and removing the tileset takes its
+groups with it without any level or rule set having to be renumbered.
+
+The footprint is a rectangle and its cells are `size.count()` tile indices in **row-major order in
+the tileset's one flat `group_cells` table**, which each entry spans into -- the same shape the
+project's level index uses for its object names, so adding a group does not leave the last block
+behind in a bump arena. A cell holding `kNoTileIndex` is a **hole**: a tree's bounding box has
+corners the tree does not fill, and stamping must leave what is under them alone rather than erase
+it. `set_group` adds one (replacing the group of that name, so a footprint that changed size does
+not strand its old cells), `remove_group` compacts the table the later groups span into, and
+`validate_groups` is what a file goes through -- the table is always written packed and in the order
+the groups are listed, so a file whose groups do not span it exactly cannot say which cells are
+whose, and a group reading another group's cells is worse than a tileset with no groups, so all of
+them are dropped. `reslice` keeps a group's shape and holes the cells whose tiles the atlas no
+longer has, since re-slicing is how a tile size is corrected and the correction usually brings them
+back.
+
+In the editor they are **Tilesets > Tile groups**: the list, a delete button per row, the chosen
+group drawn as it will be stamped, and "From the palette selection", which is how one is made --
+the palette is already how several tiles are picked and already how they are laid out, so the house
+in the atlas is the house on the map, holes included. Choosing a group sets `App::group` (a
+`GroupSelection`: a tileset and a `GroupId`), and **`paint_stamp` returns it before anything else**,
+which is the whole of the stamping work: the paint tool, the hover footprint and the hover outline
+of the cells a stamp writes all go through that one function. A group and the palette selection are
+two answers to "what does a stamp write?", so choosing a group empties the selection, clicking in
+the palette clears the group, and Ctrl+Shift+A clears both; the toolbar names the chosen group while
+the Paint tool is active, since a stamp is not visible on the canvas until it is painted.
+
+Groups are tileset data, so adding, renaming or removing one marks the **project** modified rather
+than the level, and like the other tile metadata it is not undoable. Stamping is an ordinary layer
+edit and is.
+
 ### Palette selection and batch tile edits
 
 A plain click or drag in the tileset palette picks one tile or a rectangle of them (the paint stamp,
@@ -727,8 +771,8 @@ and the neighbor editor falls back to its plain text tooltip.
 
 ### Deleting
 
-Rows of layers, semantic types, materials, seasons, path graphs, portals/markers and tile properties
-start with a delete button (`delete_button`). `request_delete` records a `PendingDelete`, and
+Rows of layers, semantic types, materials, seasons, path graphs, portals/markers, tile groups and
+tile properties start with a delete button (`delete_button`). `request_delete` records a `PendingDelete`, and
 `process_deletes` (once per frame, after every panel has drawn and never while a job runs) shows a
 confirmation dialog listing what else changes, then applies it; Shift+click skips the dialog.
 **Deleting a catalog entry retires it; it does not renumber.** Catalog ids are stored in millions of
@@ -816,12 +860,17 @@ one check to mark required:
 ## Tests
 
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
-  serialization and file errors, JSON zero-heap check, jobs/random, images.
+  serialization and file errors (including a file written before a field existed still reading, via
+  the header version in the serializer's context), JSON zero-heap check, jobs/random, images.
 - `//level`: model operations (resize, derivation, clearing a tileset's references, portals/paths/routes, WFC
   rule learning, rules from a palette layout, a step terrain read from either block shape, batch
-  tile and constraint edits (scatter weight included), terrains from a
+  tile and constraint edits (scatter weight included), tile groups spanning one packed cell table
+  (replaced by name, removed with the table compacted, holes and cells outside the footprint, a
+  group refused for having no name, no footprint or nothing but holes, a cell past the last tile
+  taken as a hole, a re-slice keeping the shape, and groups that do not pack the table all dropped),
+  terrains from a
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
-  selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1, JSON→binary→JSON
+  selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1 (tile groups and their holes among what they carry, and a standalone tileset file taking its groups to another project), JSON→binary→JSON
   stability, a project-scope save leaving the shared sections out and round-tripping against a
   project that already holds them while leaving it untouched, a project-scope level naming the rule
   set it uses and resolving to it in a project that holds the sets in another order, a standalone
@@ -849,7 +898,8 @@ one check to mark required:
   an entry rather than moving the ids after it (what the project holds and the open level's cells
   cleared, a sibling's left, interning the name again giving its id back without bringing it back),
   compaction planned once and applied to every level together,
-  and the manifest (round trip carrying the tilesets' and rule sets' own files, several rule sets
+  and the manifest (round trip carrying the tilesets' and rule sets' own files and a tileset's tile
+  groups with them, several rule sets
   each getting their own file and coming back in the order the manifest lists them, a part keeping
   the file it was given across a rename and a new one getting its own, saving elsewhere moving the
   project there, a named tileset file that has gone refusing the project, stable when written twice,
@@ -890,7 +940,8 @@ one check to mark required:
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
-  multi-tile paint stamp, a thirteen-tile terrain taken from one palette selection and painted (the
+  multi-tile paint stamp, a tile group made out of the palette selection, chosen, stamped holes and
+  all, and deleted (which stops the stamping), a thirteen-tile terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
   layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of

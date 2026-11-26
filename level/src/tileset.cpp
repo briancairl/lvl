@@ -65,6 +65,132 @@ void reslice(TileSet& tileset)
   std::erase_if(tileset.properties, [count](const TileProperty& p) { return p.tile >= count; });
   std::erase_if(
     tileset.seasonal, [count](const SeasonalVariant& v) { return v.tile >= count or v.alternate >= count; });
+  // A group keeps its shape across a re-slice: a cell naming a tile the atlas no longer has becomes
+  // a hole, rather than the whole group going away. Re-slicing is how a tile size is corrected, and
+  // the correction usually brings the tiles back
+  for (TileIndex& cell : tileset.group_cells)
+  {
+    cell = (cell >= count) ? kNoTileIndex : cell;
+  }
+}
+
+GroupId find_group(const TileSet& tileset, std::string_view name)
+{
+  for (std::size_t i = 0; i < tileset.groups.size(); ++i)
+  {
+    if (tileset.groups[i].name == name)
+    {
+      return static_cast<GroupId>(i);
+    }
+  }
+  return kNoGroup;
+}
+
+const TileIndex* group_cells_of(const TileSet& tileset, const TileGroup& group)
+{
+  const std::size_t count = group.size.count();
+  if (count == 0 or group.first + count > tileset.group_cells.size())
+  {
+    return nullptr;
+  }
+  return tileset.group_cells.data() + group.first;
+}
+
+TileIndex group_cell(const TileSet& tileset, const TileGroup& group, int x, int y)
+{
+  const TileIndex* cells = group_cells_of(tileset, group);
+  if (cells == nullptr or !group.size.contains(x, y))
+  {
+    return kNoTileIndex;
+  }
+  return cells[group.size.index(x, y)];
+}
+
+GroupId set_group(TileSet& tileset, std::string_view name, Extents size, const TileIndex* cells)
+{
+  if (
+    name.empty() or cells == nullptr or size.width <= 0 or size.height <= 0 or size.width > kMaxGroupExtent or
+    size.height > kMaxGroupExtent)
+  {
+    return kNoGroup;
+  }
+  const auto tiles = static_cast<TileIndex>(std::min<std::size_t>(tileset.tiles.size(), kNoTileIndex));
+  const std::size_t count = size.count();
+  const bool any = std::any_of(cells, cells + count, [tiles](TileIndex t) { return t < tiles; });
+  if (!any)
+  {
+    return kNoGroup;
+  }
+  // Replacing a group of the same name removes it first, so a footprint that changed size does not
+  // leave its old cells stranded in the table
+  if (const GroupId existing = find_group(tileset, name); existing != kNoGroup)
+  {
+    remove_group(tileset, existing);
+  }
+  if (tileset.groups.size() >= kNoGroup)
+  {
+    return kNoGroup;
+  }
+  TileGroup group;
+  group.name = name;
+  group.size = size;
+  group.first = static_cast<std::uint32_t>(tileset.group_cells.size());
+  for (std::size_t i = 0; i < count; ++i)
+  {
+    tileset.group_cells.push_back((cells[i] < tiles) ? cells[i] : kNoTileIndex);
+  }
+  tileset.groups.push_back(group);
+  return static_cast<GroupId>(tileset.groups.size() - 1);
+}
+
+std::size_t validate_groups(TileSet& tileset)
+{
+  const auto tiles = static_cast<TileIndex>(std::min<std::size_t>(tileset.tiles.size(), kNoTileIndex));
+  for (TileIndex& cell : tileset.group_cells)
+  {
+    cell = (cell >= tiles) ? kNoTileIndex : cell;
+  }
+  // The table is always written packed and in the order the groups are listed, so anything else is
+  // a file that cannot say which cells belong to which group -- and a group reading another's cells
+  // is worse than a tileset with no groups, so the lot goes
+  std::size_t next = 0;
+  bool packed = true;
+  for (const TileGroup& group : tileset.groups)
+  {
+    const std::size_t count = group.size.count();
+    packed = packed and count > 0 and group.size.width <= kMaxGroupExtent and group.size.height <= kMaxGroupExtent and
+      group.first == next;
+    next += count;
+  }
+  if (packed and next == tileset.group_cells.size())
+  {
+    return 0;
+  }
+  const std::size_t dropped = tileset.groups.size();
+  tileset.groups.clear();
+  tileset.group_cells.clear();
+  return dropped;
+}
+
+void remove_group(TileSet& tileset, GroupId index)
+{
+  if (index >= tileset.groups.size())
+  {
+    return;
+  }
+  const TileGroup group = tileset.groups[index];
+  const std::size_t count = group.size.count();
+  const std::size_t first = group.first;
+  const std::size_t last = std::min(first + count, tileset.group_cells.size());
+  tileset.group_cells.erase(
+    tileset.group_cells.begin() + static_cast<std::ptrdiff_t>(std::min(first, tileset.group_cells.size())),
+    tileset.group_cells.begin() + static_cast<std::ptrdiff_t>(last));
+  tileset.groups.erase(tileset.groups.begin() + static_cast<std::ptrdiff_t>(index));
+  const auto removed = static_cast<std::uint32_t>(last - std::min(first, last));
+  for (TileGroup& g : tileset.groups)
+  {
+    g.first -= (g.first > first) ? removed : 0;
+  }
 }
 
 namespace

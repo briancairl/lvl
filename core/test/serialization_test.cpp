@@ -1,7 +1,9 @@
 // C++ Standard Library
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <type_traits>
 
 // GTest
 #include <gtest/gtest.h>
@@ -62,6 +64,41 @@ template <typename S> void serialize(S& s, Thing& t)
   s.value1b(t.enabled);
   s.value4b(t.shape);
   s.container1b(t.color);
+}
+
+/// The same thing as it was before a field was appended to it
+struct OldThing
+{
+  lvl::Name name;
+  int count = 0;
+};
+
+template <typename S> void serialize(S& s, OldThing& t)
+{
+  s.object(t.name);
+  s.value4b(t.count);
+}
+
+/// OldThing with a field that only files of version 300 and up carry
+struct GrownThing
+{
+  lvl::Name name;
+  int count = 0;
+  std::uint32_t extra = 0xFFFFFFFFU;
+};
+
+template <typename S> void serialize(S& s, GrownThing& t)
+{
+  s.object(t.name);
+  s.value4b(t.count);
+  if (lvl::binary::has_version(s, 300))
+  {
+    s.value4b(t.extra);
+  }
+  else if constexpr (std::is_same_v<S, lvl::binary::Reader>)
+  {
+    t.extra = 0;
+  }
 }
 
 }  // namespace test
@@ -186,6 +223,34 @@ TEST_F(Serialization, BinaryRejectsWrongKindAndTruncation)
   EXPECT_FALSE(lvl::binary::deserialize(buffer.data(), n, lvl::binary::Kind::kLevel, loaded).ok);
   EXPECT_FALSE(lvl::binary::deserialize(buffer.data(), n - 2, lvl::binary::Kind::kTest, loaded).ok);
   EXPECT_TRUE(lvl::binary::deserialize(buffer.data(), n, lvl::binary::Kind::kTest, loaded).ok);
+}
+
+TEST_F(Serialization, BinaryReadsAFileWrittenBeforeAFieldExisted)
+{
+  // The version in the header is the (de)serializer's context, so a type can say which of its
+  // fields a given file has. Writing is always the newest shape
+  auto grown = lvl::memory::make_vector<std::uint8_t>(scratch);
+  const test::GrownThing original{.name = "tree", .count = 5, .extra = 42};
+  const std::size_t n = lvl::binary::serialize(grown, lvl::binary::Kind::kTest, original);
+  test::GrownThing loaded;
+  ASSERT_TRUE(lvl::binary::deserialize(grown.data(), n, lvl::binary::Kind::kTest, loaded).ok);
+  EXPECT_EQ(loaded.extra, 42U);
+
+  // The same bytes an editor two versions ago wrote: no "extra", and a header that says so
+  auto old = lvl::memory::make_vector<std::uint8_t>(scratch);
+  const test::OldThing before{.name = "tree", .count = 5};
+  const std::size_t m = lvl::binary::serialize(old, lvl::binary::Kind::kTest, before);
+  ASSERT_GE(m, 8UL);
+  // The header is the 4-byte magic, then the version, little-endian
+  const std::uint32_t older = 200;
+  std::memcpy(old.data() + 4, &older, sizeof(older));
+  test::GrownThing from_old{.extra = 7};
+  const auto status = lvl::binary::deserialize(old.data(), m, lvl::binary::Kind::kTest, from_old);
+  ASSERT_TRUE(status.ok) << status;
+  EXPECT_EQ(from_old.name, std::string_view{"tree"});
+  EXPECT_EQ(from_old.count, 5);
+  EXPECT_EQ(from_old.extra, 0U);
+  EXPECT_EQ(m + sizeof(std::uint32_t), n);
 }
 
 TEST(File, Extension)

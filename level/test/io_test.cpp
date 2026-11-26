@@ -84,6 +84,11 @@ protected:
     ts.tiles[4].scatter_weight = 0.25F;
     ts.properties.push_back(TileProperty{.tile = 3, .key = "damage", .value = "2"});
     set_seasonal_variant(ts, SeasonalVariant{.tile = 3, .season = "winter", .alternate = 11, .material = snow});
+    // Two tile groups, the second with holes where its bounding box is not part of the thing
+    const TileIndex house[] = {8, 9, 16, 17};
+    const TileIndex tree[] = {kNoTileIndex, 5, kNoTileIndex, 12, 13, 14};
+    ASSERT_EQ(set_group(ts, "house", Extents{2, 2}, house), 0);
+    ASSERT_EQ(set_group(ts, "tree", Extents{3, 2}, tree), 1);
 
     auto& height = plane<ScalarGrid>(level.layers[0]);
     for (std::size_t i = 0; i < height.values.size(); ++i)
@@ -260,6 +265,16 @@ protected:
     EXPECT_EQ(tb.properties[0].value, ta.properties[0].value);
     EXPECT_EQ(seasonal_tile(tb, 3, "winter"), 11);
     EXPECT_EQ(seasonal_material(tb, 3, "winter"), seasonal_material(ta, 3, "winter"));
+    // Tile groups, with the cell table they span packed in the order they are listed
+    ASSERT_EQ(tb.groups.size(), 2UL);
+    EXPECT_EQ(tb.groups[0].name, std::string_view{"house"});
+    EXPECT_EQ(tb.groups[1].size, (Extents{3, 2}));
+    EXPECT_EQ(tb.group_cells.size(), ta.group_cells.size());
+    EXPECT_EQ(validate_groups(const_cast<TileSet&>(tb)), 0UL);
+    EXPECT_EQ(group_cell(tb, tb.groups[0], 1, 1), 17);
+    EXPECT_EQ(group_cell(tb, tb.groups[1], 0, 0), kNoTileIndex);
+    EXPECT_EQ(group_cell(tb, tb.groups[1], 1, 0), 5);
+    EXPECT_EQ(group_cell(tb, tb.groups[1], 2, 1), 14);
 
     expect_equal_layers(a, b);
 
@@ -623,6 +638,11 @@ TEST_F(LevelIo, StandaloneTilesetMovesBetweenLevels)
     EXPECT_EQ(pr_b->semantics[ts.tiles[3].semantic].name, std::string_view{"road"});
     EXPECT_EQ(pr_b->materials[seasonal_material(ts, 3, "winter")].name, std::string_view{"snow"});
     EXPECT_FLOAT_EQ(pr_b->materials[seasonal_material(ts, 3, "winter")].friction, 0.3F);
+    // The groups travel with the tileset, which is the whole point of them living in it
+    ASSERT_EQ(ts.groups.size(), 2UL);
+    EXPECT_EQ(ts.groups[1].name, std::string_view{"tree"});
+    EXPECT_EQ(group_cell(ts, ts.groups[1], 1, 0), 5);
+    EXPECT_EQ(group_cell(ts, ts.groups[1], 0, 0), kNoTileIndex);
   }
 }
 

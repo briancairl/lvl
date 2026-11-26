@@ -276,6 +276,142 @@ void layers_panel(App& app)
 // Tilesets: list, slicer, palette
 // -------------------------------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------------------------------
+// Tile groups
+// -------------------------------------------------------------------------------------------------
+
+namespace
+{
+
+/**
+ * @brief The tileset's named multi-tile stamps: the list, what is chosen, and how one is made
+ *
+ * A group is made out of the palette selection, because that is already how several tiles are
+ * picked and already how they are laid out -- the house in the atlas is the house on the map.
+ */
+void groups_section(App& app, TileSet& ts)
+{
+  ImGui::TextDisabled("Stamped as one thing. Pick the tiles in the palette, name it, then add it.");
+  if (app.group.active() and app.group.tileset != app.tileset)
+  {
+    const project::Project& pr = *app.project;
+    ImGui::TextColored(
+      ImVec4{0.85F, 0.8F, 0.45F, 1.0F},
+      "A group of '%s' is being stamped.",
+      app.group.tileset < pr.tilesets.size() ? pr.tilesets[app.group.tileset].name.c_str() : "?");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Stop"))
+    {
+      app.group.clear();
+    }
+  }
+  if (ts.groups.empty())
+  {
+    ImGui::TextDisabled("This tileset has no groups.");
+  }
+  for (std::size_t i = 0; i < ts.groups.size(); ++i)
+  {
+    const TileGroup& group = ts.groups[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Remove this tile group"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kTileGroup,
+          .index = i,
+          .owner = app.tileset,
+          .what = format<128>("tile group '%s'", group.name.c_str()),
+          .detail = "Only the group goes; the tiles it stamped onto the map stay where they are."});
+    }
+    const bool chosen = app.group.tileset == app.tileset and app.group.group == i;
+    if (ImGui::Selectable(format<96>("%s  (%d x %d)", group.name.c_str(), group.size.width, group.size.height), chosen))
+    {
+      choose_group(app, chosen ? kNoGroup : static_cast<GroupId>(i));
+    }
+    ImGui::PopID();
+  }
+
+  // The chosen group, drawn as it will be stamped (a hole shows through as a gap)
+  if (const TileGroup* group = chosen_group(app); group != nullptr and app.group.tileset == app.tileset)
+  {
+    ImGui::SeparatorText(group->name.c_str());
+    if (input_text("Name##group", ts.groups[app.group.group].name))
+    {
+      app.project_modified = true;
+    }
+    const float thumb = 24.0F;
+    for (int y = 0; y < group->size.height; ++y)
+    {
+      for (int x = 0; x < group->size.width; ++x)
+      {
+        if (x > 0)
+        {
+          ImGui::SameLine();
+        }
+        if (const TileIndex tile = group_cell(ts, *group, x, y); tile == kNoTileIndex)
+        {
+          ImGui::Dummy(ImVec2{thumb, thumb});
+        }
+        else
+        {
+          tile_image(app, TileRef{static_cast<TileSetId>(app.tileset), tile}, thumb);
+        }
+      }
+    }
+  }
+
+  ImGui::SeparatorText("New group");
+  const std::size_t selected = selection_size(app);
+  ImGui::SetNextItemWidth(160.0F);
+  input_text("Name##new_group", app.group_name);
+  ImGui::SameLine();
+  const bool ready = selected > 0 and !app.group_name.empty();
+  ImGui::BeginDisabled(!ready);
+  const bool add = ImGui::Button("From the palette selection");
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+  {
+    ImGui::SetTooltip(
+      selected == 0 ? "Select the group's tiles in the palette first"
+                    : (app.group_name.empty() ? "Name the group first"
+                                              : "Adds the selection as a group, or replaces the one of that name"));
+  }
+  if (add)
+  {
+    memory::Scope scope{app.memory.frame};
+    Grid<TileRef> layout{app.memory.frame};
+    if (!palette_layout(app, layout))
+    {
+      report(app, Status::error("the palette selection is empty"));
+    }
+    else
+    {
+      // Only this tileset's tiles can be in its own group; the selection is of one tileset anyway
+      auto cells = memory::make_vector<TileIndex>(app.memory.frame, layout.extents.count(), kNoTileIndex);
+      for (std::size_t i = 0; i < layout.extents.count(); ++i)
+      {
+        const TileRef tile = layout.values[i];
+        cells[i] = (tile.empty() or tile.tileset != app.tileset) ? kNoTileIndex : tile.tile;
+      }
+      const GroupId id = set_group(ts, app.group_name.view(), layout.extents, cells.data());
+      if (id == kNoGroup)
+      {
+        report(app, Status::error("could not add tile group '%s'", app.group_name.c_str()));
+      }
+      else
+      {
+        LVL_LOG_INFO() << "Tile group '" << app.group_name.c_str() << "' holds " << layout.extents.width << "x"
+                       << layout.extents.height << " cells";
+        app.project_modified = true;
+        choose_group(app, id);
+      }
+    }
+  }
+}
+
+}  // namespace
+
 void tilesets_panel(App& app)
 {
   if (!ImGui::Begin("Tilesets", &app.panels.tilesets))
@@ -317,6 +453,8 @@ void tilesets_panel(App& app)
     {
       app.tileset = 0;
       app.selection.clear();
+      // The tilesets after it were renumbered, so the index the chosen group holds means nothing now
+      app.group = GroupSelection{};
       app.undo.clear();
       app.modified = true;
       reload_atlases(app);
@@ -394,6 +532,11 @@ void tilesets_panel(App& app)
       grid.width,
       grid.height,
       ts.tiles.size());
+  }
+
+  if (ImGui::CollapsingHeader("Tile groups"))
+  {
+    groups_section(app, ts);
   }
 
   if (ImGui::CollapsingHeader("Palette", ImGuiTreeNodeFlags_DefaultOpen))
@@ -478,6 +621,8 @@ void tilesets_panel(App& app)
           const int y0 = std::min(from / cols, hover / cols);
           const int x1 = std::max(from % cols, hover % cols);
           const int y1 = std::max(from / cols, hover / cols);
+          // Picking in the palette is the other kind of stamp, so the chosen group steps aside
+          app.group.clear();
           app.selection.retarget(app.tileset);
           if (!multi)
           {

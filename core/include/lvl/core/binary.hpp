@@ -41,11 +41,32 @@ using Buffer = memory::Vector<std::uint8_t>;
 using OutputAdapter = bitsery::OutputBufferAdapter<Buffer>;
 using InputAdapter = bitsery::InputBufferAdapter<const std::uint8_t*>;
 
+/**
+ * @brief The editor version a binary file was written by, as the (de)serializer's context
+ *
+ * Binary files are positional, so a field appended to a type moves no bytes but is simply not
+ * there in a file written before it existed. A <code>serialize</code> overload reads the version
+ * out of its context (<code>s.template context&lt;Version&gt;().value</code>) and skips such a
+ * field for an older file, which is what keeps every file an earlier editor wrote readable.
+ *
+ * Writing always uses <code>kVersion</code>, so the newest shape is what goes to disk.
+ */
+struct Version
+{
+  std::uint32_t value = static_cast<std::uint32_t>(kVersion);
+};
+
 /// Serializer writing into a Buffer
-using Writer = bitsery::Serializer<OutputAdapter>;
+using Writer = bitsery::Serializer<OutputAdapter, Version>;
 
 /// Deserializer reading in place from a byte range
-using Reader = bitsery::Deserializer<InputAdapter>;
+using Reader = bitsery::Deserializer<InputAdapter, Version>;
+
+/// Whether a file of version <code>s</code>'s context has the fields added in <code>version</code>
+template <typename S> bool has_version(S& s, int version)
+{
+  return s.template context<Version>().value >= static_cast<std::uint32_t>(version);
+}
 
 /// "LVLB"
 inline constexpr std::array<char, 4> kMagic = {'L', 'V', 'L', 'B'};
@@ -83,7 +104,8 @@ template <typename S> void serialize(S& s, Header& h)
  */
 template <typename T> std::size_t serialize(Buffer& buffer, Kind kind, const T& value)
 {
-  Writer writer{buffer};
+  Version version;
+  Writer writer{version, buffer};
   Header header{.kind = kind};
   writer.object(header);
   writer.object(const_cast<T&>(value));
@@ -96,7 +118,8 @@ template <typename T> std::size_t serialize(Buffer& buffer, Kind kind, const T& 
 /// Deserializes a Header of <code>kind</code> followed by <code>value</code> from <code>[data, data + size)</code>
 template <typename T> Status deserialize(const std::uint8_t* data, std::size_t size, Kind kind, T& value)
 {
-  Reader reader{InputAdapter{data, size}};
+  Version version;
+  Reader reader{version, InputAdapter{data, size}};
   Header header;
   reader.object(header);
   if (reader.adapter().error() != bitsery::ReaderError::NoError or header.magic != kMagic)
@@ -112,6 +135,8 @@ template <typename T> Status deserialize(const std::uint8_t* data, std::size_t s
   {
     return Status::error("binary file written by a newer editor (version %u)", static_cast<unsigned>(header.version));
   }
+  // Every type the file holds is read in the shape that editor wrote it in
+  version.value = header.version;
   reader.object(value);
   switch (reader.adapter().error())
   {

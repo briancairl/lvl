@@ -143,6 +143,21 @@ void apply(App& app, const PendingDelete& d)
     }
     drop_stale_selection(app);
     break;
+  case DeleteKind::kTileGroup:
+    if (d.owner >= pr.tilesets.size() or d.index >= pr.tilesets[d.owner].groups.size())
+    {
+      return;
+    }
+    remove_group(pr.tilesets[d.owner], static_cast<GroupId>(d.index));
+    // The groups after it have moved down one, so what is being stamped follows or stops
+    if (app.group.tileset == d.owner and app.group.active())
+    {
+      app.group.group = (app.group.group == d.index)
+        ? kNoGroup
+        : static_cast<GroupId>(app.group.group - ((app.group.group > d.index) ? 1 : 0));
+    }
+    app.project_modified = true;
+    break;
   case DeleteKind::kProperty:
     if (d.owner >= pr.tilesets.size() or d.index >= pr.tilesets[d.owner].properties.size())
     {

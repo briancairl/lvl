@@ -90,6 +90,94 @@ TEST_F(LevelModel, SlicingAndSeasonalVariants)
   EXPECT_EQ(lookup[3], 3);
 }
 
+TEST_F(LevelModel, TileGroupsSpanOneCellTable)
+{
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  auto& ts = tilesets.back();
+  ts.slice = SliceParams{.tile_width = 16, .tile_height = 16};
+  ts.image_width = 16 * 8;
+  ts.image_height = 16 * 4;
+  reslice(ts);
+  ASSERT_EQ(ts.tiles.size(), 32UL);
+
+  // A 2x2 house, and a tree whose top corners are holes
+  const TileIndex house[] = {0, 1, 8, 9};
+  const TileIndex tree[] = {kNoTileIndex, 2, kNoTileIndex, 10, 11, 12};
+  const GroupId a = set_group(ts, "house", Extents{2, 2}, house);
+  const GroupId b = set_group(ts, "tree", Extents{3, 2}, tree);
+  ASSERT_EQ(a, 0);
+  ASSERT_EQ(b, 1);
+  EXPECT_EQ(find_group(ts, "tree"), b);
+  EXPECT_EQ(find_group(ts, "rock"), kNoGroup);
+  EXPECT_EQ(ts.group_cells.size(), 4UL + 6UL);
+  EXPECT_EQ(ts.groups[b].first, 4U);
+  EXPECT_EQ(group_cell(ts, ts.groups[a], 1, 1), 9);
+  EXPECT_EQ(group_cell(ts, ts.groups[b], 0, 0), kNoTileIndex);
+  EXPECT_EQ(group_cell(ts, ts.groups[b], 1, 0), 2);
+  EXPECT_EQ(group_cell(ts, ts.groups[b], 2, 1), 12);
+  // Outside the footprint is a hole, not a read of the next group's cells
+  EXPECT_EQ(group_cell(ts, ts.groups[a], 2, 0), kNoTileIndex);
+
+  // A group of the same name is replaced, and a footprint that grew does not strand its old cells
+  const TileIndex bigger[] = {0, 1, 2, 8, 9, 10, 16, 17, 18};
+  EXPECT_NE(set_group(ts, "house", Extents{3, 3}, bigger), kNoGroup);
+  EXPECT_EQ(ts.groups.size(), 2UL);
+  EXPECT_EQ(ts.group_cells.size(), 6UL + 9UL);
+  // "tree" kept its cells although "house" moved to the end of the table
+  const GroupId moved = find_group(ts, "tree");
+  EXPECT_EQ(group_cell(ts, ts.groups[moved], 2, 1), 12);
+  EXPECT_EQ(group_cell(ts, ts.groups[find_group(ts, "house")], 2, 2), 18);
+  EXPECT_EQ(validate_groups(ts), 0UL);
+
+  remove_group(ts, find_group(ts, "tree"));
+  ASSERT_EQ(ts.groups.size(), 1UL);
+  EXPECT_EQ(ts.group_cells.size(), 9UL);
+  EXPECT_EQ(ts.groups[0].first, 0U);
+  EXPECT_EQ(group_cell(ts, ts.groups[0], 2, 2), 18);
+}
+
+TEST_F(LevelModel, TileGroupsAreRefusedAndRepaired)
+{
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  auto& ts = tilesets.back();
+  ts.slice = SliceParams{.tile_width = 16, .tile_height = 16};
+  ts.image_width = 16 * 4;
+  ts.image_height = 16 * 2;
+  reslice(ts);
+  ASSERT_EQ(ts.tiles.size(), 8UL);
+
+  const TileIndex one[] = {3};
+  const TileIndex holes[] = {kNoTileIndex, kNoTileIndex};
+  EXPECT_EQ(set_group(ts, "", Extents{1, 1}, one), kNoGroup);
+  EXPECT_EQ(set_group(ts, "empty", Extents{0, 2}, one), kNoGroup);
+  EXPECT_EQ(set_group(ts, "huge", Extents{kMaxGroupExtent + 1, 1}, one), kNoGroup);
+  // A group of nothing but holes would stamp nothing
+  EXPECT_EQ(set_group(ts, "holes", Extents{2, 1}, holes), kNoGroup);
+  EXPECT_TRUE(ts.groups.empty());
+
+  // A cell naming a tile the tileset does not have is taken as a hole rather than kept
+  const TileIndex past[] = {3, 900};
+  ASSERT_NE(set_group(ts, "edge", Extents{2, 1}, past), kNoGroup);
+  EXPECT_EQ(group_cell(ts, ts.groups[0], 1, 0), kNoTileIndex);
+
+  // Re-slicing to a coarser tile keeps the group's shape and holes the tiles it lost
+  ts.slice.tile_width = 32;
+  ts.slice.tile_height = 32;
+  reslice(ts);
+  ASSERT_EQ(ts.tiles.size(), 2UL);
+  ASSERT_EQ(ts.groups.size(), 1UL);
+  EXPECT_EQ(ts.groups[0].size, (Extents{2, 1}));
+  EXPECT_EQ(group_cell(ts, ts.groups[0], 0, 0), kNoTileIndex);
+
+  // Groups whose spans do not pack the cell table cannot say which cells are whose, so they all go
+  ts.groups[0].first = 7;
+  EXPECT_EQ(validate_groups(ts), 1UL);
+  EXPECT_TRUE(ts.groups.empty());
+  EXPECT_TRUE(ts.group_cells.empty());
+}
+
 TEST_F(LevelModel, StepTerrainReadsEitherBlockShape)
 {
   // Three across and six down, as gft's sheets hold them: read across and down

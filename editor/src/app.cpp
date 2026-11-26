@@ -885,7 +885,9 @@ void shortcuts(App& app)
   }
   else if (ctrl and io.KeyShift and ImGui::IsKeyPressed(ImGuiKey_A))
   {
+    // Both answers to "what does a stamp write?" go, so painting is back to one tile
     app.selection.clear();
+    app.group.clear();
   }
   if (ctrl or io.WantCaptureKeyboard)
   {
@@ -1130,9 +1132,10 @@ void main_menu(App& app)
             format<64>("Deselect all tiles (%zu)", app.selection.count),
             "Ctrl+Shift+A",
             false,
-            app.selection.count > 0))
+            app.selection.count > 0 or app.group.active()))
       {
         app.selection.clear();
+        app.group.clear();
       }
       ImGui::Separator();
       open_resize = ImGui::MenuItem("Resize level...");
@@ -2313,7 +2316,90 @@ void smoke(App& app)
     close_file_dialog(app);
     break;
   }
-  case 41:
+  case 41: {
+    // A tile group: made out of the palette selection, chosen from the tileset's list, and stamped
+    // as one thing -- holes and all, since a group's bounding box is not all part of the thing
+    project::Project& pr = *app.project;
+    if (app.tileset >= pr.tilesets.size())
+    {
+      report(app, Status::error("no tileset to put a group in"));
+      break;
+    }
+    const level::Extents palette = palette_grid(app, app.tileset);
+    if (palette.width < 2 or palette.height < 2)
+    {
+      report(app, Status::error("the palette is too small for a tile group"));
+      break;
+    }
+    const auto columns = static_cast<level::TileIndex>(palette.width);
+    app.selection.retarget(app.tileset);
+    app.selection.clear();
+    for (const level::TileIndex tile : {level::TileIndex{0}, level::TileIndex{1}, columns})
+    {
+      app.selection.set(tile, true);
+    }
+    level::Grid<level::TileRef> layout{app.memory.frame};
+    if (!palette_layout(app, layout))
+    {
+      report(app, Status::error("the palette selection has no layout"));
+      break;
+    }
+    auto cells = memory::make_vector<level::TileIndex>(app.memory.frame, layout.extents.count(), level::kNoTileIndex);
+    for (std::size_t i = 0; i < layout.extents.count(); ++i)
+    {
+      cells[i] = layout.values[i].empty() ? level::kNoTileIndex : layout.values[i].tile;
+    }
+    level::TileSet& ts = pr.tilesets[app.tileset];
+    const level::GroupId id = level::set_group(ts, "hut", layout.extents, cells.data());
+    if (id == level::kNoGroup or level::find_group(ts, "hut") != id)
+    {
+      report(app, Status::error("the palette selection did not become a tile group"));
+      break;
+    }
+    choose_group(app, id);
+    // Choosing a group empties the palette selection, so what a stamp writes is never ambiguous
+    if (chosen_group(app) == nullptr or selection_size(app) != 0)
+    {
+      report(app, Status::error("choosing a tile group left the palette selection in place"));
+      break;
+    }
+    level::Grid<level::TileRef> stamp{app.memory.frame};
+    const level::Extents footprint = stamp_extents(app);
+    if (!paint_stamp(app, stamp) or stamp.extents != level::Extents{2, 2} or footprint != stamp.extents)
+    {
+      report(app, Status::error("the chosen tile group is not what a stamp writes"));
+      break;
+    }
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    if (
+      stamp.at(0, 0) != level::TileRef{tileset, 0} or stamp.at(1, 0) != level::TileRef{tileset, 1} or
+      stamp.at(0, 1) != level::TileRef{tileset, columns} or !stamp.at(1, 1).empty())
+    {
+      report(app, Status::error("the tile group's stamp does not hold its cells"));
+    }
+    // Removing it goes through the same confirmed delete the panel's button raises
+    app.pending_delete = PendingDelete{
+      .kind = DeleteKind::kTileGroup,
+      .index = id,
+      .owner = app.tileset,
+      .what = format<128>("tile group 'hut'"),
+      .confirmed = true};
+    break;
+  }
+  case 42: {
+    // The delete was applied at the end of the last frame, and stamping stopped with it
+    const project::Project& pr = *app.project;
+    if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "hut") != level::kNoGroup)
+    {
+      report(app, Status::error("deleting the tile group left it in the tileset"));
+    }
+    if (chosen_group(app) != nullptr)
+    {
+      report(app, Status::error("deleting the chosen tile group left it being stamped"));
+    }
+    break;
+  }
+  case 43:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2322,7 +2408,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 42:
+  case 44:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
