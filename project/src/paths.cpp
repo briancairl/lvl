@@ -25,10 +25,10 @@ namespace
 {
 
 constexpr std::array<std::string_view, kFolderCount> kFolderPaths =
-  {"", "levels", "tilesets", "rules", "paths", "assets/atlases", "assets/images", "artifacts"};
+  {"", "levels", "tilesets", "rules", "scatter", "paths", "assets/atlases", "assets/images", "artifacts"};
 
 constexpr std::array<std::string_view, kFolderCount> kFolderLabels =
-  {"Project", "Levels", "Tilesets", "Rules", "Path graphs", "Atlases", "Images", "Artifacts"};
+  {"Project", "Levels", "Tilesets", "Rules", "Scatter profiles", "Path graphs", "Atlases", "Images", "Artifacts"};
 
 constexpr bool is_separator(char c) { return c == '/' or c == '\\'; }
 

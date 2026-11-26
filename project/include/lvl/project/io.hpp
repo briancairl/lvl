@@ -75,6 +75,9 @@ Status tileset_file(const Project& project, level::TileSetId id, Path& out);
 /// Where <code>project</code> would write rule set <code>index</code>, root-relative
 Status rule_set_file(const Project& project, std::size_t index, Path& out);
 
+/// Where <code>project</code> would write scatter profile <code>index</code>, root-relative
+Status scatter_profile_file(const Project& project, std::size_t index, Path& out);
+
 /**
  * @brief Opens the project rooted at <code>root</code>, i.e. loads <code>root/project.json</code>
  *

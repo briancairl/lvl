@@ -2597,23 +2597,76 @@ void smoke(App& app)
     {
       report(app, Status::error("the scatter neither placed nor gave up on every object"));
     }
+    break;
+  }
+  case 43: {
+    // A profile is a file of its own: exported, it reads back into a project that already holds it
+    // by name rather than becoming a second copy, and other profiles sit beside it untouched
+    project::Project& pr = *app.project;
+    const std::size_t huts = project::find_scatter(pr, "huts");
+    if (huts == project::kNoScatterProfile)
+    {
+      report(app, Status::error("the scatter profile went away before it was exported"));
+      break;
+    }
+    app.generators.scatter_profile = huts;
+    file_action(app, FileAction::kSaveScatter, "smoke.scatter.json");
+    // A second profile, so the import has to leave something alone as well as replace something
+    const std::size_t rocks = project::add_scatter(pr, "rocks");
+    if (rocks == project::kNoScatterProfile)
+    {
+      report(app, Status::error("could not add a second scatter profile"));
+      break;
+    }
+    pr.scatter[rocks].settings.count = 3;
+    const std::size_t before = pr.scatter.size();
+    file_action(app, FileAction::kLoadScatter, "smoke.scatter.json");
+    if (pr.scatter.size() != before)
+    {
+      report(app, Status::error("importing a scatter profile it already had did not replace it"));
+    }
+    const std::size_t landed = project::find_scatter(pr, "huts");
+    if (landed == project::kNoScatterProfile or app.generators.scatter_profile != landed)
+    {
+      report(app, Status::error("importing a scatter profile did not select it"));
+      break;
+    }
+    if (pr.scatter[landed].count != 1)
+    {
+      report(app, Status::error("the imported scatter profile did not bring its object back"));
+    }
+    if (pr.scatter[landed].settings.count != 8 or pr.scatter[landed].settings.spacing != 1)
+    {
+      report(app, Status::error("the imported scatter profile did not bring its criteria back"));
+    }
+    // The other profile is addressed on its own and kept what it had
+    const std::size_t other = project::find_scatter(pr, "rocks");
+    if (other == project::kNoScatterProfile or pr.scatter[other].settings.count != 3)
+    {
+      report(app, Status::error("importing one scatter profile disturbed another"));
+    }
+    if (project::validate_scatter(pr) != 0)
+    {
+      report(app, Status::error("the scatter profiles' object table is not packed"));
+    }
     // Both go through the same confirmed deletes the panel's buttons raise
     app.pending_delete = PendingDelete{
       .kind = DeleteKind::kScatterProfile,
-      .index = profile,
+      .index = landed,
       .what = format<128>("scatter profile 'huts'"),
       .confirmed = true};
     break;
   }
-  case 43: {
+  case 44: {
     const project::Project& pr = *app.project;
     if (project::find_scatter(pr, "huts") != project::kNoScatterProfile)
     {
       report(app, Status::error("deleting the scatter profile left it in the project"));
     }
-    if (!pr.scatter_objects.empty())
+    // "rocks" is still there and has no objects, so the table is empty again and still packed
+    if (!pr.scatter_objects.empty() or project::find_scatter(pr, "rocks") == project::kNoScatterProfile)
     {
-      report(app, Status::error("deleting the scatter profile left its objects behind"));
+      report(app, Status::error("deleting one scatter profile did not take only its own objects"));
     }
     const level::GroupId group =
       (app.tileset < pr.tilesets.size()) ? level::find_group(pr.tilesets[app.tileset], "hut") : level::kNoGroup;
@@ -2630,7 +2683,7 @@ void smoke(App& app)
       .confirmed = true};
     break;
   }
-  case 44: {
+  case 45: {
     // The delete was applied at the end of the last frame, and stamping stopped with it
     const project::Project& pr = *app.project;
     if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "hut") != level::kNoGroup)
@@ -2643,7 +2696,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 45: {
+  case 46: {
     // Refreshing the semantic layer from the tile layers: the topmost tile that has a semantic type
     // is the one that lands, which is the whole point of reading them as a stack
     level::Level& lv = *app.level;
@@ -2720,7 +2773,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 46:
+  case 47:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2729,7 +2782,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 47:
+  case 48:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -3285,6 +3338,35 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kSaveWfc:
     small_io([&](level::IoContext& ctx) {
       Status s = level::save_wfc_rules(path, *app.project, project::rules_of(*app.project, *app.level), ctx);
+      if (s.ok)
+      {
+        web::offer_download(path);
+      }
+      return s;
+    });
+    break;
+  case FileAction::kLoadScatter:
+    small_io([&](level::IoContext& ctx) {
+      // The file names the profile it holds, so it may be a new one or may replace the project's of
+      // that name; either way the Scatter tab switches to it, since importing one is how you say
+      // which profile you mean to use
+      std::size_t index = project::kNoScatterProfile;
+      const Status s = level::load_scatter(path, *app.project, ctx, index);
+      if (s.ok)
+      {
+        app.generators.scatter_profile = index;
+        app.project_modified = true;
+      }
+      return s;
+    });
+    break;
+  case FileAction::kSaveScatter:
+    small_io([&](level::IoContext& ctx) {
+      if (app.generators.scatter_profile >= app.project->scatter.size())
+      {
+        return Status::error("no scatter profile to export");
+      }
+      Status s = level::save_scatter(path, *app.project, app.generators.scatter_profile, ctx);
       if (s.ok)
       {
         web::offer_download(path);

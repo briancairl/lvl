@@ -209,174 +209,6 @@ bool load_files(json::Reader& r, const Json& j, std::string_view key, memory::Ve
   return r.ok();
 }
 
-/// Collision bits as the flag names level::collision gives them
-void save_blocked(Json& j, std::uint8_t mask)
-{
-  j = Json::array();
-  for (std::size_t i = 0; i < level::collision::kFlagNames.size(); ++i)
-  {
-    if ((mask & (1U << i)) != 0U)
-    {
-      j.push_back(JsonString{level::collision::kFlagNames[i]});
-    }
-  }
-}
-
-bool load_blocked(json::Reader& r, const Json& j, std::uint8_t& mask)
-{
-  if (!r.array(j, "blocked"))
-  {
-    return false;
-  }
-  mask = level::collision::kNone;
-  for (const auto& element : j)
-  {
-    Name name;
-    if (!r.convert(element, name, "blocked"))
-    {
-      return false;
-    }
-    const auto itr = std::find(level::collision::kFlagNames.begin(), level::collision::kFlagNames.end(), name.view());
-    if (itr == level::collision::kFlagNames.end())
-    {
-      return r.fail("unknown collision flag '%s'", name.c_str());
-    }
-    mask |= static_cast<std::uint8_t>(1U << (itr - level::collision::kFlagNames.begin()));
-  }
-  return true;
-}
-
-/**
- * @brief Writes the scatter profiles, their objects and their criteria
- *
- * The ground type goes out by name, as a tile's does, so a profile read into another project means
- * the same thing there; every optional test is omitted when it is off, so a profile that uses none
- * of them is a few lines.
- */
-void save_scatter(Json& j, const Project& project)
-{
-  Json array = Json::array();
-  for (const ScatterProfile& profile : project.scatter)
-  {
-    Json element = Json::object();
-    json::write(element, "name", profile.name);
-    const ScatterSettings& st = profile.settings;
-    json::write(element, "count", st.count);
-    json::write(element, "spacing", st.spacing);
-    json::write(element, "attempts", st.attempts);
-    if (st.use_band)
-    {
-      json::write(element, "low", st.lo);
-      json::write(element, "high", st.hi);
-    }
-    if (st.use_semantic and st.semantic < project.semantics.size())
-    {
-      json::write(element, "semantic", project.semantics[st.semantic].name);
-    }
-    if (st.use_collision)
-    {
-      save_blocked(element["blocked"], st.blocked);
-    }
-    json::write(element, "only_empty", st.only_empty);
-    json::write(element, "region", st.region);
-    Json objects = Json::array();
-    const ScatterObject* entries = objects_of(project, profile);
-    for (std::size_t i = 0; entries != nullptr and i < profile.count; ++i)
-    {
-      Json object = Json::object();
-      json::write(object, "tileset", entries[i].tileset);
-      json::write(object, "group", entries[i].group);
-      json::write(object, "weight", entries[i].weight);
-      objects.push_back(std::move(object));
-    }
-    element["objects"] = std::move(objects);
-    array.push_back(std::move(element));
-  }
-  j[JsonString{"scatter"}] = std::move(array);
-}
-
-bool load_scatter(json::Reader& r, const Json& j, Project& project)
-{
-  project.scatter.clear();
-  project.scatter_objects.clear();
-  const auto itr = j.find("scatter");
-  if (itr == j.end())
-  {
-    return r.ok();
-  }
-  if (!r.array(*itr, "scatter"))
-  {
-    return false;
-  }
-  for (const auto& element : *itr)
-  {
-    Name name;
-    if (!r.get(element, "name", name))
-    {
-      return false;
-    }
-    const std::size_t index = add_scatter(project, name.view());
-    if (index == kNoScatterProfile)
-    {
-      return r.fail(
-        "scatter profile '%s' is a duplicate, unnamed, or past the %zu the project may hold",
-        name.c_str(),
-        kMaxScatterProfiles);
-    }
-    ScatterSettings& st = project.scatter[index].settings;
-    r.get_optional(element, "count", st.count);
-    r.get_optional(element, "spacing", st.spacing);
-    r.get_optional(element, "attempts", st.attempts);
-    st.use_band = element.contains("low") or element.contains("high");
-    r.get_optional(element, "low", st.lo);
-    r.get_optional(element, "high", st.hi);
-    if (const auto semantic = element.find("semantic"); semantic != element.end())
-    {
-      Name entry;
-      if (!r.convert(*semantic, entry, "semantic"))
-      {
-        return false;
-      }
-      st.use_semantic = true;
-      st.semantic = intern_semantic(project, entry.view());
-    }
-    st.use_collision = element.contains("blocked");
-    if (st.use_collision and !load_blocked(r, element["blocked"], st.blocked))
-    {
-      return false;
-    }
-    r.get_optional(element, "only_empty", st.only_empty);
-    r.get_optional(element, "region", st.region);
-    if (!r.ok())
-    {
-      return false;
-    }
-    if (const auto objects = element.find("objects"); objects != element.end())
-    {
-      if (!r.array(*objects, "objects"))
-      {
-        return false;
-      }
-      for (const auto& entry : *objects)
-      {
-        ScatterObject object;
-        r.get(entry, "tileset", object.tileset);
-        r.get(entry, "group", object.group);
-        r.get_optional(entry, "weight", object.weight);
-        if (!r.ok())
-        {
-          return false;
-        }
-        if (!add_scatter_object(project, index, object))
-        {
-          return r.fail("the scatter profiles name more than %zu objects between them", kMaxScatterObjects);
-        }
-      }
-    }
-  }
-  return r.ok();
-}
-
 void save_names(Json& j, std::string_view key, const Name* names, std::size_t count)
 {
   Json array = Json::array();
@@ -529,6 +361,19 @@ Status rule_set_file(const Project& project, std::size_t index, Path& out)
   return project_file(Folder::kRules, name, kRuleSetSuffix, out);
 }
 
+Status scatter_profile_file(const Project& project, std::size_t index, Path& out)
+{
+  LVL_ASSERT_LT(index, project.scatter.size());
+  if (index < project.scatter_files.size() and !project.scatter_files[index].empty())
+  {
+    out = project.scatter_files[index];
+    return Status::okay();
+  }
+  const Name& named = project.scatter[index].name;
+  const std::string_view name = named.empty() ? project.name.view() : named.view();
+  return project_file(Folder::kScatter, name, kScatterSuffix, out);
+}
+
 Status save_project(const char* path, Project& project, level::IoContext& ctx)
 {
   if (level::format_of(path) == level::FileFormat::kBinary)
@@ -565,6 +410,17 @@ Status save_project(const char* path, Project& project, level::IoContext& ctx)
     project.rule_files[i] = file;
   }
 
+  project.scatter_files.resize(project.scatter.size());
+  for (std::size_t i = 0; i < project.scatter.size(); ++i)
+  {
+    Path file;
+    LVL_RETURN_IF_ERROR(scatter_profile_file(project, i, file));
+    Path absolute;
+    LVL_RETURN_IF_ERROR(resolve(project.root.view(), file.view(), absolute));
+    LVL_RETURN_IF_ERROR(level::save_scatter(absolute.c_str(), project, i, ctx));
+    project.scatter_files[i] = file;
+  }
+
   LVL_RETURN_IF_ERROR(with_json(ctx, [&] {
     return json::write_file(
       path,
@@ -577,7 +433,7 @@ Status save_project(const char* path, Project& project, level::IoContext& ctx)
         save_list(j, "seasons", project.seasons);
         save_files(j, "tilesets", project.tileset_files);
         save_files(j, "rules", project.rule_files);
-        save_scatter(j, project);
+        save_files(j, "scatter", project.scatter_files);
         save_levels(j, project);
       },
       2);
@@ -636,7 +492,7 @@ Status load_project(const char* path, Project& project, level::IoContext& ctx)
       }
       if (r.ok())
       {
-        load_scatter(r, j, project);
+        load_files(r, j, "scatter", project.scatter_files);
       }
       if (r.ok())
       {
@@ -645,10 +501,6 @@ Status load_project(const char* path, Project& project, level::IoContext& ctx)
       return r.status;
     });
   });
-  if (const std::size_t dropped = validate_scatter(project); dropped > 0)
-  {
-    LVL_LOG_WARN() << "Dropped " << dropped << " scatter profile(s): inconsistent objects";
-  }
   if (!status.ok)
   {
     return status;
@@ -698,6 +550,36 @@ Status load_project(const char* path, Project& project, level::IoContext& ctx)
         path,
         listed.size(),
         project.rules.size());
+    }
+  }
+
+  // The scatter profiles, each in the file that holds it. As with the rule sets, each file names
+  // its profile and intern_scatter decides where it goes, so the list is rebuilt from where they
+  // actually landed rather than assumed to come back in order
+  if (!project.scatter_files.empty())
+  {
+    memory::Vector<Path> listed = memory::make_vector<Path>(*project.arena);
+    listed.assign(project.scatter_files.begin(), project.scatter_files.end());
+    project.scatter.clear();
+    project.scatter_objects.clear();
+    project.scatter_files.clear();
+    project.scatter_files.resize(listed.size());
+    for (std::size_t i = 0; i < listed.size(); ++i)
+    {
+      Path absolute;
+      LVL_RETURN_IF_ERROR(resolve(project.root.view(), listed[i].view(), absolute));
+      std::size_t index = kNoScatterProfile;
+      LVL_RETURN_IF_ERROR(level::load_scatter(absolute.c_str(), project, ctx, index));
+      LVL_ASSERT_LT(index, project.scatter.size());
+      project.scatter_files[index] = listed[i];
+    }
+    if (project.scatter.size() != listed.size())
+    {
+      return Status::error(
+        "'%s' names %zu scatter files but they hold only %zu profiles; two of them have the same name",
+        path,
+        listed.size(),
+        project.scatter.size());
     }
   }
 

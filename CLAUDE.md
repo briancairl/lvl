@@ -194,7 +194,8 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 **Each action says which of the project's folders its files belong in** (`Setup::folder`), so the
 table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: a level opens
 in `levels/`, an atlas in `assets/atlases/`, a seed image in `assets/images/`, a tileset in
-`tilesets/`, rules in `rules/`, path graphs in `paths/`, every PNG export in `artifacts/`. The
+`tilesets/`, rules in `rules/`, a scatter profile in `scatter/`, path graphs in `paths/`, every PNG
+export in `artifacts/`. The
 folder is created on demand, so one the user deleted does not make the dialog open nowhere. Saving a
 level offers `levels/` even when the open level's file is somewhere else, because a save into the
 tree is what makes it a member; the name it already has is still what is suggested.
@@ -220,6 +221,7 @@ shoreline/                 the project root; its name is the project's default n
   levels/                  one file per level ("lvl-level")
   tilesets/                one file per tileset ("lvl-tileset")
   rules/                   one file per rule set ("lvl-wfc": WFC + auto-tiling + height steps)
+  scatter/                 one file per scatter profile ("lvl-scatter")
   paths/                   exported/imported path graphs ("lvl-paths")
   assets/
     atlases/               tileset atlas images, copied in on import
@@ -720,6 +722,24 @@ everything else. Its objects are `count` entries of `Project::scatter_objects` s
 cells, always packed and in the order the profiles are listed (`validate_scatter` is the backstop,
 as `validate_groups` is for a tileset).
 
+**A project holds as many profiles as it likes and one is edited and run at a time**, the way it
+holds several rule sets. Each is **its own file**, which the manifest names (`Project::scatter_files`
+parallel to `scatter`, `project::scatter_profile_file` choosing one from the profile's name and
+recording it, so renaming the profile does not move its file), written and read through the
+standalone `lvl-scatter` format in both JSON and binary (`level::save_scatter`/`load_scatter`,
+`binary::Kind::kScatter`). That is the same bargain the tilesets and rule sets make: per-profile
+diffs stay small, a profile can be handed to another project, and `project.json` stays a few
+kilobytes of names.
+
+Reading a profile file **interns it by name** (`project::intern_scatter`), so importing the same
+file twice does not leave two -- and interning clears the profile's objects first, so the file's
+objects are what it has rather than the file's on top of what was there. The manifest rebuilds
+`scatter_files` from where the profiles actually landed rather than assuming they come back in
+order, and refuses two files holding a profile of the same name. A profile file carries the catalog
+entry its ground type names so another project can intern it, and nothing else: the objects name
+their tileset and group, so no tileset has to come along, and an object naming one the reading
+project does not have is kept as written and shows as dangling.
+
 Each object **names** its tileset and group rather than indexing them, as a portal names its
 destination level: a profile outlives what it was written against, and a tileset or group removed
 renumbers the ones after it, so an index would quietly start placing something else. A name that
@@ -975,7 +995,10 @@ one check to mark required:
   level carrying only the set it uses and taking its name from it, a portal target written as a path
   becoming the member whose file it names, one that names no member keeping a stem and warning
   rather than failing, the standalone scope being the
-  default and still reading into an empty project, standalone files moving between levels,
+  default and still reading into an empty project, standalone files moving between levels, a
+  standalone scatter profile moving into a project with no tilesets and different catalog ids (its
+  ground type interned by name, re-reading it interning rather than duplicating, another profile
+  beside it untouched, and one using no optional test carrying none),
   malformed/truncated files, a level whose layers
   and file are bigger than one worker's share, saves split across waves and saves streamed layer by
   layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
@@ -1000,10 +1023,10 @@ one check to mark required:
   an entry rather than moving the ids after it (what the project holds and the open level's cells
   cleared, a sibling's left, interning the name again giving its id back without bringing it back),
   compaction planned once and applied to every level together,
-  and the manifest (round trip carrying the tilesets' and rule sets' own files and a tileset's tile
-  groups with them, the scatter profiles with their objects and criteria (the ground type by name, an
-  object naming a tileset that has gone kept as written, and a profile using no optional test writing
-  none), several rule sets
+  and the manifest (round trip carrying the tilesets', rule sets' and scatter profiles' own files and
+  a tileset's tile groups with them, the scatter profiles with their objects and criteria (the ground
+  type by name, an object naming a tileset that has gone kept as written, and a profile using no
+  optional test writing none), several rule sets
   each getting their own file and coming back in the order the manifest lists them, a part keeping
   the file it was given across a rename and a new one getting its own, saving elsewhere moving the
   project there, a named tileset file that has gone refusing the project, stable when written twice,
@@ -1050,7 +1073,9 @@ one check to mark required:
   multi-tile paint stamp, a tile group made out of the palette selection, chosen, stamped holes and
   all, and deleted (which stops the stamping), a scatter profile naming that group placing it over
   the map (every placement whole, none written over another, and the profile marking the project
-  modified) and then removed with its objects, the semantic layer refreshed from two tile layers (the
+  modified), exported and read back into the project that already held it by name (replacing it
+  rather than duplicating it, selecting it, and leaving a second profile alone) and then removed with
+  its objects, the semantic layer refreshed from two tile layers (the
   topmost winning, dropping it re-reading the one below, and the unmatched cells kept and then
   cleared), a thirteen-tile terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a

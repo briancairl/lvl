@@ -754,6 +754,89 @@ Status load_wfc_binary(const char* path, project::Project& project, IoContext& c
   return Status::okay();
 }
 
+namespace
+{
+
+/// A scatter profile file: the catalog entry its ground type names, then the profile
+struct ScatterFile
+{
+  memory::Vector<SemanticType>* semantics;
+  Name* name;
+  project::ScatterSettings* settings;
+  memory::Vector<project::ScatterObject>* objects;
+};
+
+template <typename S> void serialize(S& s, ScatterFile& f)
+{
+  s.container(*f.semantics, kMaxList);
+  s.object(*f.name);
+  s.object(*f.settings);
+  s.container(*f.objects, project::kMaxScatterObjects);
+}
+
+}  // namespace
+
+Status save_scatter_binary(const char* path, const project::Project& project, std::size_t index, IoContext& ctx)
+{
+  memory::Arena& temp = ctx.workers[ctx.worker_count > 1 ? 1 : 0].json;
+  memory::Scope scope{temp};
+  const project::ScatterProfile& profile = project.scatter[index];
+  // The semantic catalog travels whole and ids keep their places, as a tileset file's does, so the
+  // loader's remap() lines the file's ids up with the reading project's. The objects name their
+  // tileset and group, so no tileset has to come along
+  auto objects = memory::make_vector<project::ScatterObject>(temp);
+  project::ScatterSettings settings = profile.settings;
+  if (!settings.use_semantic or settings.semantic >= project.semantics.size())
+  {
+    settings.use_semantic = false;
+    settings.semantic = kNoSemantic;
+  }
+  if (const project::ScatterObject* entries = project::objects_of(project, profile); entries != nullptr)
+  {
+    objects.assign(entries, entries + profile.count);
+  }
+  Name name = profile.name;
+  ScatterFile file{const_cast<memory::Vector<SemanticType>*>(&project.semantics), &name, &settings, &objects};
+  return binary::write_file(path, ctx.workers[0].scratch, binary::Kind::kScatter, file);
+}
+
+Status load_scatter_binary(const char* path, project::Project& project, IoContext& ctx, std::size_t& index)
+{
+  index = project::kNoScatterProfile;
+  memory::Arena& temp = ctx.workers[ctx.worker_count > 1 ? 1 : 0].json;
+  memory::Scope scope{temp};
+  auto semantics = memory::make_vector<SemanticType>(temp);
+  auto objects = memory::make_vector<project::ScatterObject>(temp);
+  project::ScatterSettings settings;
+  Name name;
+  ScatterFile file{&semantics, &name, &settings, &objects};
+  LVL_RETURN_IF_ERROR(read_binary(path, ctx, binary::Kind::kScatter, file));
+
+  const auto semantic_map = remap(temp, semantics, project.semantics, [&project](std::string_view n) {
+    return project::intern_semantic(project, n);
+  });
+  if (settings.use_semantic)
+  {
+    settings.semantic =
+      (settings.semantic < semantic_map.size()) ? semantic_map[settings.semantic] : static_cast<SemanticId>(0);
+  }
+  index = project::intern_scatter(project, name.view());
+  if (index == project::kNoScatterProfile)
+  {
+    return Status::error("%s: the project already holds %zu scatter profiles", path, project::kMaxScatterProfiles);
+  }
+  project.scatter[index].settings = settings;
+  for (const project::ScatterObject& object : objects)
+  {
+    if (!project::add_scatter_object(project, index, object))
+    {
+      return Status::error(
+        "%s: the scatter profiles name more than %zu objects between them", path, project::kMaxScatterObjects);
+    }
+  }
+  return Status::okay();
+}
+
 Status save_paths_binary(const char* path, const Level& level, IoContext& ctx)
 {
   memory::Arena& temp = ctx.workers[ctx.worker_count > 1 ? 1 : 0].json;

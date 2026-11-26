@@ -867,6 +867,9 @@ TEST(Manifest, RoundTrips)
   EXPECT_EQ(read.tileset_files[0], std::string_view{"tilesets/forest.tileset.json"});
   ASSERT_EQ(read.rule_files.size(), 1U);
   EXPECT_EQ(read.rule_files[0], std::string_view{"rules/forest.rules.json"});
+  ASSERT_EQ(read.scatter_files.size(), 2U);
+  EXPECT_EQ(read.scatter_files[0], std::string_view{"scatter/forest.scatter.json"});
+  EXPECT_EQ(read.scatter_files[1], std::string_view{"scatter/boulders.scatter.json"});
   ASSERT_EQ(read.tilesets.size(), 1U);
   EXPECT_EQ(read.tilesets[0].name, std::string_view{"forest"});
   EXPECT_EQ(read.tilesets[0].image, std::string_view{"assets/atlases/forest.png"});

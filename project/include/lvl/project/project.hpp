@@ -145,6 +145,31 @@ struct ScatterSettings
   bool region = true;
 };
 
+// Binary serialization of what a scatter-profile file carries (the spans are in-memory bookkeeping,
+// so ScatterProfile itself is not serialized; see level::save_scatter)
+template <typename S> void serialize(S& s, ScatterObject& v)
+{
+  s.object(v.tileset);
+  s.object(v.group);
+  s.value4b(v.weight);
+}
+
+template <typename S> void serialize(S& s, ScatterSettings& v)
+{
+  s.value4b(v.count);
+  s.value4b(v.spacing);
+  s.value4b(v.attempts);
+  s.value1b(v.use_band);
+  s.value4b(v.lo);
+  s.value4b(v.hi);
+  s.value1b(v.use_semantic);
+  s.value2b(v.semantic);
+  s.value1b(v.use_collision);
+  s.value1b(v.blocked);
+  s.value1b(v.only_empty);
+  s.value1b(v.region);
+}
+
 /**
  * @brief A named set of objects and the criteria that place them (the Generate panel's Scatter tab)
  *
@@ -240,6 +265,8 @@ struct Project
    */
   memory::Vector<Path> tileset_files;
   memory::Vector<Path> rule_files;
+  /// Where each scatter profile's own file lives, relative to the root; parallel to <code>scatter</code>
+  memory::Vector<Path> scatter_files;
 
   /// Member levels, in the order the project lists them
   memory::Vector<LevelEntry> levels;
@@ -262,6 +289,15 @@ struct Project
  * project is full.
  */
 std::size_t add_scatter(Project& project, std::string_view name);
+
+/**
+ * @brief The profile named <code>name</code>, added empty if the project has none of that name
+ *
+ * What reading a profile file does, so importing the same one twice does not leave two -- the same
+ * bargain <code>intern_rules</code> makes. An unnamed file gets the name "scatter". The returned
+ * profile has its objects cleared, since the file is about to fill them.
+ */
+std::size_t intern_scatter(Project& project, std::string_view name);
 
 /// Removes profile <code>index</code>, compacting the object table the later profiles span into
 void remove_scatter(Project& project, std::size_t index);

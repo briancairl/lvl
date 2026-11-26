@@ -445,6 +445,8 @@ enum class FileAction : std::uint8_t
   kSeedImage,
   kLoadWfc,
   kSaveWfc,
+  kLoadScatter,
+  kSaveScatter,
   kLoadPaths,
   kSavePaths,
   kExportPng,

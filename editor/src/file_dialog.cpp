@@ -204,6 +204,18 @@ Setup setup(const App& app, FileAction action)
       .save = true,
       .folder = project::Folder::kRules,
       .name = "rules.wfc.json"};
+  case FileAction::kLoadScatter:
+    return Setup{.title = "Import scatter profile", .filters = kDataFilters, .folder = project::Folder::kScatter};
+  case FileAction::kSaveScatter:
+    return Setup{
+      .title = "Export scatter profile",
+      .filters = kDataFilters,
+      .save = true,
+      .folder = project::Folder::kScatter,
+      .name = format<160>(
+        "%s.scatter.json",
+        app.generators.scatter_profile < pr.scatter.size() ? pr.scatter[app.generators.scatter_profile].name.c_str()
+                                                           : "scatter")};
   case FileAction::kLoadPaths:
     return Setup{.title = "Import path graphs", .filters = kDataFilters, .folder = project::Folder::kPaths};
   case FileAction::kSavePaths:

@@ -58,6 +58,7 @@ inline memory::Arena& shared_arena(IoContext& ctx)
 inline constexpr std::string_view kLevelFormat = "lvl-level";
 inline constexpr std::string_view kTileSetFormat = "lvl-tileset";
 inline constexpr std::string_view kWfcFormat = "lvl-wfc";
+inline constexpr std::string_view kScatterFormat = "lvl-scatter";
 inline constexpr std::string_view kPathsFormat = "lvl-paths";
 
 /// A layer without its data plane
@@ -255,6 +256,8 @@ Status save_tileset_json(const char* path, const project::Project& project, Tile
 Status load_tileset_json(const char* path, project::Project& project, IoContext& ctx, TileSetId& id);
 Status save_wfc_json(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
 Status load_wfc_json(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
+Status save_scatter_json(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
+Status load_scatter_json(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
 Status save_paths_json(const char* path, const Level& level, IoContext& ctx);
 Status load_paths_json(const char* path, Level& level, IoContext& ctx);
 
@@ -270,6 +273,8 @@ Status save_tileset_binary(const char* path, const project::Project& project, Ti
 Status load_tileset_binary(const char* path, project::Project& project, IoContext& ctx, TileSetId& id);
 Status save_wfc_binary(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
 Status load_wfc_binary(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
+Status save_scatter_binary(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
+Status load_scatter_binary(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
 Status save_paths_binary(const char* path, const Level& level, IoContext& ctx);
 Status load_paths_binary(const char* path, Level& level, IoContext& ctx);
 

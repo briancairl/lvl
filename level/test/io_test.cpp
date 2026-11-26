@@ -646,6 +646,105 @@ TEST_F(LevelIo, StandaloneTilesetMovesBetweenLevels)
   }
 }
 
+TEST_F(LevelIo, StandaloneScatterProfileMovesBetweenProjects)
+{
+  for (const char* name : {"forest.scatter.json", "forest.scatter.bin"})
+  {
+    project::reset(*pr_a);
+    const auto grass = project::intern_semantic(*pr_a, "grass");
+    const std::size_t index = project::add_scatter(*pr_a, "forest");
+    ASSERT_NE(index, project::kNoScatterProfile);
+    pr_a->scatter[index].settings = project::ScatterSettings{
+      .count = 40,
+      .spacing = 2,
+      .attempts = 80,
+      .use_band = true,
+      .lo = 0.25F,
+      .hi = 0.75F,
+      .use_semantic = true,
+      .semantic = grass,
+      .use_collision = true,
+      .blocked = collision::kSolid | collision::kPlatform,
+      .only_empty = false,
+      .region = false};
+    ASSERT_TRUE(project::add_scatter_object(
+      *pr_a, index, project::ScatterObject{.tileset = "trees", .group = "oak", .weight = 3.0F}));
+    ASSERT_TRUE(project::add_scatter_object(*pr_a, index, project::ScatterObject{.tileset = "trees", .group = "pine"}));
+
+    const auto path = temp(name);
+    ASSERT_TRUE(save_scatter(path.c_str(), *pr_a, index, ctx).ok);
+
+    // A project with no tilesets at all and different catalog ids: the objects name what they place,
+    // so the profile reads back whole and the ground type is interned by name
+    project::reset(*pr_b);
+    project::intern_semantic(*pr_b, "lava");
+    std::size_t landed = project::kNoScatterProfile;
+    const Status status = load_scatter(path.c_str(), *pr_b, ctx, landed);
+    ASSERT_TRUE(status.ok) << status;
+    ASSERT_EQ(landed, 0U);
+    const project::ScatterProfile& profile = pr_b->scatter[landed];
+    EXPECT_EQ(profile.name, std::string_view{"forest"});
+    EXPECT_EQ(profile.settings.count, 40);
+    EXPECT_EQ(profile.settings.spacing, 2);
+    EXPECT_EQ(profile.settings.attempts, 80);
+    EXPECT_TRUE(profile.settings.use_band);
+    EXPECT_FLOAT_EQ(profile.settings.lo, 0.25F);
+    EXPECT_FLOAT_EQ(profile.settings.hi, 0.75F);
+    EXPECT_TRUE(profile.settings.use_semantic);
+    EXPECT_EQ(pr_b->semantics[profile.settings.semantic].name, std::string_view{"grass"});
+    EXPECT_NE(profile.settings.semantic, grass);  // the ids differ; the name is what travelled
+    EXPECT_TRUE(profile.settings.use_collision);
+    EXPECT_EQ(profile.settings.blocked, collision::kSolid | collision::kPlatform);
+    EXPECT_FALSE(profile.settings.only_empty);
+    EXPECT_FALSE(profile.settings.region);
+    ASSERT_EQ(profile.count, 2U);
+    const project::ScatterObject* objects = project::objects_of(*pr_b, profile);
+    ASSERT_NE(objects, nullptr);
+    EXPECT_EQ(objects[0].group, std::string_view{"oak"});
+    EXPECT_FLOAT_EQ(objects[0].weight, 3.0F);
+    EXPECT_EQ(objects[1].group, std::string_view{"pine"});
+    EXPECT_FLOAT_EQ(objects[1].weight, 1.0F);
+
+    // Reading the same file twice interns by name, so it replaces rather than leaving two -- and
+    // the objects are the file's, not the file's on top of what was there
+    ASSERT_TRUE(load_scatter(path.c_str(), *pr_b, ctx, landed).ok);
+    EXPECT_EQ(landed, 0U);
+    EXPECT_EQ(pr_b->scatter.size(), 1U);
+    EXPECT_EQ(pr_b->scatter[0].count, 2U);
+    EXPECT_EQ(pr_b->scatter_objects.size(), 2U);
+    EXPECT_EQ(project::validate_scatter(*pr_b), 0U);
+
+    // A second profile of another name sits beside it, each addressed on its own
+    project::ScatterProfile& second = pr_b->scatter[project::add_scatter(*pr_b, "rocks")];
+    second.settings.count = 7;
+    EXPECT_EQ(pr_b->scatter.size(), 2U);
+    EXPECT_EQ(pr_b->scatter[project::find_scatter(*pr_b, "forest")].settings.count, 40);
+    EXPECT_EQ(pr_b->scatter[project::find_scatter(*pr_b, "rocks")].settings.count, 7);
+  }
+}
+
+TEST_F(LevelIo, AScatterProfileThatUsesNoOptionalTestCarriesNone)
+{
+  project::reset(*pr_a);
+  const std::size_t index = project::add_scatter(*pr_a, "plain");
+  pr_a->scatter[index].settings = project::ScatterSettings{
+    .count = 5, .use_band = false, .use_semantic = false, .use_collision = false, .only_empty = true};
+  const auto path = temp("plain.scatter.json");
+  ASSERT_TRUE(save_scatter(path.c_str(), *pr_a, index, ctx).ok);
+
+  project::reset(*pr_b);
+  std::size_t landed = project::kNoScatterProfile;
+  ASSERT_TRUE(load_scatter(path.c_str(), *pr_b, ctx, landed).ok);
+  const project::ScatterSettings& st = pr_b->scatter[landed].settings;
+  EXPECT_FALSE(st.use_band);
+  EXPECT_FALSE(st.use_semantic);
+  EXPECT_FALSE(st.use_collision);
+  EXPECT_TRUE(st.only_empty);
+  EXPECT_EQ(pr_b->scatter[landed].count, 0U);
+  // A profile naming no ground type leaves the reading project's catalogs alone
+  EXPECT_EQ(pr_b->semantics.size(), 1U);
+}
+
 TEST_F(LevelIo, StandaloneWfcRulesAndPaths)
 {
   for (const char* ext : {".json", ".bin"})

@@ -41,6 +41,7 @@ Project::Project(memory::Arena& arena) :
     rules{memory::ArenaAllocator<RuleSet>{arena}},
     tileset_files{memory::ArenaAllocator<Path>{arena}},
     rule_files{memory::ArenaAllocator<Path>{arena}},
+    scatter_files{memory::ArenaAllocator<Path>{arena}},
     levels{memory::ArenaAllocator<LevelEntry>{arena}},
     object_names{memory::ArenaAllocator<Name>{arena}},
     scatter{memory::ArenaAllocator<ScatterProfile>{arena}},
@@ -248,6 +249,21 @@ std::size_t add_scatter(Project& project, std::string_view name)
   profile.count = 0;
   project.scatter.push_back(profile);
   return project.scatter.size() - 1;
+}
+
+std::size_t intern_scatter(Project& project, std::string_view name)
+{
+  const std::string_view named = name.empty() ? std::string_view{"scatter"} : name;
+  if (const std::size_t found = find_scatter(project, named); found != kNoScatterProfile)
+  {
+    // The file is about to fill it, so what it held does not linger alongside what the file says
+    while (project.scatter[found].count > 0)
+    {
+      remove_scatter_object(project, found, project.scatter[found].count - 1);
+    }
+    return found;
+  }
+  return add_scatter(project, named);
 }
 
 void remove_scatter(Project& project, std::size_t index)

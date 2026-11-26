@@ -536,6 +536,9 @@ void scatter_section(App& app)
   }
   else
   {
+    // A project holds as many profiles as it likes and one is edited and run at a time, so which
+    // one that is comes first
+    ImGui::TextDisabled("%zu profile(s) in this project; one is edited and run at a time.", pr.scatter.size());
     g.scatter_profile = std::min(g.scatter_profile, pr.scatter.size() - 1);
     if (ImGui::BeginCombo("Profile", pr.scatter[g.scatter_profile].name.c_str()))
     {
@@ -579,6 +582,24 @@ void scatter_section(App& app)
     }
   }
   ImGui::EndDisabled();
+  // Each profile is a file of its own, which the manifest names, so one can be handed to another
+  // project the way a tileset or a rule set can
+  if (ImGui::SmallButton("Import..."))
+  {
+    open_file_dialog(app, FileAction::kLoadScatter);
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Reads a scatter profile file. It names the profile it holds, so it replaces the one of that "
+                      "name or becomes a new one.");
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(pr.scatter.empty());
+  if (ImGui::SmallButton("Export..."))
+  {
+    open_file_dialog(app, FileAction::kSaveScatter);
+  }
+  ImGui::EndDisabled();
   if (pr.scatter.empty())
   {
     return;
@@ -587,6 +608,15 @@ void scatter_section(App& app)
   if (input_text("Name##scatter", profile.name))
   {
     app.project_modified = true;
+  }
+  if (g.scatter_profile < pr.scatter_files.size() and !pr.scatter_files[g.scatter_profile].empty())
+  {
+    ImGui::TextDisabled("%s", pr.scatter_files[g.scatter_profile].c_str());
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("The file this profile is saved in, relative to the project root. Renaming the profile does "
+                        "not move it.");
+    }
   }
 
   if (!layer_combo("Target tile layer", lv, LayerKind::kTiles, g.scatter_layer))
