@@ -423,6 +423,8 @@ struct Panels
   bool adjacency = false;
   /// The pop-out neighbor editor
   bool neighbors = false;
+  /// The tileset's tile groups: the folder tree, the chosen group and how one is made
+  bool tile_groups = false;
   /// The project: its member levels, its tilesets and its rule sets
   bool project = true;
 };

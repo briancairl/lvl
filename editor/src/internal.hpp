@@ -163,6 +163,8 @@ void file_action(App& app, FileAction action, const char* path);
 void viewport_window(App& app);
 void layers_panel(App& app);
 void tilesets_panel(App& app);
+/// The chosen tileset's tile groups: a window of its own, since the tree and the preview grow
+void tile_groups_panel(App& app);
 void tile_meta_panel(App& app);
 void catalogs_panel(App& app);
 void project_panel(App& app);

@@ -1336,6 +1336,7 @@ void main_menu(App& app)
       ImGui::Separator();
       ImGui::MenuItem("Layers", nullptr, &app.panels.layers);
       ImGui::MenuItem("Tilesets", nullptr, &app.panels.tilesets);
+      ImGui::MenuItem("Tile groups", nullptr, &app.panels.tile_groups);
       ImGui::MenuItem("Tile metadata", nullptr, &app.panels.tile_meta);
       ImGui::MenuItem("Catalogs & seasons", nullptr, &app.panels.catalogs);
       ImGui::MenuItem("Project", nullptr, &app.panels.project);
@@ -2480,6 +2481,8 @@ void smoke(App& app)
     // A tile group: made out of the palette selection, chosen from the tileset's list, and stamped
     // as one thing -- holes and all, since a group's bounding box is not all part of the thing
     project::Project& pr = *app.project;
+    // The groups have a window of their own, so the session draws it rather than only the model
+    app.panels.tile_groups = true;
     if (app.tileset >= pr.tilesets.size())
     {
       report(app, Status::error("no tileset to put a group in"));
@@ -2851,6 +2854,7 @@ void dock_layout(ImGuiID dockspace)
   ImGui::DockBuilderDockWindow("Mini-preview", left_bottom);
   ImGui::DockBuilderDockWindow("Objects & paths", left_bottom);
   ImGui::DockBuilderDockWindow("Tilesets", right);
+  ImGui::DockBuilderDockWindow("Tile groups", right_bottom);
   ImGui::DockBuilderDockWindow("Tile metadata", right_bottom);
   ImGui::DockBuilderDockWindow("Catalogs & seasons", right_bottom);
   ImGui::DockBuilderDockWindow("Generate", right_bottom);
@@ -3063,6 +3067,10 @@ void frame(App& app)
   if (app.panels.tilesets)
   {
     tilesets_panel(app);
+  }
+  if (app.panels.tile_groups)
+  {
+    tile_groups_panel(app);
   }
   if (app.panels.tile_meta)
   {

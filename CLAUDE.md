@@ -468,10 +468,16 @@ its tiles, not where it belongs.
 `editor::group_order` sorts the groups by folder and then by name, which puts a folder's own groups
 before its subfolders' ("nature" < "nature/trees") and is what lets `group_tree` walk that order
 once, recursing per path segment, instead of building a tree of nodes: the run of groups sharing a
-segment is contiguous. The leaf row is a callback, so the Tilesets panel and the Scatter tab share
-the tree and differ only in what a leaf looks like.
+segment is contiguous. The leaf row is a callback, so the Tile groups window and the Scatter tab
+share the tree and differ only in what a leaf looks like.
 
-In the editor they are **Tilesets > Tile groups**: the tree, a delete button per row, the chosen
+In the editor they are the **Tile groups window** (View > Tile groups, or the "Tile groups..."
+button in the Tilesets panel, which is what says how many the chosen tileset has): a window of its
+own rather than a section of the Tilesets panel, because the tree, the chosen group's preview and
+the "new group" fields together grow taller than the palette can spare -- and the palette is what
+they are used beside, since a group is made out of the palette selection. It repeats the tileset
+combo, so it stands on its own wherever it is docked, and choosing a tileset in either place is the
+same `App::tileset`. It holds the tree, a delete button per row, the chosen
 group drawn as it will be stamped with its name and folder, and "From the palette selection", which is how one is made --
 the palette is already how several tiles are picked and already how they are laid out, so the house
 in the atlas is the house on the map, holes included. Choosing a group sets `App::group` (a

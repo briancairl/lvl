@@ -429,6 +429,43 @@ void groups_section(App& app, TileSet& ts)
 
 }  // namespace
 
+void tile_groups_panel(App& app)
+{
+  if (!ImGui::Begin("Tile groups", &app.panels.tile_groups))
+  {
+    ImGui::End();
+    return;
+  }
+  if (skip_while_busy(app))
+  {
+    return;
+  }
+  project::Project& pr = *app.project;
+  if (pr.tilesets.empty())
+  {
+    ImGui::TextDisabled("No tilesets. A group is made of one tileset's tiles, so there is nothing to group yet.");
+    ImGui::End();
+    return;
+  }
+  // The groups shown are the chosen tileset's, as they were when this was part of the Tilesets
+  // panel; the combo is repeated here so the window stands on its own when it is docked elsewhere
+  app.tileset = std::min(app.tileset, pr.tilesets.size() - 1);
+  if (ImGui::BeginCombo("Tileset##groups", pr.tilesets[app.tileset].name.c_str()))
+  {
+    for (std::size_t i = 0; i < pr.tilesets.size(); ++i)
+    {
+      if (ImGui::Selectable(format<96>("%s##%zu", pr.tilesets[i].name.c_str(), i), i == app.tileset))
+      {
+        app.tileset = i;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::Separator();
+  groups_section(app, pr.tilesets[app.tileset]);
+  ImGui::End();
+}
+
 void tilesets_panel(App& app)
 {
   if (!ImGui::Begin("Tilesets", &app.panels.tilesets))
@@ -551,10 +588,20 @@ void tilesets_panel(App& app)
       ts.tiles.size());
   }
 
-  if (ImGui::CollapsingHeader("Tile groups"))
+  // The groups are a window of their own: the tree, the chosen group's preview and the "new group"
+  // fields together grow taller than the palette can spare, and the palette is what they are used
+  // beside (a group is made out of the palette selection).
+  if (ImGui::Button("Tile groups..."))
   {
-    groups_section(app, ts);
+    app.panels.tile_groups = true;
+    ImGui::SetWindowFocus("Tile groups");
   }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Opens the Tile groups window: this tileset's named multi-tile stamps");
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu group%s", ts.groups.size(), ts.groups.size() == 1 ? "" : "s");
 
   if (ImGui::CollapsingHeader("Palette", ImGuiTreeNodeFlags_DefaultOpen))
   {
