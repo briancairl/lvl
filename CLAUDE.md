@@ -492,6 +492,28 @@ Groups are tileset data, so adding, renaming or removing one marks the **project
 than the level, and like the other tile metadata it is not undoable. Stamping is an ordinary layer
 edit and is.
 
+### Palette overlays
+
+Tile metadata is edited one tile (or one selection) at a time, so "which tiles have I not given a
+material yet?" is otherwise answered by clicking through the atlas. The Palette header's **Overlay**
+toggles -- collision, semantic type, material, with one opacity slider -- draw that metadata over
+the atlas itself (`App::palette_overlay`, a `PaletteOverlay`).
+
+The overlays that are on divide each tile into **equal stripes**, in the order the struct declares
+them, so several can be read at once; one alone takes the whole tile. A collision stripe fills the
+quadrants the mask marks solid, in the quadrants' own places, and rings the stripe when the mask
+carries any of the flags (platform/trigger/sight-blocker), which belong to no one quadrant. A
+semantic or material stripe is the catalog entry's own color.
+
+**A tile the overlay has nothing to say about is marked, not left bare**, since the gaps are the
+point: the stripe is dimmed and struck through in pink. A *retired* catalog entry counts as a gap,
+as it does everywhere else (`render::colorize` draws it transparent), rather than a color the user
+can no longer pick. The stripes are colors, so while any overlay is on the palette's hover tooltip
+names each one's entry, with "none" in pink where there is none.
+
+The overlay draws **under** the slicing grid and the selection, so turning one on never hides what
+is selected.
+
 ### Palette selection and batch tile edits
 
 A plain click or drag in the tileset palette picks one tile or a rectangle of them (the paint stamp,
@@ -1090,7 +1112,8 @@ one check to mark required:
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
-  multi-tile paint stamp, a tile group made out of the palette selection, chosen, stamped holes and
+  multi-tile paint stamp, the palette overlays drawn over a tile that has a semantic type, a material
+  and collision and over one that has none of them, a tile group made out of the palette selection, chosen, stamped holes and
   all, filed under a folder (still found by name, its segments split, and the list ordered for the
   tree) and deleted (which stops the stamping), a scatter profile naming that group placing it over
   the map (every placement whole, none written over another, and the profile marking the project

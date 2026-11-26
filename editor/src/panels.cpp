@@ -466,6 +466,171 @@ void tile_groups_panel(App& app)
   ImGui::End();
 }
 
+// -------------------------------------------------------------------------------------------------
+// Palette overlays: a tile's collision, semantic type and material drawn over the atlas
+// -------------------------------------------------------------------------------------------------
+
+namespace
+{
+
+ImU32 overlay_color(Color c, float opacity) { return IM_COL32(c.r, c.g, c.b, static_cast<int>(255.0F * opacity)); }
+
+/// A stripe the overlay has nothing to show: dimmed and struck through, so the gaps are the obvious part
+void unassigned_stripe(ImDrawList* draw, ImVec2 a, ImVec2 b, float opacity)
+{
+  const auto alpha = static_cast<int>(210.0F * opacity);
+  draw->AddRectFilled(a, b, IM_COL32(14, 14, 18, alpha));
+  draw->AddLine(ImVec2{a.x + 1, b.y - 1}, ImVec2{b.x - 1, a.y + 1}, IM_COL32(255, 70, 160, alpha), 1.5F);
+}
+
+/// The mask's solid quadrants, in the quadrants' own places, plus a ring when it carries any flag
+void collision_stripe(ImDrawList* draw, ImVec2 a, ImVec2 b, std::uint8_t mask, float opacity)
+{
+  if (mask == collision::kNone)
+  {
+    unassigned_stripe(draw, a, b, opacity);
+    return;
+  }
+  const auto alpha = static_cast<int>(220.0F * opacity);
+  const ImU32 solid = IM_COL32(235, 60, 50, alpha);
+  const ImVec2 m{(a.x + b.x) * 0.5F, (a.y + b.y) * 0.5F};
+  if ((mask & collision::kNorthWest) != 0)
+  {
+    draw->AddRectFilled(a, m, solid);
+  }
+  if ((mask & collision::kNorthEast) != 0)
+  {
+    draw->AddRectFilled(ImVec2{m.x, a.y}, ImVec2{b.x, m.y}, solid);
+  }
+  if ((mask & collision::kSouthWest) != 0)
+  {
+    draw->AddRectFilled(ImVec2{a.x, m.y}, ImVec2{m.x, b.y}, solid);
+  }
+  if ((mask & collision::kSouthEast) != 0)
+  {
+    draw->AddRectFilled(m, b, solid);
+  }
+  // The flags are not about any one quadrant, so they are the stripe's edge rather than a quadrant
+  if ((mask & (collision::kPlatform | collision::kTrigger | collision::kSightBlocker)) != 0)
+  {
+    draw->AddRect(a, b, IM_COL32(90, 220, 245, alpha), 0, 0, 2.0F);
+  }
+}
+
+/// The catalog entry's own color, or the unassigned mark when the tile names none
+template <typename CatalogT>
+void catalog_stripe(ImDrawList* draw, ImVec2 a, ImVec2 b, const CatalogT& catalog, std::uint16_t id, float opacity)
+{
+  // A retired entry reads as "none" everywhere (render::colorize draws it transparent), so it is a
+  // gap here too rather than a color the user cannot pick any more
+  if (id == 0 or id >= catalog.size() or catalog[id].retired)
+  {
+    unassigned_stripe(draw, a, b, opacity);
+    return;
+  }
+  draw->AddRectFilled(a, b, overlay_color(catalog[id].color, opacity));
+}
+
+/// The enabled overlays, as equal stripes down the tile in the order PaletteOverlay declares them
+void tile_overlay(const App& app, const TileSet& ts, TileIndex tile, ImDrawList* draw, ImVec2 a, ImVec2 b)
+{
+  const PaletteOverlay& o = app.palette_overlay;
+  const int stripes = o.count();
+  if (stripes == 0 or tile >= ts.tiles.size())
+  {
+    return;
+  }
+  const TileInfo& info = ts.tiles[tile];
+  const project::Project& pr = *app.project;
+  const float height = (b.y - a.y) / static_cast<float>(stripes);
+  int row = 0;
+  const auto top = [&] { return ImVec2{a.x, a.y + height * static_cast<float>(row)}; };
+  const auto bottom = [&] { return ImVec2{b.x, a.y + height * static_cast<float>(row + 1)}; };
+  if (o.collision)
+  {
+    collision_stripe(draw, top(), bottom(), info.collision, o.opacity);
+    ++row;
+  }
+  if (o.semantic)
+  {
+    catalog_stripe(draw, top(), bottom(), pr.semantics, info.semantic, o.opacity);
+    ++row;
+  }
+  if (o.material)
+  {
+    catalog_stripe(draw, top(), bottom(), pr.materials, info.material, o.opacity);
+    ++row;
+  }
+}
+
+/// What the tile's stripes mean, named: the tooltip the palette shows while an overlay is on
+void overlay_tooltip(const App& app, const TileSet& ts, TileIndex tile)
+{
+  const PaletteOverlay& o = app.palette_overlay;
+  const TileInfo& info = ts.tiles[tile];
+  const project::Project& pr = *app.project;
+  const auto named = [](const auto& catalog, std::uint16_t id) -> const char* {
+    return (id == 0 or id >= catalog.size() or catalog[id].retired) ? nullptr : catalog[id].name.c_str();
+  };
+  if (o.collision)
+  {
+    if (info.collision == collision::kNone)
+    {
+      ImGui::TextColored(ImVec4{1.0F, 0.45F, 0.7F, 1.0F}, "collision: none");
+    }
+    else
+    {
+      ImGui::Text("collision: 0x%02x", static_cast<unsigned>(info.collision));
+    }
+  }
+  if (o.semantic)
+  {
+    if (const char* name = named(pr.semantics, info.semantic); name == nullptr)
+    {
+      ImGui::TextColored(ImVec4{1.0F, 0.45F, 0.7F, 1.0F}, "semantic type: none");
+    }
+    else
+    {
+      ImGui::Text("semantic type: %s", name);
+    }
+  }
+  if (o.material)
+  {
+    if (const char* name = named(pr.materials, info.material); name == nullptr)
+    {
+      ImGui::TextColored(ImVec4{1.0F, 0.45F, 0.7F, 1.0F}, "material: none");
+    }
+    else
+    {
+      ImGui::Text("material: %s", name);
+    }
+  }
+}
+
+/// The overlay toggles and their opacity, above the palette
+void overlay_controls(App& app)
+{
+  PaletteOverlay& o = app.palette_overlay;
+  ImGui::TextUnformatted("Overlay");
+  ImGui::SameLine();
+  ImGui::Checkbox("Collision##overlay", &o.collision);
+  ImGui::SameLine();
+  ImGui::Checkbox("Semantic##overlay", &o.semantic);
+  ImGui::SameLine();
+  ImGui::Checkbox("Material##overlay", &o.material);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!o.any());
+  ImGui::SetNextItemWidth(110.0F);
+  ImGui::SliderFloat("Opacity##overlay", &o.opacity, 0.1F, 1.0F, "%.2f");
+  ImGui::EndDisabled();
+  if (o.any())
+  {
+    ImGui::TextDisabled("A stripe per overlay, top to bottom; struck through in pink where the tile has none.");
+  }
+}
+
+}  // namespace
+
 void tilesets_panel(App& app)
 {
   if (!ImGui::Begin("Tilesets", &app.panels.tilesets))
@@ -610,6 +775,7 @@ void tilesets_panel(App& app)
     ImGui::SliderFloat("Zoom##palette", &zoom, 0.5F, 6.0F, "%.1fx");
     ImGui::SameLine();
     ImGui::TextDisabled("click: tile, drag: stamp, ctrl/shift+click: several");
+    overlay_controls(app);
     if (selection_size(app) > 0)
     {
       ImGui::Text("%zu tiles selected", selection_size(app));
@@ -651,6 +817,8 @@ void tilesets_panel(App& app)
         const ImVec2 a{origin.x + r.x * zoom, origin.y + r.y * zoom};
         const ImVec2 b{a.x + r.width * zoom, a.y + r.height * zoom};
         const bool hidden = static_cast<std::size_t>(i) < ts.tiles.size() and ts.tiles[i].hidden;
+        // Under the grid and the selection, so turning an overlay on never hides what is selected
+        tile_overlay(app, ts, static_cast<TileIndex>(i), draw, a, b);
         if (app.selection.has(app.tileset, static_cast<TileIndex>(i)))
         {
           draw->AddRectFilled(a, b, IM_COL32(255, 230, 60, 50));
@@ -667,7 +835,18 @@ void tilesets_panel(App& app)
         if (hover >= 0)
         {
           const TileInfo& info = ts.tiles[hover];
-          ImGui::SetTooltip("#%d %s", hover, info.name.c_str());
+          if (app.palette_overlay.any())
+          {
+            // The stripes are colors; the tooltip is what says which entry each one is
+            ImGui::BeginTooltip();
+            ImGui::Text("#%d %s", hover, info.name.c_str());
+            overlay_tooltip(app, ts, static_cast<TileIndex>(hover));
+            ImGui::EndTooltip();
+          }
+          else
+          {
+            ImGui::SetTooltip("#%d %s", hover, info.name.c_str());
+          }
           if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
           {
             drag_start = hover;

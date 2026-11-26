@@ -2810,7 +2810,35 @@ void smoke(App& app)
     }
     break;
   }
-  case 47:
+  case 47: {
+    // The palette overlays: the tile metadata drawn over the atlas, so a tile with none is obvious.
+    // All three on at once, with a tile given a semantic type and a material and the one beside it
+    // left bare, which is the pair the stripes have to tell apart.
+    project::Project& pr = *app.project;
+    if (app.tileset >= pr.tilesets.size() or pr.tilesets[app.tileset].tiles.size() < 2)
+    {
+      report(app, Status::error("no tileset to draw the palette overlays over"));
+      break;
+    }
+    app.panels.tilesets = true;
+    app.palette_overlay.collision = true;
+    app.palette_overlay.semantic = true;
+    app.palette_overlay.material = true;
+    app.palette_overlay.opacity = 0.75F;
+    if (app.palette_overlay.count() != 3 or !app.palette_overlay.any())
+    {
+      report(app, Status::error("the palette overlays do not count their stripes"));
+    }
+    level::TileSet& ts = pr.tilesets[app.tileset];
+    ts.tiles[0].semantic = static_cast<level::SemanticId>(pr.semantics.size() > 1 ? 1 : 0);
+    ts.tiles[0].material = static_cast<level::MaterialId>(pr.materials.size() > 1 ? 1 : 0);
+    ts.tiles[0].collision = level::collision::kSolid;
+    ts.tiles[1].semantic = level::kNoSemantic;
+    ts.tiles[1].material = level::kNoMaterial;
+    ts.tiles[1].collision = level::collision::kNone;
+    break;
+  }
+  case 48:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2819,7 +2847,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 48:
+  case 49:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
