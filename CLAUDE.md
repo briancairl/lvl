@@ -468,10 +468,16 @@ its tiles, not where it belongs.
 `editor::group_order` sorts the groups by folder and then by name, which puts a folder's own groups
 before its subfolders' ("nature" < "nature/trees") and is what lets `group_tree` walk that order
 once, recursing per path segment, instead of building a tree of nodes: the run of groups sharing a
-segment is contiguous. The leaf row is a callback, so the Tilesets panel and the Scatter tab share
-the tree and differ only in what a leaf looks like.
+segment is contiguous. The leaf row is a callback, so the Tile groups window and the Scatter tab
+share the tree and differ only in what a leaf looks like.
 
-In the editor they are **Tilesets > Tile groups**: the tree, a delete button per row, the chosen
+In the editor they are the **Tile groups window** (View > Tile groups, or the "Tile groups..."
+button in the Tilesets panel, which is what says how many the chosen tileset has): a window of its
+own rather than a section of the Tilesets panel, because the tree, the chosen group's preview and
+the "new group" fields together grow taller than the palette can spare -- and the palette is what
+they are used beside, since a group is made out of the palette selection. It repeats the tileset
+combo, so it stands on its own wherever it is docked, and choosing a tileset in either place is the
+same `App::tileset`. It holds the tree, a delete button per row, the chosen
 group drawn as it will be stamped with its name and folder, and "From the palette selection", which is how one is made --
 the palette is already how several tiles are picked and already how they are laid out, so the house
 in the atlas is the house on the map, holes included. Choosing a group sets `App::group` (a
@@ -485,6 +491,28 @@ the Paint tool is active, since a stamp is not visible on the canvas until it is
 Groups are tileset data, so adding, renaming or removing one marks the **project** modified rather
 than the level, and like the other tile metadata it is not undoable. Stamping is an ordinary layer
 edit and is.
+
+### Palette overlays
+
+Tile metadata is edited one tile (or one selection) at a time, so "which tiles have I not given a
+material yet?" is otherwise answered by clicking through the atlas. The Palette header's **Overlay**
+toggles -- collision, semantic type, material, with one opacity slider -- draw that metadata over
+the atlas itself (`App::palette_overlay`, a `PaletteOverlay`).
+
+The overlays that are on divide each tile into **equal stripes**, in the order the struct declares
+them, so several can be read at once; one alone takes the whole tile. A collision stripe fills the
+quadrants the mask marks solid, in the quadrants' own places, and rings the stripe when the mask
+carries any of the flags (platform/trigger/sight-blocker), which belong to no one quadrant. A
+semantic or material stripe is the catalog entry's own color.
+
+**A tile the overlay has nothing to say about is marked, not left bare**, since the gaps are the
+point: the stripe is dimmed and struck through in pink. A *retired* catalog entry counts as a gap,
+as it does everywhere else (`render::colorize` draws it transparent), rather than a color the user
+can no longer pick. The stripes are colors, so while any overlay is on the palette's hover tooltip
+names each one's entry, with "none" in pink where there is none.
+
+The overlay draws **under** the slicing grid and the selection, so turning one on never hides what
+is selected.
 
 ### Palette selection and batch tile edits
 
@@ -1084,7 +1112,8 @@ one check to mark required:
   editor), undo/redo, save/load
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
-  multi-tile paint stamp, a tile group made out of the palette selection, chosen, stamped holes and
+  multi-tile paint stamp, the palette overlays drawn over a tile that has a semantic type, a material
+  and collision and over one that has none of them, a tile group made out of the palette selection, chosen, stamped holes and
   all, filed under a folder (still found by name, its segments split, and the list ordered for the
   tree) and deleted (which stops the stamping), a scatter profile naming that group placing it over
   the map (every placement whole, none written over another, and the profile marking the project

@@ -423,8 +423,39 @@ struct Panels
   bool adjacency = false;
   /// The pop-out neighbor editor
   bool neighbors = false;
+  /// The tileset's tile groups: the folder tree, the chosen group and how one is made
+  bool tile_groups = false;
   /// The project: its member levels, its tilesets and its rule sets
   bool project = true;
+};
+
+/**
+ * @brief What the tileset palette draws over its tiles
+ *
+ * Tile metadata is edited one tile at a time (or a selection at a time), so "which tiles have I not
+ * given a material yet?" is otherwise a question answered by clicking through the atlas. Each
+ * overlay is drawn over the tile at <code>opacity</code>, and a tile the overlay has nothing to say
+ * about is marked as unassigned rather than left bare -- the point is that the gaps are obvious.
+ *
+ * The overlays enabled divide the tile into equal stripes, in the order of the fields below, so
+ * several can be read at once.
+ */
+struct PaletteOverlay
+{
+  /// The tile's collision mask: its solid quadrants, and a ring when it carries any of the flags
+  bool collision = false;
+  /// The tile's semantic type, in that catalog entry's color
+  bool semantic = false;
+  /// The tile's material, in that catalog entry's color
+  bool material = false;
+  /// How strongly an overlay is drawn over the atlas, [0, 1]
+  float opacity = 0.6F;
+
+  [[nodiscard]] constexpr bool any() const { return collision or semantic or material; }
+  [[nodiscard]] constexpr int count() const
+  {
+    return static_cast<int>(collision) + static_cast<int>(semantic) + static_cast<int>(material);
+  }
 };
 
 /// What the modal file dialog is for
@@ -587,6 +618,8 @@ struct App
   bool minimap_dirty = true;
 
   Panels panels;
+  /// What the tileset palette draws over its tiles (collision, semantic type, material)
+  PaletteOverlay palette_overlay;
   /// The style as last loaded/saved/applied from a preset ("Revert" in the style editor)
   style::Profile style_reference;
   FileDialog dialog;

@@ -1336,6 +1336,7 @@ void main_menu(App& app)
       ImGui::Separator();
       ImGui::MenuItem("Layers", nullptr, &app.panels.layers);
       ImGui::MenuItem("Tilesets", nullptr, &app.panels.tilesets);
+      ImGui::MenuItem("Tile groups", nullptr, &app.panels.tile_groups);
       ImGui::MenuItem("Tile metadata", nullptr, &app.panels.tile_meta);
       ImGui::MenuItem("Catalogs & seasons", nullptr, &app.panels.catalogs);
       ImGui::MenuItem("Project", nullptr, &app.panels.project);
@@ -2480,6 +2481,8 @@ void smoke(App& app)
     // A tile group: made out of the palette selection, chosen from the tileset's list, and stamped
     // as one thing -- holes and all, since a group's bounding box is not all part of the thing
     project::Project& pr = *app.project;
+    // The groups have a window of their own, so the session draws it rather than only the model
+    app.panels.tile_groups = true;
     if (app.tileset >= pr.tilesets.size())
     {
       report(app, Status::error("no tileset to put a group in"));
@@ -2807,7 +2810,35 @@ void smoke(App& app)
     }
     break;
   }
-  case 47:
+  case 47: {
+    // The palette overlays: the tile metadata drawn over the atlas, so a tile with none is obvious.
+    // All three on at once, with a tile given a semantic type and a material and the one beside it
+    // left bare, which is the pair the stripes have to tell apart.
+    project::Project& pr = *app.project;
+    if (app.tileset >= pr.tilesets.size() or pr.tilesets[app.tileset].tiles.size() < 2)
+    {
+      report(app, Status::error("no tileset to draw the palette overlays over"));
+      break;
+    }
+    app.panels.tilesets = true;
+    app.palette_overlay.collision = true;
+    app.palette_overlay.semantic = true;
+    app.palette_overlay.material = true;
+    app.palette_overlay.opacity = 0.75F;
+    if (app.palette_overlay.count() != 3 or !app.palette_overlay.any())
+    {
+      report(app, Status::error("the palette overlays do not count their stripes"));
+    }
+    level::TileSet& ts = pr.tilesets[app.tileset];
+    ts.tiles[0].semantic = static_cast<level::SemanticId>(pr.semantics.size() > 1 ? 1 : 0);
+    ts.tiles[0].material = static_cast<level::MaterialId>(pr.materials.size() > 1 ? 1 : 0);
+    ts.tiles[0].collision = level::collision::kSolid;
+    ts.tiles[1].semantic = level::kNoSemantic;
+    ts.tiles[1].material = level::kNoMaterial;
+    ts.tiles[1].collision = level::collision::kNone;
+    break;
+  }
+  case 48:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2816,7 +2847,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 48:
+  case 49:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -2851,6 +2882,7 @@ void dock_layout(ImGuiID dockspace)
   ImGui::DockBuilderDockWindow("Mini-preview", left_bottom);
   ImGui::DockBuilderDockWindow("Objects & paths", left_bottom);
   ImGui::DockBuilderDockWindow("Tilesets", right);
+  ImGui::DockBuilderDockWindow("Tile groups", right_bottom);
   ImGui::DockBuilderDockWindow("Tile metadata", right_bottom);
   ImGui::DockBuilderDockWindow("Catalogs & seasons", right_bottom);
   ImGui::DockBuilderDockWindow("Generate", right_bottom);
@@ -3063,6 +3095,10 @@ void frame(App& app)
   if (app.panels.tilesets)
   {
     tilesets_panel(app);
+  }
+  if (app.panels.tile_groups)
+  {
+    tile_groups_panel(app);
   }
   if (app.panels.tile_meta)
   {
