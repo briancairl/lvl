@@ -48,6 +48,7 @@ inline constexpr std::string_view kManifestName = "project.json";
 /// What a project names its own tileset and rule-set files, after the tileset or rule set itself
 inline constexpr std::string_view kTileSetSuffix = ".tileset.json";
 inline constexpr std::string_view kRuleSetSuffix = ".rules.json";
+inline constexpr std::string_view kScatterSuffix = ".scatter.json";
 
 /// One of the folders a project owns
 enum class Folder : std::uint8_t
@@ -57,13 +58,15 @@ enum class Folder : std::uint8_t
   kLevels,
   kTileSets,
   kRules,
+  /// Scatter profiles: one file per profile ("lvl-scatter")
+  kScatter,
   kPaths,
   kAtlases,
   kImages,
   kArtifacts,
 };
 
-inline constexpr std::size_t kFolderCount = 8;
+inline constexpr std::size_t kFolderCount = 9;
 
 /// Path of <code>folder</code> relative to the root ("levels", "assets/atlases", ... ; "" for kRoot)
 [[nodiscard]] std::string_view folder_path(Folder folder);

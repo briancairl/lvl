@@ -309,27 +309,32 @@ void groups_section(App& app, TileSet& ts)
   {
     ImGui::TextDisabled("This tileset has no groups.");
   }
-  for (std::size_t i = 0; i < ts.groups.size(); ++i)
+  // Drawn as a folder tree, so a tileset with a hundred groups stays pickable
   {
-    const TileGroup& group = ts.groups[i];
-    ImGui::PushID(static_cast<int>(i));
-    if (delete_button("Remove this tile group"))
-    {
-      request_delete(
-        app,
-        PendingDelete{
-          .kind = DeleteKind::kTileGroup,
-          .index = i,
-          .owner = app.tileset,
-          .what = format<128>("tile group '%s'", group.name.c_str()),
-          .detail = "Only the group goes; the tiles it stamped onto the map stay where they are."});
-    }
-    const bool chosen = app.group.tileset == app.tileset and app.group.group == i;
-    if (ImGui::Selectable(format<96>("%s  (%d x %d)", group.name.c_str(), group.size.width, group.size.height), chosen))
-    {
-      choose_group(app, chosen ? kNoGroup : static_cast<GroupId>(i));
-    }
-    ImGui::PopID();
+    memory::Scope tree_scope{app.memory.frame};
+    const auto order = group_order(ts, app.memory.frame);
+    group_tree(ts, order.data(), order.size(), 0, [&app, &ts](GroupId id) {
+      const TileGroup& group = ts.groups[id];
+      ImGui::PushID(static_cast<int>(id));
+      if (delete_button("Remove this tile group"))
+      {
+        request_delete(
+          app,
+          PendingDelete{
+            .kind = DeleteKind::kTileGroup,
+            .index = id,
+            .owner = app.tileset,
+            .what = format<128>("tile group '%s'", group.name.c_str()),
+            .detail = "Only the group goes; the tiles it stamped onto the map stay where they are."});
+      }
+      const bool chosen = app.group.tileset == app.tileset and app.group.group == id;
+      if (ImGui::Selectable(
+            format<96>("%s  (%d x %d)", group.name.c_str(), group.size.width, group.size.height), chosen))
+      {
+        choose_group(app, chosen ? kNoGroup : id);
+      }
+      ImGui::PopID();
+    });
   }
 
   // The chosen group, drawn as it will be stamped (a hole shows through as a gap)
@@ -339,6 +344,15 @@ void groups_section(App& app, TileSet& ts)
     if (input_text("Name##group", ts.groups[app.group.group].name))
     {
       app.project_modified = true;
+    }
+    if (input_text("Folder##group", ts.groups[app.group.group].folder))
+    {
+      app.project_modified = true;
+    }
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Where this group is filed in the list, '/'-separated (\"nature/trees\"). Organisation "
+                        "only: a group is found by name, so re-filing it breaks nothing that points at it.");
     }
     const float thumb = 24.0F;
     for (int y = 0; y < group->size.height; ++y)
@@ -365,6 +379,8 @@ void groups_section(App& app, TileSet& ts)
   const std::size_t selected = selection_size(app);
   ImGui::SetNextItemWidth(160.0F);
   input_text("Name##new_group", app.group_name);
+  ImGui::SetNextItemWidth(160.0F);
+  input_text("Folder##new_group", app.group_folder);
   ImGui::SameLine();
   const bool ready = selected > 0 and !app.group_name.empty();
   ImGui::BeginDisabled(!ready);
@@ -401,6 +417,7 @@ void groups_section(App& app, TileSet& ts)
       }
       else
       {
+        ts.groups[id].folder = app.group_folder;
         LVL_LOG_INFO() << "Tile group '" << app.group_name.c_str() << "' holds " << layout.extents.width << "x"
                        << layout.extents.height << " cells";
         app.project_modified = true;

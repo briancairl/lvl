@@ -12,6 +12,11 @@
  *   "semantics": [...], "materials": [...], "seasons": [...],
  *   "tilesets": ["tilesets/forest.tileset.json"],
  *   "rules": ["rules/forest.rules.json"],
+ *   "scatter": [
+ *     {"name": "forest", "count": 40, "spacing": 1, "attempts": 64, "low": 0.3, "high": 0.6,
+ *      "semantic": "grass", "blocked": ["nw", "ne", "sw", "se"], "only_empty": true,
+ *      "region": true, "objects": [{"tileset": "forest", "group": "oak", "weight": 3.0}]}
+ *   ],
  *   "levels": [
  *     {"name": "overworld", "file": "levels/overworld.json", "size": [256, 256],
  *      "portals": ["west_gate"], "markers": ["spawn"]}
@@ -31,7 +36,9 @@
  */
 
 // C++ Standard Library
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 #include <utility>
 
@@ -354,6 +361,19 @@ Status rule_set_file(const Project& project, std::size_t index, Path& out)
   return project_file(Folder::kRules, name, kRuleSetSuffix, out);
 }
 
+Status scatter_profile_file(const Project& project, std::size_t index, Path& out)
+{
+  LVL_ASSERT_LT(index, project.scatter.size());
+  if (index < project.scatter_files.size() and !project.scatter_files[index].empty())
+  {
+    out = project.scatter_files[index];
+    return Status::okay();
+  }
+  const Name& named = project.scatter[index].name;
+  const std::string_view name = named.empty() ? project.name.view() : named.view();
+  return project_file(Folder::kScatter, name, kScatterSuffix, out);
+}
+
 Status save_project(const char* path, Project& project, level::IoContext& ctx)
 {
   if (level::format_of(path) == level::FileFormat::kBinary)
@@ -390,6 +410,17 @@ Status save_project(const char* path, Project& project, level::IoContext& ctx)
     project.rule_files[i] = file;
   }
 
+  project.scatter_files.resize(project.scatter.size());
+  for (std::size_t i = 0; i < project.scatter.size(); ++i)
+  {
+    Path file;
+    LVL_RETURN_IF_ERROR(scatter_profile_file(project, i, file));
+    Path absolute;
+    LVL_RETURN_IF_ERROR(resolve(project.root.view(), file.view(), absolute));
+    LVL_RETURN_IF_ERROR(level::save_scatter(absolute.c_str(), project, i, ctx));
+    project.scatter_files[i] = file;
+  }
+
   LVL_RETURN_IF_ERROR(with_json(ctx, [&] {
     return json::write_file(
       path,
@@ -402,6 +433,7 @@ Status save_project(const char* path, Project& project, level::IoContext& ctx)
         save_list(j, "seasons", project.seasons);
         save_files(j, "tilesets", project.tileset_files);
         save_files(j, "rules", project.rule_files);
+        save_files(j, "scatter", project.scatter_files);
         save_levels(j, project);
       },
       2);
@@ -460,6 +492,10 @@ Status load_project(const char* path, Project& project, level::IoContext& ctx)
       }
       if (r.ok())
       {
+        load_files(r, j, "scatter", project.scatter_files);
+      }
+      if (r.ok())
+      {
         load_levels(r, j, project);
       }
       return r.status;
@@ -514,6 +550,36 @@ Status load_project(const char* path, Project& project, level::IoContext& ctx)
         path,
         listed.size(),
         project.rules.size());
+    }
+  }
+
+  // The scatter profiles, each in the file that holds it. As with the rule sets, each file names
+  // its profile and intern_scatter decides where it goes, so the list is rebuilt from where they
+  // actually landed rather than assumed to come back in order
+  if (!project.scatter_files.empty())
+  {
+    memory::Vector<Path> listed = memory::make_vector<Path>(*project.arena);
+    listed.assign(project.scatter_files.begin(), project.scatter_files.end());
+    project.scatter.clear();
+    project.scatter_objects.clear();
+    project.scatter_files.clear();
+    project.scatter_files.resize(listed.size());
+    for (std::size_t i = 0; i < listed.size(); ++i)
+    {
+      Path absolute;
+      LVL_RETURN_IF_ERROR(resolve(project.root.view(), listed[i].view(), absolute));
+      std::size_t index = kNoScatterProfile;
+      LVL_RETURN_IF_ERROR(level::load_scatter(absolute.c_str(), project, ctx, index));
+      LVL_ASSERT_LT(index, project.scatter.size());
+      project.scatter_files[index] = listed[i];
+    }
+    if (project.scatter.size() != listed.size())
+    {
+      return Status::error(
+        "'%s' names %zu scatter files but they hold only %zu profiles; two of them have the same name",
+        path,
+        listed.size(),
+        project.scatter.size());
     }
   }
 

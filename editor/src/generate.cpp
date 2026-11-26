@@ -512,6 +512,317 @@ void fill_section(App& app)
 }
 
 /**
+ * @brief Generate > Scatter: objects dropped over an area, from a saved profile
+ *
+ * The objects are the tile groups the project's tilesets carry, so this tab is where a group stops
+ * being a stamp you place by hand and becomes something the map is populated with. What the panel
+ * edits is a <code>project::ScatterProfile</code>, which lives in the project and is saved with it,
+ * so "oaks and pines on grass between these two heights, two cells apart" is written down once.
+ *
+ * Which layers the band, the ground type and the collision mask are read from stays editor state:
+ * a project's levels do not have the same layers in the same order, so a profile that named them
+ * would mean different things in different levels.
+ */
+void scatter_section(App& app)
+{
+  Level& lv = *app.level;
+  project::Project& pr = *app.project;
+  Generators& g = app.generators;
+
+  ImGui::SeparatorText("Profile");
+  if (pr.scatter.empty())
+  {
+    ImGui::TextDisabled("No scatter profiles yet. A profile remembers its objects and its criteria.");
+  }
+  else
+  {
+    // A project holds as many profiles as it likes and one is edited and run at a time, so which
+    // one that is comes first
+    ImGui::TextDisabled("%zu profile(s) in this project; one is edited and run at a time.", pr.scatter.size());
+    g.scatter_profile = std::min(g.scatter_profile, pr.scatter.size() - 1);
+    if (ImGui::BeginCombo("Profile", pr.scatter[g.scatter_profile].name.c_str()))
+    {
+      for (std::size_t i = 0; i < pr.scatter.size(); ++i)
+      {
+        if (ImGui::Selectable(format<96>("%s##%zu", pr.scatter[i].name.c_str(), i), i == g.scatter_profile))
+        {
+          g.scatter_profile = i;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (delete_button("Remove this scatter profile"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kScatterProfile,
+          .index = g.scatter_profile,
+          .what = format<128>("scatter profile '%s'", pr.scatter[g.scatter_profile].name.c_str()),
+          .detail = "Objects it has already scattered onto the map stay where they are."});
+    }
+  }
+  ImGui::SetNextItemWidth(160.0F);
+  input_text("New profile", g.scatter_name);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(g.scatter_name.empty());
+  if (ImGui::SmallButton("Add"))
+  {
+    const std::size_t added = project::add_scatter(pr, g.scatter_name.view());
+    if (added == project::kNoScatterProfile)
+    {
+      report(app, Status::error("could not add scatter profile '%s'", g.scatter_name.c_str()));
+    }
+    else
+    {
+      g.scatter_profile = added;
+      g.scatter_name.clear();
+      app.project_modified = true;
+    }
+  }
+  ImGui::EndDisabled();
+  // Each profile is a file of its own, which the manifest names, so one can be handed to another
+  // project the way a tileset or a rule set can
+  if (ImGui::SmallButton("Import..."))
+  {
+    open_file_dialog(app, FileAction::kLoadScatter);
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Reads a scatter profile file. It names the profile it holds, so it replaces the one of that "
+                      "name or becomes a new one.");
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(pr.scatter.empty());
+  if (ImGui::SmallButton("Export..."))
+  {
+    open_file_dialog(app, FileAction::kSaveScatter);
+  }
+  ImGui::EndDisabled();
+  if (pr.scatter.empty())
+  {
+    return;
+  }
+  project::ScatterProfile& profile = pr.scatter[g.scatter_profile];
+  if (input_text("Name##scatter", profile.name))
+  {
+    app.project_modified = true;
+  }
+  if (g.scatter_profile < pr.scatter_files.size() and !pr.scatter_files[g.scatter_profile].empty())
+  {
+    ImGui::TextDisabled("%s", pr.scatter_files[g.scatter_profile].c_str());
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("The file this profile is saved in, relative to the project root. Renaming the profile does "
+                        "not move it.");
+    }
+  }
+
+  if (!layer_combo("Target tile layer", lv, LayerKind::kTiles, g.scatter_layer))
+  {
+    return;
+  }
+
+  ImGui::SeparatorText("Objects");
+  ImGui::TextDisabled("The tile groups it may place, each with its share of the placements.");
+  project::ScatterObject* objects = project::objects_of(pr, profile);
+  float total = 0.0F;
+  for (std::uint32_t i = 0; objects != nullptr and i < profile.count; ++i)
+  {
+    total += std::max(objects[i].weight, 0.0F);
+  }
+  total = (total > 0.0F) ? total : static_cast<float>(profile.count);
+  for (std::uint32_t i = 0; objects != nullptr and i < profile.count; ++i)
+  {
+    project::ScatterObject& object = objects[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (delete_button("Remove this object from the profile"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kScatterObject,
+          .index = i,
+          .owner = g.scatter_profile,
+          .what = format<128>("object '%s' of scatter profile '%s'", object.group.c_str(), profile.name.c_str())});
+    }
+    // A profile outlives the tilesets it was written against, so a name that resolves to nothing is
+    // shown rather than dropped -- the same way a dangling portal is
+    const std::size_t set = project::find_tileset(pr, object.tileset.view());
+    const GroupId group = (set >= pr.tilesets.size()) ? kNoGroup : find_group(pr.tilesets[set], object.group.view());
+    if (group == kNoGroup)
+    {
+      ImGui::TextColored(ImVec4{1.0F, 0.45F, 0.4F, 1.0F}, "%s / %s", object.tileset.c_str(), object.group.c_str());
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("No tileset of that name has a group of that name, so this object is skipped");
+      }
+    }
+    else
+    {
+      const TileGroup& g_ref = pr.tilesets[set].groups[group];
+      // The folder it is filed under, so two groups of similar name are told apart in the list
+      ImGui::Text(
+        "%s / %s%s%s (%d x %d)",
+        object.tileset.c_str(),
+        g_ref.folder.empty() ? "" : g_ref.folder.c_str(),
+        g_ref.folder.empty() ? "" : "/",
+        object.group.c_str(),
+        g_ref.size.width,
+        g_ref.size.height);
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(90.0F);
+    if (ImGui::DragFloat("##weight", &object.weight, 0.05F, 0.0F, 1000.0F, "w %.2f"))
+    {
+      app.project_modified = true;
+    }
+    ImGui::SameLine();
+    const float share = (total > 0.0F) ? std::max(object.weight, 0.0F) / total : 0.0F;
+    ImGui::TextDisabled("%.0f%%", share * 100.0F);
+    ImGui::PopID();
+  }
+  if (profile.count == 0)
+  {
+    ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "No objects yet");
+  }
+  // Added from the open tileset's groups, which is where they are made (Tilesets > Tile groups)
+  const TileSet* tileset = (app.tileset < pr.tilesets.size()) ? &pr.tilesets[app.tileset] : nullptr;
+  if (tileset == nullptr or tileset->groups.empty())
+  {
+    ImGui::TextDisabled("Make a group in Tilesets > Tile groups to scatter it.");
+  }
+  else
+  {
+    static int choice = 0;
+    choice = std::clamp(choice, 0, static_cast<int>(tileset->groups.size()) - 1);
+    ImGui::SetNextItemWidth(220.0F);
+    // The same folder tree the Tilesets panel lists them in, so a tileset with a hundred groups is
+    // picked through rather than scrolled
+    if (ImGui::BeginCombo("##group", tileset->groups[static_cast<std::size_t>(choice)].name.c_str()))
+    {
+      memory::Scope tree_scope{app.memory.frame};
+      const auto order = group_order(*tileset, app.memory.frame);
+      group_tree(*tileset, order.data(), order.size(), 0, [tileset](GroupId id) {
+        if (ImGui::Selectable(
+              format<96>("%s##pick%u", tileset->groups[id].name.c_str(), static_cast<unsigned>(id)),
+              static_cast<int>(id) == choice))
+        {
+          choice = static_cast<int>(id);
+        }
+      });
+      ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Add the group"))
+    {
+      const project::ScatterObject object{
+        .tileset = tileset->name, .group = tileset->groups[static_cast<std::size_t>(choice)].name, .weight = 1.0F};
+      if (!project::add_scatter_object(pr, g.scatter_profile, object))
+      {
+        report(app, Status::error("the scatter profiles are full"));
+      }
+      else
+      {
+        app.project_modified = true;
+      }
+    }
+  }
+
+  project::ScatterSettings& st = profile.settings;
+  bool changed = false;
+
+  ImGui::SeparatorText("How many");
+  ImGui::SetNextItemWidth(120.0F);
+  changed |= ImGui::DragInt("Objects", &st.count, 0.5F, 1, 100000);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(120.0F);
+  changed |= ImGui::DragInt("Spacing", &st.spacing, 0.1F, 0, 64);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Cells of clearance kept between placements; 0 lets two objects touch");
+  }
+  ImGui::SetNextItemWidth(120.0F);
+  changed |= ImGui::DragInt("Tries each", &st.attempts, 0.5F, 1, 4096);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Candidate positions tried per object before it is given up on, which is what "
+                      "ends the run when the area has no room left");
+  }
+  st.count = std::max(st.count, 1);
+  st.spacing = std::clamp(st.spacing, 0, 64);
+  st.attempts = std::clamp(st.attempts, 1, 4096);
+
+  ImGui::SeparatorText("Where");
+  changed |= ImGui::Checkbox("Height band", &st.use_band);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Place only where every cell of the object falls inside a scalar layer's band");
+  }
+  if (st.use_band and scalar_layer_combo("Band layer##scatter", lv, g.scatter_band_layer))
+  {
+    const Layer& band = lv.layers[g.scatter_band_layer];
+    const float lo = std::min(band.range_min, band.range_max);
+    const float hi = std::max(band.range_min, band.range_max);
+    const float speed = std::max((hi - lo) / 400.0F, 1e-4F);
+    changed |= ImGui::DragFloatRange2("Low / high##scatter", &st.lo, &st.hi, speed, lo, hi, "%.3f", "%.3f");
+  }
+  changed |= ImGui::Checkbox("Ground type", &st.use_semantic);
+  if (st.use_semantic and layer_combo("Semantic layer##scatter", lv, LayerKind::kSemantic, g.scatter_id_layer))
+  {
+    int id = static_cast<int>(st.semantic);
+    semantic_combo("Ground type##scatter", pr, id);
+    changed |= (static_cast<SemanticId>(id) != st.semantic);
+    st.semantic = static_cast<SemanticId>(id);
+  }
+  changed |= ImGui::Checkbox("Clear of the collision mask", &st.use_collision);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Place nothing over a cell the collision layer marks solid, so objects do not "
+                      "land in walls or water the level already blocks");
+  }
+  if (st.use_collision and !layer_combo("Collision layer", lv, LayerKind::kCollision, g.scatter_collision_layer))
+  {
+    ImGui::TextDisabled("(no collision layer; the test is skipped)");
+  }
+  changed |= ImGui::Checkbox("Only empty cells##scatter", &st.only_empty);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Place only where every cell of the object has no tile yet, so what is drawn survives");
+  }
+  changed |= ImGui::Checkbox("Honour the selected region##scatter", &st.region);
+  ImGui::SameLine();
+  if (g.region_w > 0 and st.region)
+  {
+    ImGui::Text("(%d,%d %dx%d)", g.region_x, g.region_y, g.region_w, g.region_h);
+  }
+  else
+  {
+    ImGui::TextDisabled("(whole map; drag with the Select tool to limit)");
+  }
+  app.project_modified = app.project_modified or changed;
+
+  seed_input(app);
+  if (ImGui::Button("Scatter", ImVec2{-1, 0}))
+  {
+    apply_scatter(app);
+  }
+  ImGui::TextDisabled("Objects overlap neither each other nor the cells the criteria rule out, so a "
+                      "crowded area places fewer than asked for.");
+  const procgen::ScatterResult& result = g.scatter_result;
+  if (result.placed > 0 or result.unplaced > 0 or result.rejected > 0)
+  {
+    ImGui::TextDisabled(
+      "Last scatter: %zu placed (%zu cells), %zu with no room, %zu positions refused",
+      result.placed,
+      result.cells,
+      result.unplaced,
+      result.rejected);
+  }
+}
+
+/**
  * @brief Generate > Height steps: the heightmap cut into levels, and the cliffs between them drawn
  *
  * Two passes, run by two buttons, because the first is the one that matters: the levels are what
@@ -914,6 +1225,97 @@ void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const 
   LVL_LOG_INFO() << "Fill: " << g.fill_result.matched << " cell(s) matched, " << g.fill_result.changed << " changed";
 }
 
+void apply_scatter(App& app)
+{
+  Level& lv = *app.level;
+  project::Project& pr = *app.project;
+  Generators& g = app.generators;
+  if (g.scatter_profile >= pr.scatter.size())
+  {
+    report(app, Status::error("no scatter profile selected"));
+    return;
+  }
+  if (g.scatter_layer >= lv.layers.size() or lv.layers[g.scatter_layer].kind != LayerKind::kTiles)
+  {
+    report(app, Status::error("no tile layer selected to scatter into"));
+    return;
+  }
+  const project::ScatterProfile& profile = pr.scatter[g.scatter_profile];
+  const project::ScatterSettings& st = profile.settings;
+
+  memory::Scope scope{app.memory.frame};
+  // The profile names its objects, so they are resolved here; one naming a tileset or group that
+  // has gone is dropped, which is what the panel's red row says will happen
+  auto objects = memory::make_vector<procgen::ScatterObject>(app.memory.frame);
+  const project::ScatterObject* entries = project::objects_of(pr, profile);
+  std::size_t dangling = 0;
+  for (std::uint32_t i = 0; entries != nullptr and i < profile.count; ++i)
+  {
+    const std::size_t set = project::find_tileset(pr, entries[i].tileset.view());
+    const GroupId group =
+      (set >= pr.tilesets.size()) ? kNoGroup : find_group(pr.tilesets[set], entries[i].group.view());
+    if (group == kNoGroup)
+    {
+      ++dangling;
+      continue;
+    }
+    objects.push_back(
+      procgen::ScatterObject{.tileset = static_cast<TileSetId>(set), .group = group, .weight = entries[i].weight});
+  }
+  if (objects.empty())
+  {
+    report(app, Status::error("scatter profile '%s' names no object that is still there", profile.name.c_str()));
+    return;
+  }
+
+  procgen::ScatterMask mask;
+  if (st.use_band and g.scatter_band_layer < lv.layers.size() and is_scalar(lv.layers[g.scatter_band_layer].kind))
+  {
+    mask.band = &plane<ScalarGrid>(lv.layers[g.scatter_band_layer]);
+    mask.lo = std::min(st.lo, st.hi);
+    mask.hi = std::max(st.lo, st.hi);
+  }
+  if (
+    st.use_semantic and g.scatter_id_layer < lv.layers.size() and
+    lv.layers[g.scatter_id_layer].kind == LayerKind::kSemantic)
+  {
+    mask.ids = &plane<IdGrid>(lv.layers[g.scatter_id_layer]);
+    mask.id = st.semantic;
+  }
+  if (
+    st.use_collision and g.scatter_collision_layer < lv.layers.size() and
+    lv.layers[g.scatter_collision_layer].kind == LayerKind::kCollision)
+  {
+    mask.collision = &plane<MaskGrid>(lv.layers[g.scatter_collision_layer]);
+    mask.blocked = st.blocked;
+  }
+  if (st.region and g.region_w > 0 and g.region_h > 0)
+  {
+    mask.region = procgen::Region{.x = g.region_x, .y = g.region_y, .width = g.region_w, .height = g.region_h};
+  }
+  mask.only_empty = st.only_empty;
+  const procgen::ScatterParams params{.count = st.count, .spacing = st.spacing, .attempts = st.attempts};
+
+  app.undo.snapshot(lv, g.scatter_layer, "Scatter");
+  g.scatter_result = procgen::scatter_groups(
+    pr.tilesets,
+    objects.data(),
+    objects.size(),
+    mask,
+    params,
+    lv.settings.seed,
+    app.memory.frame,
+    plane<TileGrid>(lv.layers[g.scatter_layer]));
+  if (g.scatter_result.cells > 0)
+  {
+    app.modified = true;
+  }
+  invalidate_layer(app, g.scatter_layer);
+  LVL_LOG_INFO() << "Scatter '" << profile.name.c_str() << "': " << g.scatter_result.placed << " object(s) placed, "
+                 << g.scatter_result.cells << " cell(s) written, " << g.scatter_result.unplaced << " with no room, "
+                 << dangling << " object kind(s) skipped";
+}
+
 void start_heightmap(App& app)
 {
   Level& lv = *app.level;
@@ -1082,6 +1484,13 @@ void generate_panel(App& app)
     {
       ImGui::BeginChild("tab");
       fill_section(app);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Scatter"))
+    {
+      ImGui::BeginChild("tab");
+      scatter_section(app);
       ImGui::EndChild();
       ImGui::EndTabItem();
     }

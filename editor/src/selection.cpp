@@ -166,6 +166,55 @@ const TileGroup* chosen_group(const App& app)
   return &ts.groups[app.group.group];
 }
 
+std::string_view path_segment(std::string_view path, std::size_t i)
+{
+  std::size_t at = 0;
+  for (std::size_t n = 0; n < i; ++n)
+  {
+    const std::size_t slash = path.find('/', at);
+    if (slash == std::string_view::npos)
+    {
+      return std::string_view{};
+    }
+    at = slash + 1;
+  }
+  if (at >= path.size())
+  {
+    return std::string_view{};
+  }
+  const std::size_t slash = path.find('/', at);
+  return path.substr(at, (slash == std::string_view::npos) ? std::string_view::npos : slash - at);
+}
+
+std::size_t path_segments(std::string_view path)
+{
+  if (path.empty())
+  {
+    return 0;
+  }
+  return 1 + static_cast<std::size_t>(std::count(path.begin(), path.end(), '/'));
+}
+
+memory::Vector<GroupId> group_order(const TileSet& tileset, memory::Arena& arena)
+{
+  auto out = memory::make_vector<GroupId>(arena);
+  out.reserve(tileset.groups.size());
+  for (std::size_t i = 0; i < tileset.groups.size(); ++i)
+  {
+    out.push_back(static_cast<GroupId>(i));
+  }
+  std::sort(out.begin(), out.end(), [&tileset](GroupId a, GroupId b) {
+    const TileGroup& ga = tileset.groups[a];
+    const TileGroup& gb = tileset.groups[b];
+    if (ga.folder != gb.folder)
+    {
+      return ga.folder.view() < gb.folder.view();
+    }
+    return ga.name.view() < gb.name.view();
+  });
+  return out;
+}
+
 void choose_group(App& app, GroupId group)
 {
   app.group.tileset = app.tileset;

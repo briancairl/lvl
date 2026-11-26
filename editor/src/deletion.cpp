@@ -158,6 +158,25 @@ void apply(App& app, const PendingDelete& d)
     }
     app.project_modified = true;
     break;
+  case DeleteKind::kScatterProfile:
+    if (d.index >= pr.scatter.size())
+    {
+      return;
+    }
+    project::remove_scatter(pr, d.index);
+    app.generators.scatter_profile = (app.generators.scatter_profile > d.index)
+      ? app.generators.scatter_profile - 1
+      : std::min(app.generators.scatter_profile, pr.scatter.empty() ? 0 : pr.scatter.size() - 1);
+    app.project_modified = true;
+    break;
+  case DeleteKind::kScatterObject:
+    if (d.owner >= pr.scatter.size() or d.index >= pr.scatter[d.owner].count)
+    {
+      return;
+    }
+    project::remove_scatter_object(pr, d.owner, d.index);
+    app.project_modified = true;
+    break;
   case DeleteKind::kProperty:
     if (d.owner >= pr.tilesets.size() or d.index >= pr.tilesets[d.owner].properties.size())
     {

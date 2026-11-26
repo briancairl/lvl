@@ -133,6 +133,19 @@ Status save_wfc_rules(const char* path, const project::Project& project, std::si
  */
 Status load_wfc_rules(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
 
+/// Saves scatter profile <code>index</code> (with the catalog entry its ground type names)
+Status save_scatter(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
+
+/**
+ * @brief Reads a scatter-profile file into the project, and says which profile it landed in
+ *
+ * The file names the profile it holds, so it replaces the project's profile of that name or becomes
+ * a new one -- reading the same file twice does not leave two. Its objects name their tileset and
+ * group rather than indexing them, so the file needs no tileset to be in the project already; an
+ * object naming one that is not there is kept as written and shows as dangling.
+ */
+Status load_scatter(const char* path, project::Project& project, IoContext& ctx, std::size_t& index);
+
 /// Saves the level's path graphs (graphs, nodes and edges)
 Status save_paths(const char* path, const Level& level, IoContext& ctx);
 

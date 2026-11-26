@@ -153,4 +153,40 @@ void derive_collision(const TileSets& tilesets, Level& level, std::size_t collis
 /// As derive_collision, for a material layer (topmost non-empty tile with a material wins)
 void derive_materials(const TileSets& tilesets, Level& level, std::size_t material_layer, std::string_view season);
 
+/**
+ * @brief Recomputes a semantic layer from the tiles on the tile layers named by <code>tile_layers</code>
+ *
+ * Each cell takes the semantic type of the **topmost** tile that has one: the layers are read in the
+ * level's own order, which is the order they are drawn in, and the one nearest the top wins. That is
+ * what makes the result mean what the map looks like -- a path drawn over grass is a path, and the
+ * grass under it does not get a say.
+ *
+ * Precedence follows the level's layer order and **not** the order <code>tile_layers</code> lists
+ * them, so a caller cannot accidentally invert the stack by listing the layers the other way round.
+ * Unlike <code>derive_collision</code> and <code>derive_materials</code>, which read every visible
+ * tile layer, this reads exactly the layers it is given, visible or not: picking them is the point,
+ * since the layers that say what the ground *is* are rarely all of them -- the cliff faces of a
+ * height-stepped map are drawn over the ground they stand on without replacing what it is.
+ *
+ * A tile's semantic type is read from the tile as **drawn** during <code>season</code>, as
+ * <code>derive_collision</code> reads its collision mask.
+ *
+ * A cell no named layer has a tile with a semantic type at is cleared to <code>kNoSemantic</code>,
+ * unless <code>keep_unmatched</code> is set, in which case it keeps what it had -- which is how
+ * semantics painted by hand or written by the water-shedding pass survive a refresh. With no layers
+ * named at all every cell is unmatched, so the layer is cleared or left alone entire.
+ *
+ * <code>scratch</code> holds one pointer per chosen layer and is rewound on return. Returns how many
+ * cells changed.
+ */
+std::size_t derive_semantics(
+  const TileSets& tilesets,
+  Level& level,
+  std::size_t semantic_layer,
+  const std::size_t* tile_layers,
+  std::size_t count,
+  std::string_view season,
+  bool keep_unmatched,
+  memory::Arena& scratch);
+
 }  // namespace lvl::level

@@ -110,7 +110,17 @@ inline constexpr int kMaxGroupExtent = 64;
  */
 struct TileGroup
 {
+  /// Unique within the tileset; this is what a scatter profile names
   Name name;
+  /**
+   * @brief Folder this group is filed under, '/'-separated ("nature/trees"); empty is the top level
+   *
+   * Organisation only, so that a tileset with a hundred groups can be picked through as a tree. It
+   * is deliberately **not** part of the group's identity: a group is found by name
+   * (<code>find_group</code>) and a scatter profile names it, so re-filing a group does not break
+   * what points at it.
+   */
+  Name folder;
   /// Footprint, in cells
   Extents size;
   /// Offset of this group's first cell in <code>TileSet::group_cells</code>
@@ -223,6 +233,9 @@ TileIndex group_cell(const TileSet& tileset, const TileGroup& group, int x, int 
  * <code>kNoGroup</code> if the name is empty, the footprint is empty or larger than
  * <code>kMaxGroupExtent</code>, every cell is a hole, or the tileset already holds
  * <code>kNoGroup</code> groups.
+ *
+ * Replacing a group keeps the folder it was filed under: re-taking it from the palette is a change
+ * to its tiles and should not un-file it.
  */
 GroupId set_group(TileSet& tileset, std::string_view name, Extents size, const TileIndex* cells);
 

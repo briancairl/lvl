@@ -710,6 +710,25 @@ void populate(project::Project& p, memory::Arena& scratch, const std::string& ro
   // A tile group: it lives in the tileset, so the manifest carries it through that tileset's file
   const level::TileIndex rock[] = {0, level::kNoTileIndex};
   ASSERT_EQ(level::set_group(p.tilesets[ts], "rock", level::Extents{2, 1}, rock), 0);
+  // Two scatter profiles, the second sharing the object table with the first
+  const std::size_t forest = project::add_scatter(p, "forest");
+  p.scatter[forest].settings = project::ScatterSettings{
+    .count = 40,
+    .spacing = 2,
+    .attempts = 80,
+    .use_band = true,
+    .lo = 0.3F,
+    .hi = 0.6F,
+    .use_semantic = true,
+    .semantic = project::intern_semantic(p, "grass"),
+    .use_collision = true,
+    .blocked = level::collision::kSolid | level::collision::kPlatform,
+    .only_empty = false,
+    .region = false};
+  project::add_scatter_object(p, forest, project::ScatterObject{.tileset = "forest", .group = "rock", .weight = 3.0F});
+  project::add_scatter_object(p, forest, project::ScatterObject{.tileset = "gone", .group = "hut", .weight = 0.5F});
+  const std::size_t boulders = project::add_scatter(p, "boulders");
+  project::add_scatter_object(p, boulders, project::ScatterObject{.tileset = "forest", .group = "rock"});
   p.rules[0].wfc.name = "forest";
   level::add_tile(p.rules[0].wfc, level::TileRef{ts, 1});
   level::set_allowed(p.rules[0].wfc, 0, 0, level::Direction::kEast, true);
@@ -734,6 +753,83 @@ void populate(project::Project& p, memory::Arena& scratch, const std::string& ro
 }
 
 }  // namespace
+
+TEST(Scatter, ProfilesAndTheirObjectsSpanOneTable)
+{
+  Fixture f;
+  project::Project p{f.project_arena};
+  EXPECT_TRUE(p.scatter.empty());
+  const std::size_t forest = project::add_scatter(p, "forest");
+  const std::size_t rocks = project::add_scatter(p, "rocks");
+  ASSERT_EQ(forest, 0U);
+  ASSERT_EQ(rocks, 1U);
+  EXPECT_EQ(project::find_scatter(p, "rocks"), rocks);
+  EXPECT_EQ(project::find_scatter(p, "nothing"), project::kNoScatterProfile);
+  // A name already taken, and no name at all, are both refused
+  EXPECT_EQ(project::add_scatter(p, "forest"), project::kNoScatterProfile);
+  EXPECT_EQ(project::add_scatter(p, ""), project::kNoScatterProfile);
+
+  ASSERT_TRUE(project::add_scatter_object(p, forest, project::ScatterObject{.tileset = "t", .group = "oak"}));
+  ASSERT_TRUE(project::add_scatter_object(p, rocks, project::ScatterObject{.tileset = "t", .group = "boulder"}));
+  // An object added to the first profile moves the second's along, so the table stays packed
+  ASSERT_TRUE(
+    project::add_scatter_object(p, forest, project::ScatterObject{.tileset = "t", .group = "pine", .weight = 2.0F}));
+  EXPECT_EQ(p.scatter_objects.size(), 3U);
+  EXPECT_EQ(p.scatter[forest].count, 2U);
+  EXPECT_EQ(p.scatter[rocks].count, 1U);
+  EXPECT_EQ(p.scatter[rocks].first, 2U);
+  EXPECT_EQ(project::objects_of(p, p.scatter[forest])[1].group, std::string_view{"pine"});
+  EXPECT_EQ(project::objects_of(p, p.scatter[rocks])[0].group, std::string_view{"boulder"});
+  EXPECT_EQ(project::validate_scatter(p), 0U);
+
+  project::remove_scatter_object(p, forest, 0);
+  EXPECT_EQ(p.scatter[forest].count, 1U);
+  EXPECT_EQ(project::objects_of(p, p.scatter[forest])[0].group, std::string_view{"pine"});
+  EXPECT_EQ(p.scatter[rocks].first, 1U);
+  EXPECT_EQ(project::objects_of(p, p.scatter[rocks])[0].group, std::string_view{"boulder"});
+
+  // Removing a profile takes its objects and leaves the rest where they were
+  project::remove_scatter(p, forest);
+  ASSERT_EQ(p.scatter.size(), 1U);
+  EXPECT_EQ(p.scatter[0].name, std::string_view{"rocks"});
+  EXPECT_EQ(p.scatter[0].first, 0U);
+  EXPECT_EQ(p.scatter_objects.size(), 1U);
+  EXPECT_EQ(project::objects_of(p, p.scatter[0])[0].group, std::string_view{"boulder"});
+
+  // A profile with no objects has no span to read
+  const std::size_t empty = project::add_scatter(p, "empty");
+  EXPECT_EQ(project::objects_of(p, p.scatter[empty]), nullptr);
+
+  // Spans that do not pack the table cannot say which objects are whose, so they all go
+  p.scatter[0].first = 9;
+  EXPECT_EQ(project::validate_scatter(p), 2U);
+  EXPECT_TRUE(p.scatter.empty());
+  EXPECT_TRUE(p.scatter_objects.empty());
+}
+
+TEST(Scatter, CompactingTheCatalogsMovesAProfilesGroundType)
+{
+  Fixture f;
+  project::Project p{f.project_arena};
+  level::Level lv{f.scratch};
+  level::create_default(lv, level::Settings{.extents = {4, 4}});
+  const auto grass = project::intern_semantic(p, "grass");
+  const auto road = project::intern_semantic(p, "road");
+  const std::size_t index = project::add_scatter(p, "trees");
+  p.scatter[index].settings.use_semantic = true;
+  p.scatter[index].settings.semantic = road;
+  EXPECT_EQ(project::semantic_uses(p, lv, road), 1U);
+
+  // "grass" retired and compacted away: "road" takes its id, and the profile follows it
+  project::remove_semantic(p, lv, grass);
+  project::CatalogPlan plan{f.scratch};
+  project::plan_compaction(p, plan);
+  project::apply_compaction(plan, lv);
+  project::finish_compaction(p, plan);
+  ASSERT_EQ(p.semantics.size(), 2U);
+  EXPECT_EQ(p.semantics[1].name, std::string_view{"road"});
+  EXPECT_EQ(p.scatter[index].settings.semantic, 1U);
+}
 
 TEST(Manifest, RoundTrips)
 {
@@ -771,6 +867,9 @@ TEST(Manifest, RoundTrips)
   EXPECT_EQ(read.tileset_files[0], std::string_view{"tilesets/forest.tileset.json"});
   ASSERT_EQ(read.rule_files.size(), 1U);
   EXPECT_EQ(read.rule_files[0], std::string_view{"rules/forest.rules.json"});
+  ASSERT_EQ(read.scatter_files.size(), 2U);
+  EXPECT_EQ(read.scatter_files[0], std::string_view{"scatter/forest.scatter.json"});
+  EXPECT_EQ(read.scatter_files[1], std::string_view{"scatter/boulders.scatter.json"});
   ASSERT_EQ(read.tilesets.size(), 1U);
   EXPECT_EQ(read.tilesets[0].name, std::string_view{"forest"});
   EXPECT_EQ(read.tilesets[0].image, std::string_view{"assets/atlases/forest.png"});
@@ -784,6 +883,39 @@ TEST(Manifest, RoundTrips)
   EXPECT_EQ(read.rules[0].wfc.name, std::string_view{"forest"});
   ASSERT_EQ(read.rules[0].wfc.tiles.size(), 1U);
   EXPECT_TRUE(level::allowed(read.rules[0].wfc, 0, 0, level::Direction::kEast));
+
+  // The scatter profiles, their criteria and the flat object table they span
+  ASSERT_EQ(read.scatter.size(), 2U);
+  EXPECT_EQ(read.scatter[0].name, std::string_view{"forest"});
+  EXPECT_EQ(read.scatter[1].name, std::string_view{"boulders"});
+  EXPECT_EQ(project::validate_scatter(read), 0U);
+  const project::ScatterSettings& st = read.scatter[0].settings;
+  EXPECT_EQ(st.count, 40);
+  EXPECT_EQ(st.spacing, 2);
+  EXPECT_EQ(st.attempts, 80);
+  EXPECT_TRUE(st.use_band);
+  EXPECT_FLOAT_EQ(st.lo, 0.3F);
+  EXPECT_FLOAT_EQ(st.hi, 0.6F);
+  EXPECT_TRUE(st.use_semantic);
+  // Interned by name, so the id is whatever this project gave that entry
+  EXPECT_EQ(read.semantics[st.semantic].name, std::string_view{"grass"});
+  EXPECT_TRUE(st.use_collision);
+  EXPECT_EQ(st.blocked, level::collision::kSolid | level::collision::kPlatform);
+  EXPECT_FALSE(st.only_empty);
+  EXPECT_FALSE(st.region);
+  ASSERT_EQ(read.scatter[0].count, 2U);
+  const project::ScatterObject* objects = project::objects_of(read, read.scatter[0]);
+  ASSERT_NE(objects, nullptr);
+  EXPECT_EQ(objects[0].group, std::string_view{"rock"});
+  EXPECT_FLOAT_EQ(objects[0].weight, 3.0F);
+  // An object naming a tileset the project does not have comes back as it was written: a profile
+  // outlives what it was written against, and the editor lists it as dangling rather than dropping it
+  EXPECT_EQ(objects[1].tileset, std::string_view{"gone"});
+  ASSERT_EQ(read.scatter[1].count, 1U);
+  EXPECT_EQ(project::objects_of(read, read.scatter[1])[0].group, std::string_view{"rock"});
+  // A profile that uses none of the optional tests writes none of them
+  EXPECT_TRUE(read.scatter[1].settings.use_band == false);
+  EXPECT_TRUE(read.scatter[1].settings.use_semantic == false);
 
   ASSERT_EQ(read.levels.size(), 2U);
   EXPECT_EQ(read.levels[0].name, std::string_view{"overworld"});

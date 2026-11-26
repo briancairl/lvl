@@ -112,6 +112,26 @@ Status load_wfc_rules(const char* path, project::Project& project, IoContext& ct
                                            : io::load_wfc_json(path, project, ctx, index));
 }
 
+Status save_scatter(const char* path, const project::Project& project, std::size_t index, IoContext& ctx)
+{
+  check_context(ctx);
+  return logged(
+    "Saved scatter profile",
+    path,
+    format_of(path) == FileFormat::kBinary ? io::save_scatter_binary(path, project, index, ctx)
+                                           : io::save_scatter_json(path, project, index, ctx));
+}
+
+Status load_scatter(const char* path, project::Project& project, IoContext& ctx, std::size_t& index)
+{
+  check_context(ctx);
+  return logged(
+    "Loaded scatter profile",
+    path,
+    format_of(path) == FileFormat::kBinary ? io::load_scatter_binary(path, project, ctx, index)
+                                           : io::load_scatter_json(path, project, ctx, index));
+}
+
 Status save_paths(const char* path, const Level& level, IoContext& ctx)
 {
   check_context(ctx);

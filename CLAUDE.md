@@ -105,11 +105,11 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | package | contents |
 |---|---|
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
-| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`, `TileGroup` multi-tile stamps), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
-| `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
-| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
+| `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`, `TileGroup` multi-tile stamps), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials`/`derive_semantics` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
+| `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, the `ScatterProfile`s its levels are populated from (`find_scatter`/`add_scatter`/`remove_scatter`/`add_scatter_object`/`remove_scatter_object`/`validate_scatter`), and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
+| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `scatter` (`scatter_groups`: tile groups placed over an area, whole and clear of each other), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by the editor's overlays, the layer export and the mini-preview), `compose` (full map PNG, mini-preview, `export_layer_png`) |
-| `//editor` | `undo`, `jobs` (background jobs, incl. `RescanProjectJob` and `CompactCatalogsJob`), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, height steps), `panels.cpp` (including the Project panel: members, tilesets, rule sets), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
+| `//editor` | `undo`, `jobs` (background jobs, incl. `RescanProjectJob` and `CompactCatalogsJob`), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, scatter, height steps), `panels.cpp` (including the Project panel: members, tilesets, rule sets), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
 | `//platform/web` | HTML shell, browser smoke test |
 | `//third_party` | BUILD files and patches for `http_archive` dependencies |
@@ -194,7 +194,8 @@ saves, a suggested name and overwrite confirmation. The places pane has three gr
 **Each action says which of the project's folders its files belong in** (`Setup::folder`), so the
 table in `file_dialog.cpp` is where "where does this kind of file live?" is answered: a level opens
 in `levels/`, an atlas in `assets/atlases/`, a seed image in `assets/images/`, a tileset in
-`tilesets/`, rules in `rules/`, path graphs in `paths/`, every PNG export in `artifacts/`. The
+`tilesets/`, rules in `rules/`, a scatter profile in `scatter/`, path graphs in `paths/`, every PNG
+export in `artifacts/`. The
 folder is created on demand, so one the user deleted does not make the dialog open nowhere. Saving a
 level offers `levels/` even when the open level's file is somewhere else, because a save into the
 tree is what makes it a member; the name it already has is still what is suggested.
@@ -220,6 +221,7 @@ shoreline/                 the project root; its name is the project's default n
   levels/                  one file per level ("lvl-level")
   tilesets/                one file per tileset ("lvl-tileset")
   rules/                   one file per rule set ("lvl-wfc": WFC + auto-tiling + height steps)
+  scatter/                 one file per scatter profile ("lvl-scatter")
   paths/                   exported/imported path graphs ("lvl-paths")
   assets/
     atlases/               tileset atlas images, copied in on import
@@ -456,8 +458,21 @@ them are dropped. `reslice` keeps a group's shape and holes the cells whose tile
 longer has, since re-slicing is how a tile size is corrected and the correction usually brings them
 back.
 
-In the editor they are **Tilesets > Tile groups**: the list, a delete button per row, the chosen
-group drawn as it will be stamped, and "From the palette selection", which is how one is made --
+**A group is filed under a folder** (`TileGroup::folder`, `/`-separated, empty for the top level),
+so a tileset with a hundred groups can be picked through as a tree rather than scrolled. The folder
+is organisation and deliberately **not** part of the group's identity: a group is found by name
+(`find_group`) and a scatter profile names it, so re-filing one breaks nothing that points at it,
+and `set_group` keeps the folder when it replaces a group -- re-taking it from the palette changes
+its tiles, not where it belongs.
+
+`editor::group_order` sorts the groups by folder and then by name, which puts a folder's own groups
+before its subfolders' ("nature" < "nature/trees") and is what lets `group_tree` walk that order
+once, recursing per path segment, instead of building a tree of nodes: the run of groups sharing a
+segment is contiguous. The leaf row is a callback, so the Tilesets panel and the Scatter tab share
+the tree and differ only in what a leaf looks like.
+
+In the editor they are **Tilesets > Tile groups**: the tree, a delete button per row, the chosen
+group drawn as it will be stamped with its name and folder, and "From the palette selection", which is how one is made --
 the palette is already how several tiles are picked and already how they are laid out, so the house
 in the atlas is the house on the map, holes included. Choosing a group sets `App::group` (a
 `GroupSelection`: a tileset and a `GroupId`), and **`paint_stamp` returns it before anything else**,
@@ -682,6 +697,80 @@ Both are local, greedy and deterministic rather than solvers: they never fail an
 to run on every mouse-move of a stroke. Where the rules cannot fill a cell they say so (the status
 line) rather than backtracking. Whole regions are still generated with `procgen::solve`.
 
+### Scattered objects
+
+The Generate panel's **Scatter** tab places **tile groups** over an area: the object counterpart of
+a masked fill, and what makes a group more than a stamp you place by hand.
+
+A fill decides every cell independently, which is right for ground cover and wrong for a thing: a
+house is several tiles that only mean something together. So `procgen::scatter_groups`
+(`procgen/scatter.hpp`) places a whole `level::TileGroup` at a time and **refuses a position where
+any of its cells would not fit** -- half a house on the wrong ground is worse than no house. That is
+also why it cannot be a per-cell function: where an object fits depends on where the others went, so
+it walks candidate positions instead.
+
+- **The criteria** are a `ScatterMask`, the same kind a `FillMask` holds plus one more: a band of a
+  scalar layer, an id on a semantic (or material) layer, the cells that have no tile yet, a region
+  -- and the **collision mask**, so nothing lands in the walls or water the level already blocks
+  (`blocked` says which bits count). Every test applies to every cell of the placement.
+- **No cell is ever written twice.** A candidate's solid cells must be clear of every box already
+  placed, gaps included, so nothing is dropped into a tree's gap. A candidate's *own* gaps are not
+  tested, so a later object's gap may sit over an earlier object's tile -- two trees interlocking
+  through each other's gaps, which is what you want of them. `spacing` grows each box before it is
+  marked, which is how a minimum clearance between objects falls out of the same one test.
+- **Weights** work as the fill's do: twice the weight, twice the share, 0 keeps an object out, and
+  weights that are all zero stand for 1 each.
+- **A run is a function of the seed**, since the generator is drawn from in a fixed order, so
+  scattering twice writes the same objects. Unlike a fill it is deliberately **not** stable under a
+  changed mask -- a scatter is something you re-run, not something you narrow. `attempts` candidate
+  positions per object is what ends a run on a full map rather than looping; the objects given up on
+  are reported as `unplaced`.
+- `scratch` holds one byte per cell (the room taken so far) and is rewound on return. An object
+  naming a tileset or group that has gone, or one larger than the region, is skipped.
+
+**A `project::ScatterProfile` is what the panel edits**, and it lives in the project, so "oaks and
+pines on grass between these two heights, two cells apart" is written down once and saved with
+everything else. Its objects are `count` entries of `Project::scatter_objects` starting at `first`
+-- the same flat table the level index uses for its object names and a tileset uses for its group
+cells, always packed and in the order the profiles are listed (`validate_scatter` is the backstop,
+as `validate_groups` is for a tileset).
+
+**A project holds as many profiles as it likes and one is edited and run at a time**, the way it
+holds several rule sets. Each is **its own file**, which the manifest names (`Project::scatter_files`
+parallel to `scatter`, `project::scatter_profile_file` choosing one from the profile's name and
+recording it, so renaming the profile does not move its file), written and read through the
+standalone `lvl-scatter` format in both JSON and binary (`level::save_scatter`/`load_scatter`,
+`binary::Kind::kScatter`). That is the same bargain the tilesets and rule sets make: per-profile
+diffs stay small, a profile can be handed to another project, and `project.json` stays a few
+kilobytes of names.
+
+Reading a profile file **interns it by name** (`project::intern_scatter`), so importing the same
+file twice does not leave two -- and interning clears the profile's objects first, so the file's
+objects are what it has rather than the file's on top of what was there. The manifest rebuilds
+`scatter_files` from where the profiles actually landed rather than assuming they come back in
+order, and refuses two files holding a profile of the same name. A profile file carries the catalog
+entry its ground type names so another project can intern it, and nothing else: the objects name
+their tileset and group, so no tileset has to come along, and an object naming one the reading
+project does not have is kept as written and shows as dangling.
+
+Each object **names** its tileset and group rather than indexing them, as a portal names its
+destination level: a profile outlives what it was written against, and a tileset or group removed
+renumbers the ones after it, so an index would quietly start placing something else. A name that
+resolves to nothing draws red in the panel with its tooltip and is skipped by the scatter -- a thing
+to fix, not a reason to refuse the project. The ground type is an **id**, as tile metadata's is,
+because that survives the entry being renamed; it therefore moves with the rest in
+`finish_compaction` and counts in `semantic_uses`.
+
+`ScatterSettings` holds plain numbers rather than a `procgen` type, and deliberately does **not**
+name the layers: a project's levels do not have the same layers in the same order, so a profile that
+named them would mean different things in different levels. Which layer the band, the ground type
+and the collision mask are read from is editor state (`Generators::scatter_*`), and
+`editor::apply_scatter` builds the `ScatterMask` from the profile and those layers together. The
+profile is written inline in the manifest (it is a handful of names and numbers), with the ground
+type by name and every optional test omitted when it is off.
+
+A scatter is one undoable layer edit, not a job, as a fill is.
+
 ### Masked fills
 
 The Generate panel's **Fill** tab writes tiles over the whole map, choosing the cells from the
@@ -769,10 +858,48 @@ tiles drawn in the positions the rule would put them in (the edited one outlined
 the pair is allowed. The "Preview pairs" checkbox in either window turns it off (`App::wfc_preview`),
 and the neighbor editor falls back to its plain text tooltip.
 
+### Deriving a layer from the tiles
+
+Three passes recompute a per-cell layer from what the tile layers' metadata says, so the data the
+game is given follows the art rather than being kept in step by hand:
+
+- **`derive_collision`** unions the collision masks of the tiles on every visible tile layer.
+- **`derive_materials`** takes the topmost non-empty tile that has a material.
+- **`derive_semantics`** squashes **chosen** tile layers into a semantic layer: each cell takes the
+  semantic type of the **topmost** tile that has one, which is what makes the result mean what the
+  map looks like -- a path drawn over grass is a path, and the grass under it gets no say.
+
+The third differs from the other two in two ways, both deliberate.
+
+**The layers are chosen, not taken as read.** The layers that say what the ground *is* are rarely
+all of them: the cliff faces of a height-stepped map are drawn over the ground they stand on without
+replacing what it is, and a decoration layer of flowers is not a different kind of ground. So it
+reads exactly the layers it is given, **visible or not** -- picking them is the point, and hiding a
+layer to see under it must not change what a refresh writes.
+
+**Precedence is the level's layer order, not the order the caller lists them in.** Layer order is
+draw order, so "the one on top wins" is a property of the level and cannot be inverted by writing
+the call the other way round. The implementation builds the chosen layers' planes top-first in
+`scratch` and stops each cell at the first tile that has a semantic type, which is also why a tile
+with no semantic type does not mask the one below it.
+
+`keep_unmatched` says what happens to a cell no chosen layer accounts for: cleared to `kNoSemantic`
+(the layer then says exactly what the tiles say), or left as it was -- which is how semantics painted
+by hand or written by the water-shedding pass survive a refresh. With no layers named at all every
+cell is unmatched, so the layer is cleared or left alone entire. A tile's semantic type is read from
+the tile as **drawn** during the season, as `derive_collision` reads its collision mask.
+
+In the editor it is **Edit > Refresh semantics from tiles...**, a dialog rather than a menu item
+because the layers are chosen; which of them wins is not a choice, so the dialog states the rule
+instead of offering one, and lists the tile layers top-first as the viewport stacks them.
+`editor::refresh_semantics` is the command (`App::derive`, a `SemanticDerive`): it adds a semantic
+layer if the level has none, takes the undo snapshot, and reports how many cells changed. It is one
+undoable layer edit, not a job.
+
 ### Deleting
 
-Rows of layers, semantic types, materials, seasons, path graphs, portals/markers, tile groups and
-tile properties start with a delete button (`delete_button`). `request_delete` records a `PendingDelete`, and
+Rows of layers, semantic types, materials, seasons, path graphs, portals/markers, tile groups,
+scatter profiles and their objects, and tile properties start with a delete button (`delete_button`). `request_delete` records a `PendingDelete`, and
 `process_deletes` (once per frame, after every panel has drawn and never while a job runs) shows a
 confirmation dialog listing what else changes, then applies it; Shift+click skips the dialog.
 **Deleting a catalog entry retires it; it does not renumber.** Catalog ids are stored in millions of
@@ -862,22 +989,30 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors (including a file written before a field existed still reading, via
   the header version in the serializer's context), JSON zero-heap check, jobs/random, images.
-- `//level`: model operations (resize, derivation, clearing a tileset's references, portals/paths/routes, WFC
+- `//level`: model operations (resize, derivation -- including semantics squashed from chosen tile
+  layers: the topmost tile that has a semantic type winning, a tile with none not masking the one
+  below it, precedence following the level's order and not the caller's list, a subset of the layers,
+  the unmatched cells cleared or kept, no layers named at all, and the tile read as drawn in the
+  season -- clearing a tileset's references, portals/paths/routes, WFC
   rule learning, rules from a palette layout, a step terrain read from either block shape, batch
-  tile and constraint edits (scatter weight included), tile groups spanning one packed cell table
+  tile and constraint edits (scatter weight included), a tile group filed under a folder still found
+  by name and keeping that folder when it is replaced, tile groups spanning one packed cell table
   (replaced by name, removed with the table compacted, holes and cells outside the footprint, a
   group refused for having no name, no footprint or nothing but holes, a cell past the last tile
   taken as a hole, a re-slice keeping the shape, and groups that do not pack the table all dropped),
   terrains from a
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
-  selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1 (tile groups and their holes among what they carry, and a standalone tileset file taking its groups to another project), JSON→binary→JSON
+  selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1 (tile groups, their holes and the folders they are filed under among what they carry, and a standalone tileset file taking its groups to another project), JSON→binary→JSON
   stability, a project-scope save leaving the shared sections out and round-tripping against a
   project that already holds them while leaving it untouched, a project-scope level naming the rule
   set it uses and resolving to it in a project that holds the sets in another order, a standalone
   level carrying only the set it uses and taking its name from it, a portal target written as a path
   becoming the member whose file it names, one that names no member keeping a stem and warning
   rather than failing, the standalone scope being the
-  default and still reading into an empty project, standalone files moving between levels,
+  default and still reading into an empty project, standalone files moving between levels, a
+  standalone scatter profile moving into a project with no tilesets and different catalog ids (its
+  ground type interned by name, re-reading it interning rather than duplicating, another profile
+  beside it untouched, and one using no optional test carrying none),
   malformed/truncated files, a level whose layers
   and file are bigger than one worker's share, saves split across waves and saves streamed layer by
   layer (both byte-identical to an unsplit one), a load with worker arenas far too small to stage a
@@ -894,18 +1029,27 @@ one check to mark required:
   rule tiles, tilesets (added, found, removed with the level's references following, and refused
   once the project holds several levels),
   rule sets (found, added, interned by name, a level resolving to the set it names and falling back
-  when it names none or one that has gone, removal keeping at least one), catalog removal retiring
+  when it names none or one that has gone, removal keeping at least one),
+  scatter profiles (added, found, duplicates and unnamed ones refused, their objects spanning one
+  packed table through adds and removes, a profile removed taking its objects and leaving the rest,
+  spans that do not pack the table all dropped, and a profile's ground type following a catalog
+  compaction), catalog removal retiring
   an entry rather than moving the ids after it (what the project holds and the open level's cells
   cleared, a sibling's left, interning the name again giving its id back without bringing it back),
   compaction planned once and applied to every level together,
-  and the manifest (round trip carrying the tilesets' and rule sets' own files and a tileset's tile
-  groups with them, several rule sets
+  and the manifest (round trip carrying the tilesets', rule sets' and scatter profiles' own files and
+  a tileset's tile groups with them, the scatter profiles with their objects and criteria (the ground
+  type by name, an object naming a tileset that has gone kept as written, and a profile using no
+  optional test writing none), several rule sets
   each getting their own file and coming back in the order the manifest lists them, a part keeping
   the file it was given across a rename and a new one getting its own, saving elsewhere moving the
   project there, a named tileset file that has gone refusing the project, stable when written twice,
   missing level files flagged, create/open, named after its folder, which entries are retired, and
   every malformed shape refused).
-- `//procgen`: masked fills (a height band, a ground type, the two together, the scatter being even
+- `//procgen`: scattered objects (whole groups placed and repeated for a seed, placements that never
+  overlap and keep their spacing, the band / ground type / collision mask obeyed, a placement
+  straddling two kinds of ground refused, weighted shares and a weight of zero, what is drawn spared,
+  a region honoured, and objects it cannot place skipped); masked fills (a height band, a ground type, the two together, the scatter being even
   and staying put under a different mask, scatter weights deciding the shares (a weight of zero,
   negative weights, all-zero and equal weights coming to the same thing), regions and clipping,
   sparing what is drawn, no tiles); height steps (every case of gft's table and that anything else
@@ -941,7 +1085,14 @@ one check to mark required:
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
   multi-tile paint stamp, a tile group made out of the palette selection, chosen, stamped holes and
-  all, and deleted (which stops the stamping), a thirteen-tile terrain taken from one palette selection and painted (the
+  all, filed under a folder (still found by name, its segments split, and the list ordered for the
+  tree) and deleted (which stops the stamping), a scatter profile naming that group placing it over
+  the map (every placement whole, none written over another, and the profile marking the project
+  modified), exported and read back into the project that already held it by name (replacing it
+  rather than duplicating it, selecting it, and leaving a second profile alone) and then removed with
+  its objects, the semantic layer refreshed from two tile layers (the
+  topmost winning, dropping it re-reading the one below, and the unmatched cells kept and then
+  cleared), a thirteen-tile terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
   layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of

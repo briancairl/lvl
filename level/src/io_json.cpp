@@ -319,6 +319,10 @@ void save_tileset(Json& j, const project::Project& project, const TileSet& ts)
     {
       Json e = Json::object();
       json::write(e, "name", g.name);
+      if (!g.folder.empty())
+      {
+        json::write(e, "folder", g.folder);
+      }
       json::write(e, "width", g.size.width);
       json::write(e, "height", g.size.height);
       Json cells = Json::array();
@@ -437,9 +441,11 @@ bool load_tileset(json::Reader& r, const Json& j, project::Project& project, Til
   for (const auto& e : list("groups"))
   {
     Name name;
+    Name folder;
     int width = 0;
     int height = 0;
     r.get(e, "name", name);
+    r.get_optional(e, "folder", folder);
     r.get(e, "width", width);
     r.get(e, "height", height);
     if (!r.ok())
@@ -481,10 +487,12 @@ bool load_tileset(json::Reader& r, const Json& j, project::Project& project, Til
       }
       buffer[index++] = (tile < 0) ? kNoTileIndex : static_cast<TileIndex>(tile);
     }
-    if (set_group(ts, name.view(), size, buffer.data()) == kNoGroup)
+    const GroupId added = set_group(ts, name.view(), size, buffer.data());
+    if (added == kNoGroup)
     {
       return r.fail("tile group '%s' holds no tiles", name.c_str());
     }
+    ts.groups[added].folder = folder;
   }
   return r.ok();
 }
@@ -1395,6 +1403,111 @@ Status decode_layer_header(std::string_view text, IoWorker& worker, LayerHeader&
 }
 
 /// Reads and checks the "format"/"version" members
+// -------------------------------------------------------------------------------------------------
+// Scatter profiles (objects named by tileset and group; the ground type by name)
+// -------------------------------------------------------------------------------------------------
+
+void save_scatter_profile(Json& j, const project::Project& project, const project::ScatterProfile& profile)
+{
+  j = Json::object();
+  json::write(j, "name", profile.name);
+  const project::ScatterSettings& st = profile.settings;
+  json::write(j, "count", st.count);
+  json::write(j, "spacing", st.spacing);
+  json::write(j, "attempts", st.attempts);
+  // Every optional test is omitted when it is off, so a profile that uses none is a few lines
+  if (st.use_band)
+  {
+    json::write(j, "low", st.lo);
+    json::write(j, "high", st.hi);
+  }
+  if (st.use_semantic and st.semantic < project.semantics.size())
+  {
+    json::write(j, "semantic", project.semantics[st.semantic].name);
+  }
+  if (st.use_collision)
+  {
+    save_collision(j["blocked"], st.blocked);
+  }
+  json::write(j, "only_empty", st.only_empty);
+  json::write(j, "region", st.region);
+  Json objects = Json::array();
+  const project::ScatterObject* entries = project::objects_of(project, profile);
+  for (std::uint32_t i = 0; entries != nullptr and i < profile.count; ++i)
+  {
+    Json object = Json::object();
+    json::write(object, "tileset", entries[i].tileset);
+    json::write(object, "group", entries[i].group);
+    json::write(object, "weight", entries[i].weight);
+    objects.push_back(std::move(object));
+  }
+  j["objects"] = std::move(objects);
+}
+
+/// Reads one profile into <code>index</code>, whose objects the caller has already cleared
+bool load_scatter_profile(json::Reader& r, const Json& j, project::Project& project, std::size_t index)
+{
+  if (!r.object(j, "scatter"))
+  {
+    return false;
+  }
+  project::ScatterSettings& st = project.scatter[index].settings;
+  r.get_optional(j, "count", st.count);
+  r.get_optional(j, "spacing", st.spacing);
+  r.get_optional(j, "attempts", st.attempts);
+  st.use_band = j.contains("low") or j.contains("high");
+  r.get_optional(j, "low", st.lo);
+  r.get_optional(j, "high", st.hi);
+  if (const auto semantic = j.find("semantic"); semantic != j.end())
+  {
+    Name entry;
+    if (!r.convert(*semantic, entry, "semantic"))
+    {
+      return false;
+    }
+    st.use_semantic = true;
+    st.semantic = project::intern_semantic(project, entry.view());
+  }
+  st.use_collision = j.contains("blocked");
+  if (st.use_collision and !load_collision(r, j["blocked"], st.blocked))
+  {
+    return false;
+  }
+  r.get_optional(j, "only_empty", st.only_empty);
+  r.get_optional(j, "region", st.region);
+  if (!r.ok())
+  {
+    return false;
+  }
+  const auto objects = j.find("objects");
+  if (objects == j.end())
+  {
+    return r.ok();
+  }
+  if (!r.array(*objects, "objects"))
+  {
+    return false;
+  }
+  for (const auto& entry : *objects)
+  {
+    project::ScatterObject object;
+    r.get(entry, "tileset", object.tileset);
+    r.get(entry, "group", object.group);
+    r.get_optional(entry, "weight", object.weight);
+    if (!r.ok())
+    {
+      return false;
+    }
+    // The tileset and group are names, not indices, so an object naming one this project does not
+    // have is kept as written and shows as dangling -- a profile outlives what it was written against
+    if (!project::add_scatter_object(project, index, object))
+    {
+      return r.fail("the scatter profiles name more than %zu objects between them", project::kMaxScatterObjects);
+    }
+  }
+  return r.ok();
+}
+
 bool check_format(json::Reader& r, const Json& j, std::string_view expected)
 {
   Name format;
@@ -1817,6 +1930,45 @@ Status load_wfc_json(const char* path, project::Project& project, IoContext& ctx
     {
       load_steps(r, *steps, project.tilesets, rules.steps);
     }
+  });
+}
+
+Status save_scatter_json(const char* path, const project::Project& project, std::size_t index, IoContext& ctx)
+{
+  return write_document(path, ctx, [&](Json& j) {
+    j = Json::object();
+    write_format(j, kScatterFormat);
+    // The catalog entry its ground type names, so another project can intern it
+    save_list(j, "semantics", project.semantics, 1);
+    save_scatter_profile(j["scatter"], project, project.scatter[index]);
+  });
+}
+
+Status load_scatter_json(const char* path, project::Project& project, IoContext& ctx, std::size_t& index)
+{
+  index = project::kNoScatterProfile;
+  return read_document(path, ctx, [&](json::Reader& r, const Json& j) {
+    check_format(r, j, kScatterFormat);
+    load_catalog(r, j, "semantics", project.semantics, [&project](std::string_view n) {
+      return project::intern_semantic(project, n);
+    });
+    const auto scatter = j.find("scatter");
+    if (!r.ok() or scatter == j.end())
+    {
+      r.fail("missing 'scatter'");
+      return;
+    }
+    // The file names the profile it holds, so it replaces the project's profile of that name or
+    // becomes a new one: importing the same file twice does not leave two
+    Name name;
+    r.get_optional(*scatter, "name", name);
+    index = project::intern_scatter(project, name.view());
+    if (index == project::kNoScatterProfile)
+    {
+      r.fail("the project already holds %zu scatter profiles", project::kMaxScatterProfiles);
+      return;
+    }
+    load_scatter_profile(r, *scatter, project, index);
   });
 }
 

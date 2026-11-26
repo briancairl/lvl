@@ -80,6 +80,7 @@ enum class Kind : std::uint32_t
   kPathGraph = 4,
   /// A level whose shared data (catalogs, seasons, tilesets, rule sets) lives in its project
   kProjectLevel = 5,
+  kScatter = 6,
   kTest = 0xFFFF,
 };
 

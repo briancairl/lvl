@@ -996,10 +996,168 @@ void resize_popup(App& app, bool open)
   }
 }
 
+}  // namespace
+
+void refresh_semantics(App& app)
+{
+  level::Level& lv = *app.level;
+  SemanticDerive& d = app.derive;
+  memory::Scope scope{app.memory.frame};
+  auto chosen = memory::make_vector<std::size_t>(app.memory.frame);
+  for (std::size_t i = 0; i < lv.layers.size() and i < kMaxDeriveLayers; ++i)
+  {
+    if (d.layers.test(i) and lv.layers[i].kind == level::LayerKind::kTiles)
+    {
+      chosen.push_back(i);
+    }
+  }
+  // A level with no semantic layer gets one, so the command works on a map that never had one
+  std::size_t target = d.layer;
+  if (target >= lv.layers.size() or lv.layers[target].kind != level::LayerKind::kSemantic)
+  {
+    target = level::find_layer(lv, level::LayerKind::kSemantic);
+    if (target >= lv.layers.size())
+    {
+      target = level::add_layer(lv, level::LayerKind::kSemantic, "semantics");
+    }
+    d.layer = target;
+  }
+  app.undo.snapshot(lv, target, "Refresh semantics");
+  d.changed = level::derive_semantics(
+    app.project->tilesets,
+    lv,
+    target,
+    chosen.data(),
+    chosen.size(),
+    view_season(app),
+    d.keep_unmatched,
+    app.memory.frame);
+  d.ran = true;
+  app.modified = app.modified or d.changed > 0;
+  invalidate_layer(app, target);
+  LVL_LOG_INFO() << "Refreshed semantics from " << chosen.size() << " tile layer(s): " << d.changed
+                 << " cell(s) changed";
+}
+
+namespace
+{
+
+/**
+ * @brief Edit > Refresh semantics from tiles: squash one or more tile layers into a semantic layer
+ *
+ * A dialog rather than a menu item because the layers are chosen. Which of them wins is not a
+ * choice, so the dialog says what the rule is instead of offering one: the level's layer order is
+ * the order they are drawn in, so the layer on top has the last word.
+ */
+void semantics_popup(App& app, bool open)
+{
+  level::Level& lv = *app.level;
+  SemanticDerive& d = app.derive;
+  if (open)
+  {
+    // Every tile layer to begin with, which is what the collision and material derivations do
+    d.layers.reset();
+    for (std::size_t i = 0; i < lv.layers.size() and i < kMaxDeriveLayers; ++i)
+    {
+      d.layers.set(i, lv.layers[i].kind == level::LayerKind::kTiles);
+    }
+    d.layer = level::find_layer(lv, level::LayerKind::kSemantic);
+    d.ran = false;
+    ImGui::OpenPopup("Refresh semantics");
+  }
+  if (!ImGui::BeginPopupModal("Refresh semantics", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    return;
+  }
+  ImGui::TextDisabled("Each cell takes the semantic type of the topmost tile that has one.");
+
+  // The target: an existing semantic layer, or one made on the way
+  const std::size_t none = lv.layers.size();
+  const bool have_target = d.layer < none and lv.layers[d.layer].kind == level::LayerKind::kSemantic;
+  if (have_target)
+  {
+    if (ImGui::BeginCombo("Semantic layer", lv.layers[d.layer].name.c_str()))
+    {
+      for (std::size_t i = 0; i < lv.layers.size(); ++i)
+      {
+        if (
+          lv.layers[i].kind == level::LayerKind::kSemantic and
+          ImGui::Selectable(format<96>("%s##%zu", lv.layers[i].name.c_str(), i), i == d.layer))
+        {
+          d.layer = i;
+        }
+      }
+      ImGui::EndCombo();
+    }
+  }
+  else
+  {
+    ImGui::TextDisabled("The level has no semantic layer; one will be added.");
+  }
+
+  // Listed top first, as the viewport stacks them, so the order on screen is the order of precedence
+  ImGui::SeparatorText("From these tile layers (topmost first)");
+  std::size_t tile_layers = 0;
+  for (std::size_t n = lv.layers.size(); n > 0; --n)
+  {
+    const std::size_t i = n - 1;
+    if (lv.layers[i].kind != level::LayerKind::kTiles or i >= kMaxDeriveLayers)
+    {
+      continue;
+    }
+    ++tile_layers;
+    bool on = d.layers.test(i);
+    if (ImGui::Checkbox(format<96>("%s##derive%zu", lv.layers[i].name.c_str(), i), &on))
+    {
+      d.layers.set(i, on);
+    }
+    if (!lv.layers[i].visible)
+    {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(hidden; it still counts)");
+    }
+  }
+  if (tile_layers == 0)
+  {
+    ImGui::TextDisabled("The level has no tile layers.");
+  }
+  ImGui::SeparatorText("");
+  ImGui::Checkbox("Keep the cells no chosen layer accounts for", &d.keep_unmatched);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("On: a cell no tile on a chosen layer gives a semantic type for keeps what it has, so "
+                      "semantics painted by hand or written by the water-shedding pass survive. Off: it is "
+                      "cleared, so the layer says exactly what the tiles say.");
+  }
+  if (d.ran)
+  {
+    ImGui::TextDisabled("%zu cell(s) changed.", d.changed);
+  }
+
+  const bool ready = (d.count() > 0);
+  ImGui::BeginDisabled(!ready);
+  if (ImGui::Button("Refresh"))
+  {
+    refresh_semantics(app);
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) and !ready)
+  {
+    ImGui::SetTooltip("Choose at least one tile layer to read");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Close") or ImGui::IsKeyPressed(ImGuiKey_Escape))
+  {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 void main_menu(App& app)
 {
   bool open_new = false;
   bool open_resize = false;
+  bool open_semantics = false;
   if (ImGui::BeginMainMenuBar())
   {
     if (ImGui::BeginMenu("File"))
@@ -1151,6 +1309,7 @@ void main_menu(App& app)
         invalidate_layer(app, c);
         app.modified = true;
       }
+      open_semantics = ImGui::MenuItem("Refresh semantics from tiles...") or open_semantics;
       if (ImGui::MenuItem("Derive materials from tiles"))
       {
         std::size_t m = level::find_layer(*app.level, level::LayerKind::kMaterial);
@@ -1222,6 +1381,7 @@ void main_menu(App& app)
   }
   new_level_popup(app, open_new);
   resize_popup(app, open_resize);
+  semantics_popup(app, open_semantics);
 }
 
 /// One scripted action per idle frame (see App::smoke); closes the editor when done
@@ -2377,16 +2537,187 @@ void smoke(App& app)
     {
       report(app, Status::error("the tile group's stamp does not hold its cells"));
     }
-    // Removing it goes through the same confirmed delete the panel's button raises
+    // Filed under a folder: organisation only, so it is still found by name, and the list the
+    // folder tree walks puts a folder's groups after the ones at the top level
+    ts.groups[id].folder = "nature/huts";
+    if (level::find_group(ts, "hut") != id)
+    {
+      report(app, Status::error("filing a tile group under a folder lost it"));
+    }
+    if (
+      path_segments(ts.groups[id].folder.view()) != 2 or
+      path_segment(ts.groups[id].folder.view(), 0) != std::string_view{"nature"} or
+      path_segment(ts.groups[id].folder.view(), 1) != std::string_view{"huts"} or
+      !path_segment(ts.groups[id].folder.view(), 2).empty())
+    {
+      report(app, Status::error("a tile group's folder does not split into its segments"));
+    }
+    const level::GroupId shed = level::set_group(ts, "shed", layout.extents, cells.data());
+    if (shed == level::kNoGroup)
+    {
+      report(app, Status::error("could not add a second tile group"));
+      break;
+    }
+    {
+      const auto order = group_order(ts, app.memory.frame);
+      if (order.size() != ts.groups.size() or order.front() != shed or order.back() != id)
+      {
+        report(app, Status::error("the tile groups are not ordered for the folder tree"));
+      }
+    }
+    // It is removed again so the steps after this one see the one group they expect
+    level::remove_group(ts, shed);
+    if (level::find_group(ts, "hut") != id or ts.groups.size() != 1)
+    {
+      report(app, Status::error("removing the second tile group disturbed the first"));
+    }
+    break;
+  }
+  case 42: {
+    // Scattering that group over the map (Generate > Scatter): a profile naming it, the criteria
+    // off so the whole map is fair game, and every placement whole and clear of the others
+    project::Project& pr = *app.project;
+    Generators& g = app.generators;
+    const std::size_t layer = 1;
+    if (layer >= app.level->layers.size() or app.level->layers[layer].kind != level::LayerKind::kTiles)
+    {
+      report(app, Status::error("the level has no tile layer to scatter into"));
+      break;
+    }
+    app.panels.generate = true;
+    g.scatter_layer = layer;
+    const std::size_t profile = project::add_scatter(pr, "huts");
+    if (profile == project::kNoScatterProfile or project::find_scatter(pr, "huts") != profile)
+    {
+      report(app, Status::error("could not add a scatter profile"));
+      break;
+    }
+    g.scatter_profile = profile;
+    const project::ScatterObject object{.tileset = pr.tilesets[app.tileset].name, .group = "hut", .weight = 1.0F};
+    if (!project::add_scatter_object(pr, profile, object))
+    {
+      report(app, Status::error("could not add an object to the scatter profile"));
+      break;
+    }
+    pr.scatter[profile].settings = project::ScatterSettings{
+      .count = 8,
+      .spacing = 1,
+      .attempts = 200,
+      .use_band = false,
+      .use_semantic = false,
+      .use_collision = false,
+      .only_empty = false,
+      .region = false};
+    // A profile is project data, so making one is an unsaved change to the project
+    if (!app.project_modified)
+    {
+      report(app, Status::error("adding a scatter profile did not mark the project modified"));
+    }
+    apply_scatter(app);
+    const procgen::ScatterResult& result = g.scatter_result;
+    if (result.placed == 0)
+    {
+      report(app, Status::error("the scatter placed nothing"));
+      break;
+    }
+    // The group is 2x2 with one hole, so three cells per placement -- and exactly three, which is
+    // what says no placement was written over another
+    if (result.cells != result.placed * 3)
+    {
+      report(
+        app, Status::error(format<200>("the scatter wrote %zu cells for %zu placements", result.cells, result.placed)));
+    }
+    if (result.placed + result.unplaced != 8)
+    {
+      report(app, Status::error("the scatter neither placed nor gave up on every object"));
+    }
+    break;
+  }
+  case 43: {
+    // A profile is a file of its own: exported, it reads back into a project that already holds it
+    // by name rather than becoming a second copy, and other profiles sit beside it untouched
+    project::Project& pr = *app.project;
+    const std::size_t huts = project::find_scatter(pr, "huts");
+    if (huts == project::kNoScatterProfile)
+    {
+      report(app, Status::error("the scatter profile went away before it was exported"));
+      break;
+    }
+    app.generators.scatter_profile = huts;
+    file_action(app, FileAction::kSaveScatter, "smoke.scatter.json");
+    // A second profile, so the import has to leave something alone as well as replace something
+    const std::size_t rocks = project::add_scatter(pr, "rocks");
+    if (rocks == project::kNoScatterProfile)
+    {
+      report(app, Status::error("could not add a second scatter profile"));
+      break;
+    }
+    pr.scatter[rocks].settings.count = 3;
+    const std::size_t before = pr.scatter.size();
+    file_action(app, FileAction::kLoadScatter, "smoke.scatter.json");
+    if (pr.scatter.size() != before)
+    {
+      report(app, Status::error("importing a scatter profile it already had did not replace it"));
+    }
+    const std::size_t landed = project::find_scatter(pr, "huts");
+    if (landed == project::kNoScatterProfile or app.generators.scatter_profile != landed)
+    {
+      report(app, Status::error("importing a scatter profile did not select it"));
+      break;
+    }
+    if (pr.scatter[landed].count != 1)
+    {
+      report(app, Status::error("the imported scatter profile did not bring its object back"));
+    }
+    if (pr.scatter[landed].settings.count != 8 or pr.scatter[landed].settings.spacing != 1)
+    {
+      report(app, Status::error("the imported scatter profile did not bring its criteria back"));
+    }
+    // The other profile is addressed on its own and kept what it had
+    const std::size_t other = project::find_scatter(pr, "rocks");
+    if (other == project::kNoScatterProfile or pr.scatter[other].settings.count != 3)
+    {
+      report(app, Status::error("importing one scatter profile disturbed another"));
+    }
+    if (project::validate_scatter(pr) != 0)
+    {
+      report(app, Status::error("the scatter profiles' object table is not packed"));
+    }
+    // Both go through the same confirmed deletes the panel's buttons raise
+    app.pending_delete = PendingDelete{
+      .kind = DeleteKind::kScatterProfile,
+      .index = landed,
+      .what = format<128>("scatter profile 'huts'"),
+      .confirmed = true};
+    break;
+  }
+  case 44: {
+    const project::Project& pr = *app.project;
+    if (project::find_scatter(pr, "huts") != project::kNoScatterProfile)
+    {
+      report(app, Status::error("deleting the scatter profile left it in the project"));
+    }
+    // "rocks" is still there and has no objects, so the table is empty again and still packed
+    if (!pr.scatter_objects.empty() or project::find_scatter(pr, "rocks") == project::kNoScatterProfile)
+    {
+      report(app, Status::error("deleting one scatter profile did not take only its own objects"));
+    }
+    const level::GroupId group =
+      (app.tileset < pr.tilesets.size()) ? level::find_group(pr.tilesets[app.tileset], "hut") : level::kNoGroup;
+    if (group == level::kNoGroup)
+    {
+      report(app, Status::error("the tile group went away before it was deleted"));
+      break;
+    }
     app.pending_delete = PendingDelete{
       .kind = DeleteKind::kTileGroup,
-      .index = id,
+      .index = group,
       .owner = app.tileset,
       .what = format<128>("tile group 'hut'"),
       .confirmed = true};
     break;
   }
-  case 42: {
+  case 45: {
     // The delete was applied at the end of the last frame, and stamping stopped with it
     const project::Project& pr = *app.project;
     if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "hut") != level::kNoGroup)
@@ -2399,7 +2730,84 @@ void smoke(App& app)
     }
     break;
   }
-  case 43:
+  case 46: {
+    // Refreshing the semantic layer from the tile layers: the topmost tile that has a semantic type
+    // is the one that lands, which is the whole point of reading them as a stack
+    level::Level& lv = *app.level;
+    project::Project& pr = *app.project;
+    if (app.tileset >= pr.tilesets.size() or pr.tilesets[app.tileset].tiles.size() < 2)
+    {
+      report(app, Status::error("no tileset to read semantic types from"));
+      break;
+    }
+    const level::SemanticId under = project::intern_semantic(pr, "under");
+    const level::SemanticId over = project::intern_semantic(pr, "over");
+    level::TileSet& ts = pr.tilesets[app.tileset];
+    ts.tiles[0].semantic = under;
+    ts.tiles[1].semantic = over;
+    // A second tile layer above the ground one; every plane is taken after the last add_layer,
+    // since adding one may move the layer vector
+    const std::size_t ground = 1;
+    if (ground >= lv.layers.size() or lv.layers[ground].kind != level::LayerKind::kTiles)
+    {
+      report(app, Status::error("the level has no ground tile layer"));
+      break;
+    }
+    const std::size_t above = level::add_layer(lv, level::LayerKind::kTiles, "over");
+    const std::size_t semantic = level::find_layer(lv, level::LayerKind::kSemantic) < lv.layers.size()
+      ? level::find_layer(lv, level::LayerKind::kSemantic)
+      : level::add_layer(lv, level::LayerKind::kSemantic, "semantics");
+    const auto tileset = static_cast<level::TileSetId>(app.tileset);
+    plane<level::TileGrid>(lv.layers[ground]).at(0, 0) = level::TileRef{tileset, 0};
+    plane<level::TileGrid>(lv.layers[ground]).at(1, 0) = level::TileRef{tileset, 0};
+    plane<level::TileGrid>(lv.layers[above]).at(0, 0) = level::TileRef{tileset, 1};
+
+    app.derive = SemanticDerive{};
+    app.derive.layer = semantic;
+    app.derive.layers.set(ground, true);
+    app.derive.layers.set(above, true);
+    refresh_semantics(app);
+    {
+      const auto& ids = plane<level::IdGrid>(lv.layers[semantic]);
+      if (ids.at(0, 0) != over)
+      {
+        report(app, Status::error("the topmost tile layer did not win the squash"));
+      }
+      if (ids.at(1, 0) != under)
+      {
+        report(app, Status::error("a cell only the lower layer covers did not take its semantic type"));
+      }
+    }
+    // Reading only the lower layer puts that cell back to what the ground says
+    app.derive.layers.set(above, false);
+    refresh_semantics(app);
+    {
+      const auto& ids = plane<level::IdGrid>(lv.layers[semantic]);
+      if (ids.at(0, 0) != under or app.derive.changed != 1)
+      {
+        report(app, Status::error("dropping the top layer did not re-read the one below it"));
+      }
+    }
+    // And a cell no chosen layer accounts for is cleared, unless that is turned off. This level is a
+    // populated project member, so the cell has to be emptied to be unaccounted for at all
+    plane<level::TileGrid>(lv.layers[ground]).at(2, 0) = level::kEmptyTile;
+    plane<level::TileGrid>(lv.layers[above]).at(2, 0) = level::kEmptyTile;
+    plane<level::IdGrid>(lv.layers[semantic]).at(2, 0) = over;
+    app.derive.keep_unmatched = true;
+    refresh_semantics(app);
+    if (plane<level::IdGrid>(lv.layers[semantic]).at(2, 0) != over)
+    {
+      report(app, Status::error("keeping the unmatched cells did not keep one"));
+    }
+    app.derive.keep_unmatched = false;
+    refresh_semantics(app);
+    if (plane<level::IdGrid>(lv.layers[semantic]).at(2, 0) != level::kNoSemantic)
+    {
+      report(app, Status::error("a cell no chosen layer accounts for was not cleared"));
+    }
+    break;
+  }
+  case 47:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2408,7 +2816,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 44:
+  case 48:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -2964,6 +3372,35 @@ void file_action(App& app, FileAction action, const char* path)
   case FileAction::kSaveWfc:
     small_io([&](level::IoContext& ctx) {
       Status s = level::save_wfc_rules(path, *app.project, project::rules_of(*app.project, *app.level), ctx);
+      if (s.ok)
+      {
+        web::offer_download(path);
+      }
+      return s;
+    });
+    break;
+  case FileAction::kLoadScatter:
+    small_io([&](level::IoContext& ctx) {
+      // The file names the profile it holds, so it may be a new one or may replace the project's of
+      // that name; either way the Scatter tab switches to it, since importing one is how you say
+      // which profile you mean to use
+      std::size_t index = project::kNoScatterProfile;
+      const Status s = level::load_scatter(path, *app.project, ctx, index);
+      if (s.ok)
+      {
+        app.generators.scatter_profile = index;
+        app.project_modified = true;
+      }
+      return s;
+    });
+    break;
+  case FileAction::kSaveScatter:
+    small_io([&](level::IoContext& ctx) {
+      if (app.generators.scatter_profile >= app.project->scatter.size())
+      {
+        return Status::error("no scatter profile to export");
+      }
+      Status s = level::save_scatter(path, *app.project, app.generators.scatter_profile, ctx);
       if (s.ok)
       {
         web::offer_download(path);
