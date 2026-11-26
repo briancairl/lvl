@@ -662,8 +662,15 @@ void scatter_section(App& app)
     else
     {
       const TileGroup& g_ref = pr.tilesets[set].groups[group];
+      // The folder it is filed under, so two groups of similar name are told apart in the list
       ImGui::Text(
-        "%s / %s (%d x %d)", object.tileset.c_str(), object.group.c_str(), g_ref.size.width, g_ref.size.height);
+        "%s / %s%s%s (%d x %d)",
+        object.tileset.c_str(),
+        g_ref.folder.empty() ? "" : g_ref.folder.c_str(),
+        g_ref.folder.empty() ? "" : "/",
+        object.group.c_str(),
+        g_ref.size.width,
+        g_ref.size.height);
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(90.0F);
@@ -690,16 +697,21 @@ void scatter_section(App& app)
   {
     static int choice = 0;
     choice = std::clamp(choice, 0, static_cast<int>(tileset->groups.size()) - 1);
-    ImGui::SetNextItemWidth(160.0F);
+    ImGui::SetNextItemWidth(220.0F);
+    // The same folder tree the Tilesets panel lists them in, so a tileset with a hundred groups is
+    // picked through rather than scrolled
     if (ImGui::BeginCombo("##group", tileset->groups[static_cast<std::size_t>(choice)].name.c_str()))
     {
-      for (std::size_t i = 0; i < tileset->groups.size(); ++i)
-      {
-        if (ImGui::Selectable(format<96>("%s##%zu", tileset->groups[i].name.c_str(), i), static_cast<int>(i) == choice))
+      memory::Scope tree_scope{app.memory.frame};
+      const auto order = group_order(*tileset, app.memory.frame);
+      group_tree(*tileset, order.data(), order.size(), 0, [tileset](GroupId id) {
+        if (ImGui::Selectable(
+              format<96>("%s##pick%u", tileset->groups[id].name.c_str(), static_cast<unsigned>(id)),
+              static_cast<int>(id) == choice))
         {
-          choice = static_cast<int>(i);
+          choice = static_cast<int>(id);
         }
-      }
+      });
       ImGui::EndCombo();
     }
     ImGui::SameLine();

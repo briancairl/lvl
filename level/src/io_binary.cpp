@@ -78,6 +78,15 @@ template <typename S> void serialize(S& s, TileGroup& v)
   s.object(v.name);
   s.object(v.size);
   s.value4b(v.first);
+  // Appended in 0.4; a 0.3 file's groups are all at the top level
+  if (binary::has_version(s, 400))
+  {
+    s.object(v.folder);
+  }
+  else if constexpr (is_reader<S>)
+  {
+    v.folder.clear();
+  }
 }
 
 template <typename S> void serialize(S& s, TileSet& v)

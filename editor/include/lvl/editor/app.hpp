@@ -554,6 +554,8 @@ struct App
   GroupSelection group;
   /// Name the next group taken from the palette selection gets
   FixedString<64> group_name;
+  /// Folder the next group is filed under ('/'-separated; empty is the top level)
+  FixedString<64> group_folder;
   /// Selected object (portal, marker or path node)
   level::Entity entity = level::kNullEntity;
   level::GraphId graph = 0;

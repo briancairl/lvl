@@ -2537,6 +2537,40 @@ void smoke(App& app)
     {
       report(app, Status::error("the tile group's stamp does not hold its cells"));
     }
+    // Filed under a folder: organisation only, so it is still found by name, and the list the
+    // folder tree walks puts a folder's groups after the ones at the top level
+    ts.groups[id].folder = "nature/huts";
+    if (level::find_group(ts, "hut") != id)
+    {
+      report(app, Status::error("filing a tile group under a folder lost it"));
+    }
+    if (
+      path_segments(ts.groups[id].folder.view()) != 2 or
+      path_segment(ts.groups[id].folder.view(), 0) != std::string_view{"nature"} or
+      path_segment(ts.groups[id].folder.view(), 1) != std::string_view{"huts"} or
+      !path_segment(ts.groups[id].folder.view(), 2).empty())
+    {
+      report(app, Status::error("a tile group's folder does not split into its segments"));
+    }
+    const level::GroupId shed = level::set_group(ts, "shed", layout.extents, cells.data());
+    if (shed == level::kNoGroup)
+    {
+      report(app, Status::error("could not add a second tile group"));
+      break;
+    }
+    {
+      const auto order = group_order(ts, app.memory.frame);
+      if (order.size() != ts.groups.size() or order.front() != shed or order.back() != id)
+      {
+        report(app, Status::error("the tile groups are not ordered for the folder tree"));
+      }
+    }
+    // It is removed again so the steps after this one see the one group they expect
+    level::remove_group(ts, shed);
+    if (level::find_group(ts, "hut") != id or ts.groups.size() != 1)
+    {
+      report(app, Status::error("removing the second tile group disturbed the first"));
+    }
     break;
   }
   case 42: {

@@ -307,6 +307,61 @@ bool group_stamp(const App& app, level::Grid<level::TileRef>& out);
  */
 void choose_group(App& app, level::GroupId group);
 
+/// Segment <code>i</code> of a '/'-separated path, or empty past the end
+std::string_view path_segment(std::string_view path, std::size_t i);
+
+/// How many '/'-separated segments <code>path</code> has (none for an empty path)
+std::size_t path_segments(std::string_view path);
+
+/**
+ * @brief The tileset's groups in the order a folder tree draws them: by folder, then by name
+ *
+ * Returned in <code>arena</code>. Sorting by the folder string puts a folder's own groups before
+ * its subfolders' ("nature" < "nature/trees"), which is what lets <code>group_tree</code> walk the
+ * order once instead of building a tree of nodes.
+ */
+memory::Vector<level::GroupId> group_order(const level::TileSet& tileset, memory::Arena& arena);
+
+/**
+ * @brief Draws <code>count</code> groups of <code>order</code> as a folder tree, leaves through <code>fn</code>
+ *
+ * <code>fn(level::GroupId)</code> draws one group's own row, so the Tilesets panel and the Scatter
+ * tab share the tree and differ only in what a leaf looks like. <code>depth</code> is how many of
+ * the folder's segments have already been consumed, so a call starts at 0; the run of groups at each
+ * segment is contiguous because <code>order</code> is sorted, which is the whole trick.
+ */
+template <typename Fn>
+void group_tree(
+  const level::TileSet& tileset,
+  const level::GroupId* order,
+  std::size_t count,
+  std::size_t depth,
+  Fn&& fn)
+{
+  std::size_t i = 0;
+  // A folder's own groups come first, then each subfolder as one run
+  while (i < count and path_segments(tileset.groups[order[i]].folder.view()) == depth)
+  {
+    fn(order[i]);
+    ++i;
+  }
+  while (i < count)
+  {
+    const std::string_view segment = path_segment(tileset.groups[order[i]].folder.view(), depth);
+    std::size_t end = i;
+    while (end < count and path_segment(tileset.groups[order[end]].folder.view(), depth) == segment)
+    {
+      ++end;
+    }
+    if (ImGui::TreeNode(format<128>("%.*s##folder%zu_%zu", static_cast<int>(segment.size()), segment.data(), depth, i)))
+    {
+      group_tree(tileset, order + i, end - i, depth + 1, fn);
+      ImGui::TreePop();
+    }
+    i = end;
+  }
+}
+
 /// Footprint of <code>paint_stamp</code>, without building it (for the cursor's hover preview)
 level::Extents stamp_extents(const App& app);
 

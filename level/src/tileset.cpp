@@ -122,9 +122,12 @@ GroupId set_group(TileSet& tileset, std::string_view name, Extents size, const T
     return kNoGroup;
   }
   // Replacing a group of the same name removes it first, so a footprint that changed size does not
-  // leave its old cells stranded in the table
+  // leave its old cells stranded in the table. Where it was filed is kept, since re-taking a group
+  // from the palette changes its tiles and not where it belongs
+  Name folder;
   if (const GroupId existing = find_group(tileset, name); existing != kNoGroup)
   {
+    folder = tileset.groups[existing].folder;
     remove_group(tileset, existing);
   }
   if (tileset.groups.size() >= kNoGroup)
@@ -133,6 +136,7 @@ GroupId set_group(TileSet& tileset, std::string_view name, Extents size, const T
   }
   TileGroup group;
   group.name = name;
+  group.folder = folder;
   group.size = size;
   group.first = static_cast<std::uint32_t>(tileset.group_cells.size());
   for (std::size_t i = 0; i < count; ++i)

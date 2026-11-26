@@ -458,8 +458,21 @@ them are dropped. `reslice` keeps a group's shape and holes the cells whose tile
 longer has, since re-slicing is how a tile size is corrected and the correction usually brings them
 back.
 
-In the editor they are **Tilesets > Tile groups**: the list, a delete button per row, the chosen
-group drawn as it will be stamped, and "From the palette selection", which is how one is made --
+**A group is filed under a folder** (`TileGroup::folder`, `/`-separated, empty for the top level),
+so a tileset with a hundred groups can be picked through as a tree rather than scrolled. The folder
+is organisation and deliberately **not** part of the group's identity: a group is found by name
+(`find_group`) and a scatter profile names it, so re-filing one breaks nothing that points at it,
+and `set_group` keeps the folder when it replaces a group -- re-taking it from the palette changes
+its tiles, not where it belongs.
+
+`editor::group_order` sorts the groups by folder and then by name, which puts a folder's own groups
+before its subfolders' ("nature" < "nature/trees") and is what lets `group_tree` walk that order
+once, recursing per path segment, instead of building a tree of nodes: the run of groups sharing a
+segment is contiguous. The leaf row is a callback, so the Tilesets panel and the Scatter tab share
+the tree and differ only in what a leaf looks like.
+
+In the editor they are **Tilesets > Tile groups**: the tree, a delete button per row, the chosen
+group drawn as it will be stamped with its name and folder, and "From the palette selection", which is how one is made --
 the palette is already how several tiles are picked and already how they are laid out, so the house
 in the atlas is the house on the map, holes included. Choosing a group sets `App::group` (a
 `GroupSelection`: a tileset and a `GroupId`), and **`paint_stamp` returns it before anything else**,
@@ -982,13 +995,14 @@ one check to mark required:
   the unmatched cells cleared or kept, no layers named at all, and the tile read as drawn in the
   season -- clearing a tileset's references, portals/paths/routes, WFC
   rule learning, rules from a palette layout, a step terrain read from either block shape, batch
-  tile and constraint edits (scatter weight included), tile groups spanning one packed cell table
+  tile and constraint edits (scatter weight included), a tile group filed under a folder still found
+  by name and keeping that folder when it is replaced, tile groups spanning one packed cell table
   (replaced by name, removed with the table compacted, holes and cells outside the footprint, a
   group refused for having no name, no footprint or nothing but holes, a cell past the last tile
   taken as a hole, a re-slice keeping the shape, and groups that do not pack the table all dropped),
   terrains from a
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
-  selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1 (tile groups and their holes among what they carry, and a standalone tileset file taking its groups to another project), JSON→binary→JSON
+  selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1 (tile groups, their holes and the folders they are filed under among what they carry, and a standalone tileset file taking its groups to another project), JSON→binary→JSON
   stability, a project-scope save leaving the shared sections out and round-tripping against a
   project that already holds them while leaving it untouched, a project-scope level naming the rule
   set it uses and resolving to it in a project that holds the sets in another order, a standalone
@@ -1071,7 +1085,8 @@ one check to mark required:
   in both formats, all exports, a style profile save/load, deletes, a batch tile edit, adjacency rules and
   batch constraints from a palette selection, the file dialog, reopening the newest recent level, a
   multi-tile paint stamp, a tile group made out of the palette selection, chosen, stamped holes and
-  all, and deleted (which stops the stamping), a scatter profile naming that group placing it over
+  all, filed under a folder (still found by name, its segments split, and the list ordered for the
+  tree) and deleted (which stops the stamping), a scatter profile naming that group placing it over
   the map (every placement whole, none written over another, and the profile marking the project
   modified), exported and read back into the project that already held it by name (replacing it
   rather than duplicating it, selecting it, and leaving a second profile alone) and then removed with

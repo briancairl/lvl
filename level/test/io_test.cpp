@@ -89,6 +89,8 @@ protected:
     const TileIndex tree[] = {kNoTileIndex, 5, kNoTileIndex, 12, 13, 14};
     ASSERT_EQ(set_group(ts, "house", Extents{2, 2}, house), 0);
     ASSERT_EQ(set_group(ts, "tree", Extents{3, 2}, tree), 1);
+    // One filed under a folder and one at the top level, so both shapes travel
+    ts.groups[1].folder = "nature/trees";
 
     auto& height = plane<ScalarGrid>(level.layers[0]);
     for (std::size_t i = 0; i < height.values.size(); ++i)
@@ -268,6 +270,8 @@ protected:
     // Tile groups, with the cell table they span packed in the order they are listed
     ASSERT_EQ(tb.groups.size(), 2UL);
     EXPECT_EQ(tb.groups[0].name, std::string_view{"house"});
+    EXPECT_TRUE(tb.groups[0].folder.empty());
+    EXPECT_EQ(tb.groups[1].folder, std::string_view{"nature/trees"});
     EXPECT_EQ(tb.groups[1].size, (Extents{3, 2}));
     EXPECT_EQ(tb.group_cells.size(), ta.group_cells.size());
     EXPECT_EQ(validate_groups(const_cast<TileSet&>(tb)), 0UL);
@@ -641,6 +645,7 @@ TEST_F(LevelIo, StandaloneTilesetMovesBetweenLevels)
     // The groups travel with the tileset, which is the whole point of them living in it
     ASSERT_EQ(ts.groups.size(), 2UL);
     EXPECT_EQ(ts.groups[1].name, std::string_view{"tree"});
+    EXPECT_EQ(ts.groups[1].folder, std::string_view{"nature/trees"});
     EXPECT_EQ(group_cell(ts, ts.groups[1], 1, 0), 5);
     EXPECT_EQ(group_cell(ts, ts.groups[1], 0, 0), kNoTileIndex);
   }

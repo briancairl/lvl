@@ -11,6 +11,9 @@ namespace lvl
 /**
  * @brief Editor version, written into every file so loaders can migrate old ones
  *
+ * 0.4 files a tile group under a folder, so a tileset's groups can be picked through as a tree. The
+ * folder is appended to each group in binary, so a 0.3 file's groups are all at the top level.
+ *
  * 0.3 is the version tile groups came in: a tileset carries named groups of tiles that the editor
  * stamps as one thing. In binary they are appended to the tileset block, so a 0.1 or 0.2 file
  * simply has none -- which the loaders tell from the version in the header (binary::Version).
@@ -22,7 +25,7 @@ namespace lvl
  * happening quietly. Every 0.1 file still loads: it carries them, as they all did.
  */
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 3;
+inline constexpr int kVersionMinor = 4;
 inline constexpr int kVersionPatch = 0;
 
 /// Packed version number: <code>major * 10000 + minor * 100 + patch</code>

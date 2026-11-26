@@ -319,6 +319,10 @@ void save_tileset(Json& j, const project::Project& project, const TileSet& ts)
     {
       Json e = Json::object();
       json::write(e, "name", g.name);
+      if (!g.folder.empty())
+      {
+        json::write(e, "folder", g.folder);
+      }
       json::write(e, "width", g.size.width);
       json::write(e, "height", g.size.height);
       Json cells = Json::array();
@@ -437,9 +441,11 @@ bool load_tileset(json::Reader& r, const Json& j, project::Project& project, Til
   for (const auto& e : list("groups"))
   {
     Name name;
+    Name folder;
     int width = 0;
     int height = 0;
     r.get(e, "name", name);
+    r.get_optional(e, "folder", folder);
     r.get(e, "width", width);
     r.get(e, "height", height);
     if (!r.ok())
@@ -481,10 +487,12 @@ bool load_tileset(json::Reader& r, const Json& j, project::Project& project, Til
       }
       buffer[index++] = (tile < 0) ? kNoTileIndex : static_cast<TileIndex>(tile);
     }
-    if (set_group(ts, name.view(), size, buffer.data()) == kNoGroup)
+    const GroupId added = set_group(ts, name.view(), size, buffer.data());
+    if (added == kNoGroup)
     {
       return r.fail("tile group '%s' holds no tiles", name.c_str());
     }
+    ts.groups[added].folder = folder;
   }
   return r.ok();
 }

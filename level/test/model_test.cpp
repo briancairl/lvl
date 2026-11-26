@@ -119,6 +119,11 @@ TEST_F(LevelModel, TileGroupsSpanOneCellTable)
   // Outside the footprint is a hole, not a read of the next group's cells
   EXPECT_EQ(group_cell(ts, ts.groups[a], 2, 0), kNoTileIndex);
 
+  // A group is filed under a folder, which is organisation and not identity: find_group still finds
+  // it by name, and re-taking it from the palette keeps where it was filed
+  ts.groups[a].folder = "nature/huts";
+  EXPECT_EQ(find_group(ts, "house"), a);
+
   // A group of the same name is replaced, and a footprint that grew does not strand its old cells
   const TileIndex bigger[] = {0, 1, 2, 8, 9, 10, 16, 17, 18};
   EXPECT_NE(set_group(ts, "house", Extents{3, 3}, bigger), kNoGroup);
@@ -128,6 +133,7 @@ TEST_F(LevelModel, TileGroupsSpanOneCellTable)
   const GroupId moved = find_group(ts, "tree");
   EXPECT_EQ(group_cell(ts, ts.groups[moved], 2, 1), 12);
   EXPECT_EQ(group_cell(ts, ts.groups[find_group(ts, "house")], 2, 2), 18);
+  EXPECT_EQ(ts.groups[find_group(ts, "house")].folder, std::string_view{"nature/huts"});
   EXPECT_EQ(validate_groups(ts), 0UL);
 
   remove_group(ts, find_group(ts, "tree"));
