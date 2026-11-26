@@ -259,6 +259,15 @@ void apply_steps(App& app);
 
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count);
 
+/**
+ * @brief Scatters the chosen profile's objects over the target tile layer (Generate > Scatter)
+ *
+ * Resolves the profile's objects (which it names, so one whose tileset or group has gone is
+ * dropped), builds the <code>procgen::ScatterMask</code> from the layers the panel chose, takes the
+ * undo snapshot and records what it did in <code>Generators::scatter_result</code>.
+ */
+void apply_scatter(App& app);
+
 /// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked
 bool deselect_all_button(App& app);
 

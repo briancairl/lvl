@@ -15,6 +15,7 @@
 #include "lvl/procgen/autotile.hpp"
 #include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
+#include "lvl/procgen/scatter.hpp"
 #include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
@@ -1603,4 +1604,382 @@ TEST_F(Procgen, TerraceSkewByRateRunsIntoTheCeiling)
     terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.1F, .skew = 1.5F}, levels);
   const TerraceResult plain = terrace(height, TerraceParams{.mode = TerraceMode::kRate, .rate = 0.1F}, levels);
   EXPECT_LT(wide.top, plain.top);
+}
+
+// -------------------------------------------------------------------------------------------------
+// Scattered objects
+// -------------------------------------------------------------------------------------------------
+
+namespace
+{
+
+/// A tileset of 64 tiles holding the groups the scatter tests place
+struct Objects
+{
+  explicit Objects(memory::Arena& arena) : tilesets{memory::make_vector<TileSet>(arena)}
+  {
+    tilesets.emplace_back(arena);
+    TileSet& ts = tilesets.back();
+    ts.name = "objects";
+    ts.slice = SliceParams{.tile_width = 16, .tile_height = 16};
+    ts.image_width = 16 * 8;
+    ts.image_height = 16 * 8;
+    reslice(ts);
+    // A 2x2 house, a 1x1 rock, and a 3x2 tree whose top corners are holes
+    const TileIndex house[] = {1, 2, 9, 10};
+    const TileIndex rock[] = {3};
+    const TileIndex tree[] = {kNoTileIndex, 4, kNoTileIndex, 11, 12, 13};
+    set_group(ts, "house", Extents{2, 2}, house);
+    set_group(ts, "rock", Extents{1, 1}, rock);
+    set_group(ts, "tree", Extents{3, 2}, tree);
+  }
+  TileSets tilesets;
+};
+
+/// Cells of <code>tiles</code> holding a tile at all
+std::size_t drawn(const Grid<TileRef>& tiles)
+{
+  return static_cast<std::size_t>(
+    std::count_if(tiles.values.begin(), tiles.values.end(), [](TileRef t) { return !t.empty(); }));
+}
+
+constexpr ScatterObject object(GroupId group, float weight = 1.0F)
+{
+  return ScatterObject{.tileset = 0, .group = group, .weight = weight};
+}
+
+}  // namespace
+
+TEST_F(Procgen, ScatterPlacesWholeObjectsAndRepeatsForASeed)
+{
+  Objects o{doc};
+  Field f{doc, Extents{40, 40}};
+  const ScatterObject objects[] = {object(0)};
+  const ScatterParams params{.count = 12, .spacing = 0, .attempts = 200};
+  const ScatterResult result = scatter_groups(o.tilesets, objects, 1, ScatterMask{}, params, 7, scratch, f.tiles);
+  EXPECT_EQ(result.placed, 12U);
+  EXPECT_EQ(result.unplaced, 0U);
+  // Every placement is the whole 2x2 house, so the cells written follow from the count
+  EXPECT_EQ(result.cells, 12U * 4U);
+  EXPECT_EQ(drawn(f.tiles), 12U * 4U);
+  // Nothing but that group's own tiles, and each house complete
+  for (int y = 0; y < 40; ++y)
+  {
+    for (int x = 0; x < 40; ++x)
+    {
+      if (f.tiles.at(x, y) == TileRef{0, 1})
+      {
+        EXPECT_EQ(f.tiles.get(x + 1, y), (TileRef{0, 2})) << x << "," << y;
+        EXPECT_EQ(f.tiles.get(x, y + 1), (TileRef{0, 9})) << x << "," << y;
+        EXPECT_EQ(f.tiles.get(x + 1, y + 1), (TileRef{0, 10})) << x << "," << y;
+      }
+    }
+  }
+  // The run is a function of the seed alone
+  Field again{doc, Extents{40, 40}};
+  const ScatterResult twice = scatter_groups(o.tilesets, objects, 1, ScatterMask{}, params, 7, scratch, again.tiles);
+  EXPECT_EQ(twice.placed, result.placed);
+  for (std::size_t i = 0; i < f.tiles.values.size(); ++i)
+  {
+    ASSERT_EQ(f.tiles.values[i], again.tiles.values[i]) << "cell " << i;
+  }
+  // Another seed moves them
+  Field other{doc, Extents{40, 40}};
+  scatter_groups(o.tilesets, objects, 1, ScatterMask{}, params, 8, scratch, other.tiles);
+  EXPECT_NE(f.tiles.values, other.tiles.values);
+}
+
+TEST_F(Procgen, ScatterPlacementsNeverOverlapAndKeepTheirSpacing)
+{
+  Objects o{doc};
+  const ScatterObject objects[] = {object(0)};
+  // A 10x10 map takes at most 25 2x2 houses with no spacing, so asking for far more is the test:
+  // the ones that fit are placed and the rest run out of room rather than overlapping
+  Field f{doc, Extents{10, 10}};
+  const ScatterResult packed = scatter_groups(
+    o.tilesets,
+    objects,
+    1,
+    ScatterMask{},
+    ScatterParams{.count = 200, .spacing = 0, .attempts = 400},
+    3,
+    scratch,
+    f.tiles);
+  EXPECT_GT(packed.placed, 8U);
+  EXPECT_LE(packed.placed, 25U);
+  EXPECT_EQ(packed.unplaced, 200U - packed.placed);
+  // No cell was written twice, which is what "placed * 4" proves against the cells drawn
+  EXPECT_EQ(drawn(f.tiles), packed.placed * 4U);
+
+  // With a spacing of one, no two houses touch: every cell around a house is clear of another one
+  Field spaced{doc, Extents{30, 30}};
+  const ScatterResult result = scatter_groups(
+    o.tilesets,
+    objects,
+    1,
+    ScatterMask{},
+    ScatterParams{.count = 20, .spacing = 1, .attempts = 400},
+    5,
+    scratch,
+    spaced.tiles);
+  ASSERT_GT(result.placed, 4U);
+  for (int y = 0; y < 30; ++y)
+  {
+    for (int x = 0; x < 30; ++x)
+    {
+      // The top-left tile of a house: the ring around its 2x2 box must hold nothing
+      if (spaced.tiles.at(x, y) != TileRef{0, 1})
+      {
+        continue;
+      }
+      for (int dy = -1; dy <= 2; ++dy)
+      {
+        for (int dx = -1; dx <= 2; ++dx)
+        {
+          const bool inside = (dx >= 0 and dx <= 1 and dy >= 0 and dy <= 1);
+          if (!inside)
+          {
+            EXPECT_TRUE(spaced.tiles.get(x + dx, y + dy).empty()) << x + dx << "," << y + dy;
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST_F(Procgen, ScatterObeysTheBandTheGroundTypeAndTheCollisionMask)
+{
+  Objects o{doc};
+  const ScatterObject objects[] = {object(1)};  // the 1x1 rock, so a cell is a placement
+  const ScatterParams params{.count = 400, .spacing = 0, .attempts = 50};
+
+  // Rows 0..10 hold heights 0.0 .. 1.0, so [0.3, 0.5] is rows 3, 4 and 5
+  Field band{doc, Extents{10, 11}};
+  scatter_groups(
+    o.tilesets, objects, 1, ScatterMask{.band = &band.height, .lo = 0.3F, .hi = 0.5F}, params, 1, scratch, band.tiles);
+  EXPECT_GT(drawn(band.tiles), 0U);
+  for (int y = 0; y < 11; ++y)
+  {
+    for (int x = 0; x < 10; ++x)
+    {
+      EXPECT_EQ(band.tiles.at(x, y).empty(), y < 3 or y > 5) << x << "," << y;
+    }
+  }
+
+  // The semantic layer is in stripes of x % 3
+  Field ground{doc, Extents{12, 12}};
+  scatter_groups(o.tilesets, objects, 1, ScatterMask{.ids = &ground.ids, .id = 2}, params, 1, scratch, ground.tiles);
+  EXPECT_GT(drawn(ground.tiles), 0U);
+  for (int y = 0; y < 12; ++y)
+  {
+    for (int x = 0; x < 12; ++x)
+    {
+      EXPECT_EQ(ground.tiles.at(x, y).empty(), (x % 3) != 2) << x << "," << y;
+    }
+  }
+
+  // The collision mask: the left half is solid, and nothing may land in it
+  Field blocked{doc, Extents{12, 12}};
+  Grid<std::uint8_t> collision{doc};
+  collision.assign(blocked.tiles.extents, collision::kNone);
+  for (int y = 0; y < 12; ++y)
+  {
+    for (int x = 0; x < 6; ++x)
+    {
+      collision.at(x, y) = collision::kSolid;
+    }
+  }
+  scatter_groups(
+    o.tilesets,
+    objects,
+    1,
+    ScatterMask{.collision = &collision, .blocked = collision::kSolid},
+    params,
+    1,
+    scratch,
+    blocked.tiles);
+  EXPECT_GT(drawn(blocked.tiles), 0U);
+  for (int y = 0; y < 12; ++y)
+  {
+    for (int x = 0; x < 6; ++x)
+    {
+      EXPECT_TRUE(blocked.tiles.at(x, y).empty()) << x << "," << y;
+    }
+  }
+}
+
+TEST_F(Procgen, ScatterRefusesAPlacementWhoseEveryCellDoesNotFit)
+{
+  Objects o{doc};
+  // The 3x2 tree, on a map whose right half alone is the right ground: a tree straddling the edge
+  // has cells on both, which is the case a per-cell fill cannot express and a scatter must refuse
+  Field f{doc, Extents{20, 20}};
+  for (int y = 0; y < 20; ++y)
+  {
+    for (int x = 0; x < 20; ++x)
+    {
+      f.ids.at(x, y) = static_cast<std::uint16_t>((x >= 10) ? 1 : 0);
+    }
+  }
+  const ScatterObject objects[] = {object(2)};
+  scatter_groups(
+    o.tilesets,
+    objects,
+    1,
+    ScatterMask{.ids = &f.ids, .id = 1},
+    ScatterParams{.count = 60, .spacing = 0, .attempts = 200},
+    4,
+    scratch,
+    f.tiles);
+  ASSERT_GT(drawn(f.tiles), 0U);
+  for (int y = 0; y < 20; ++y)
+  {
+    for (int x = 0; x < 10; ++x)
+    {
+      EXPECT_TRUE(f.tiles.at(x, y).empty()) << x << "," << y;
+    }
+  }
+  // Every tree that landed is whole: its trunk is the row under its crown. Its two top corners are
+  // gaps, which another tree may interlock into, so they are not expected to be empty -- what is
+  // expected is that no cell was written twice, which is the four solid cells per placement
+  std::size_t crowns = 0;
+  for (int y = 0; y < 20; ++y)
+  {
+    for (int x = 0; x < 20; ++x)
+    {
+      if (f.tiles.at(x, y) != TileRef{0, 4})
+      {
+        continue;
+      }
+      ++crowns;
+      EXPECT_EQ(f.tiles.get(x - 1, y + 1), (TileRef{0, 11})) << x << "," << y;
+      EXPECT_EQ(f.tiles.get(x, y + 1), (TileRef{0, 12})) << x << "," << y;
+      EXPECT_EQ(f.tiles.get(x + 1, y + 1), (TileRef{0, 13})) << x << "," << y;
+    }
+  }
+  EXPECT_EQ(drawn(f.tiles), crowns * 4U);
+}
+
+TEST_F(Procgen, ScatterWeightsDecideTheShares)
+{
+  Objects o{doc};
+  Field f{doc, Extents{80, 80}};
+  // The house and the rock, three to one
+  const ScatterObject objects[] = {object(0, 3.0F), object(1, 1.0F)};
+  const ScatterResult result = scatter_groups(
+    o.tilesets,
+    objects,
+    2,
+    ScatterMask{},
+    ScatterParams{.count = 400, .spacing = 0, .attempts = 100},
+    11,
+    scratch,
+    f.tiles);
+  ASSERT_GT(result.placed, 300U);
+  std::size_t houses = 0;
+  std::size_t rocks = 0;
+  for (const TileRef tile : f.tiles.values)
+  {
+    houses += (tile == TileRef{0, 1}) ? 1U : 0U;
+    rocks += (tile == TileRef{0, 3}) ? 1U : 0U;
+  }
+  ASSERT_GT(houses + rocks, 0U);
+  const float share = static_cast<float>(houses) / static_cast<float>(houses + rocks);
+  EXPECT_NEAR(share, 0.75F, 0.08F);
+
+  // A weight of zero keeps an object out altogether
+  Field only{doc, Extents{40, 40}};
+  const ScatterObject without[] = {object(0, 0.0F), object(1, 1.0F)};
+  scatter_groups(
+    o.tilesets,
+    without,
+    2,
+    ScatterMask{},
+    ScatterParams{.count = 40, .spacing = 0, .attempts = 100},
+    2,
+    scratch,
+    only.tiles);
+  for (const TileRef tile : only.tiles.values)
+  {
+    EXPECT_NE(tile, (TileRef{0, 1}));
+  }
+  EXPECT_GT(drawn(only.tiles), 0U);
+}
+
+TEST_F(Procgen, ScatterSparesWhatIsDrawnAndHonoursTheRegion)
+{
+  Objects o{doc};
+  const ScatterObject objects[] = {object(1)};
+
+  // only_empty: the cells that already hold a tile are left as they are
+  Field f{doc, Extents{20, 20}};
+  for (int x = 0; x < 20; ++x)
+  {
+    f.tiles.at(x, 0) = fill_tile(0);
+  }
+  scatter_groups(
+    o.tilesets,
+    objects,
+    1,
+    ScatterMask{.only_empty = true},
+    ScatterParams{.count = 400, .spacing = 0, .attempts = 100},
+    6,
+    scratch,
+    f.tiles);
+  for (int x = 0; x < 20; ++x)
+  {
+    EXPECT_EQ(f.tiles.at(x, 0), fill_tile(0)) << x;
+  }
+
+  // A region narrows it to a rectangle, and nothing lands outside
+  Field narrow{doc, Extents{20, 20}};
+  const ScatterResult result = scatter_groups(
+    o.tilesets,
+    objects,
+    1,
+    ScatterMask{.region = Region{.x = 4, .y = 5, .width = 3, .height = 2}},
+    ScatterParams{.count = 50, .spacing = 0, .attempts = 200},
+    9,
+    scratch,
+    narrow.tiles);
+  EXPECT_EQ(result.placed, 6U);
+  EXPECT_EQ(drawn(narrow.tiles), 6U);
+  for (int y = 0; y < 20; ++y)
+  {
+    for (int x = 0; x < 20; ++x)
+    {
+      const bool inside = (x >= 4 and x < 7 and y >= 5 and y < 7);
+      EXPECT_EQ(narrow.tiles.at(x, y).empty(), !inside) << x << "," << y;
+    }
+  }
+}
+
+TEST_F(Procgen, ScatterSkipsObjectsItCannotPlace)
+{
+  Objects o{doc};
+  Field f{doc, Extents{20, 20}};
+  // A group that is not there, and one too big for the region: both skipped rather than refused
+  const ScatterObject objects[] = {
+    ScatterObject{.tileset = 0, .group = 99, .weight = 1.0F},
+    ScatterObject{.tileset = 7, .group = 0, .weight = 1.0F},
+    object(2)};
+  const ScatterResult result = scatter_groups(
+    o.tilesets,
+    objects,
+    3,
+    ScatterMask{.region = Region{.x = 0, .y = 0, .width = 2, .height = 2}},
+    ScatterParams{.count = 5, .spacing = 0, .attempts = 50},
+    1,
+    scratch,
+    f.tiles);
+  // The 3x2 tree does not fit a 2x2 region either, so nothing is left to place
+  EXPECT_EQ(result.placed, 0U);
+  EXPECT_EQ(drawn(f.tiles), 0U);
+  EXPECT_EQ(scratch.utilized, 0UL);
+
+  // No objects at all, and a count of zero, both write nothing
+  EXPECT_EQ(scatter_groups(o.tilesets, nullptr, 0, ScatterMask{}, ScatterParams{}, 1, scratch, f.tiles).placed, 0U);
+  const ScatterObject one[] = {object(1)};
+  EXPECT_EQ(
+    scatter_groups(o.tilesets, one, 1, ScatterMask{}, ScatterParams{.count = 0}, 1, scratch, f.tiles).placed, 0U);
 }

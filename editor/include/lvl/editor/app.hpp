@@ -30,6 +30,7 @@
 #include "lvl/level/level.hpp"
 #include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
+#include "lvl/procgen/scatter.hpp"
 #include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/project/paths.hpp"
@@ -304,6 +305,17 @@ struct Generators
   /// What the last fill did, so the panel can report it
   procgen::FillResult fill_result;
 
+  /// Scattered objects (Generate > Scatter): the profile being used and the layers it reads
+  std::size_t scatter_profile = 0;
+  std::size_t scatter_layer = 0;
+  std::size_t scatter_band_layer = 0;
+  std::size_t scatter_id_layer = 0;
+  std::size_t scatter_collision_layer = 0;
+  /// Name the next profile gets
+  Name scatter_name;
+  /// What the last scatter did, so the panel can report it
+  procgen::ScatterResult scatter_result;
+
   /// Height steps (Generate > Height steps): the layers it reads and writes
   std::size_t step_height_layer = 0;
   std::size_t step_level_layer = 0;
@@ -345,6 +357,10 @@ enum class DeleteKind : std::uint8_t
   kRuleSet,
   /// A tile group (index within tileset <code>owner</code>)
   kTileGroup,
+  /// A scatter profile of the project
+  kScatterProfile,
+  /// One object of scatter profile <code>owner</code>
+  kScatterObject,
 };
 
 /// A delete waiting for confirmation (or, when confirmed, for the end of the frame)

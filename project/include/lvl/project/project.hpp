@@ -54,6 +54,14 @@ inline constexpr std::size_t kMaxObjectNames = 4096;
 /// Returned by the lookups when there is no such member level
 inline constexpr std::size_t kNoLevel = static_cast<std::size_t>(-1);
 
+/// Most scatter profiles a project may hold
+inline constexpr std::size_t kMaxScatterProfiles = 64;
+
+/// Most objects every scatter profile may name between them (see ScatterProfile)
+inline constexpr std::size_t kMaxScatterObjects = 1024;
+
+inline constexpr std::size_t kNoScatterProfile = static_cast<std::size_t>(-1);
+
 /// Returned by <code>find_rules</code> when there is no rule set of that name
 inline constexpr std::size_t kNoRules = static_cast<std::size_t>(-1);
 
@@ -83,6 +91,79 @@ struct RuleSet
   level::AutoTileRules auto_tiles;
   /// Height-step terrains, keyed on the difference in level between cells (see level/step_rules.hpp)
   level::StepRules steps;
+};
+
+/**
+ * @brief One object a scatter profile places, and how often
+ *
+ * The tileset and the group are named rather than indexed, as a portal names its destination level,
+ * because a profile outlives what it was written against: a tileset removed renumbers the ones
+ * after it and a group removed renumbers the ones after it, and a profile must not then quietly
+ * start placing something else. A name that resolves to nothing is listed as dangling and skipped
+ * by the scatter, which is a thing to fix rather than a reason to refuse the project.
+ */
+struct ScatterObject
+{
+  /// Tileset holding the group
+  Name tileset;
+  /// The tile group (see level::TileGroup)
+  Name group;
+  /// Share of the placements this object takes, relative to the others; 0 keeps it out
+  float weight = 1.0F;
+};
+
+/**
+ * @brief The criteria a scatter places objects by
+ *
+ * Plain numbers rather than a <code>procgen</code> type, because *which* layers the band and the
+ * ground type are read from is the open level's business and not the profile's -- a project's levels
+ * do not have the same layers in the same order. The editor pairs these with the layers chosen in
+ * the panel and builds the <code>procgen::ScatterMask</code> from the two.
+ */
+struct ScatterSettings
+{
+  /// How many objects to place
+  int count = 24;
+  /// Cells of clearance kept between placements; 0 lets two objects touch
+  int spacing = 1;
+  /// Candidate positions tried per object before that one is given up on
+  int attempts = 64;
+  /// Place only inside a band of a scalar layer
+  bool use_band = false;
+  float lo = 0.0F;
+  float hi = 1.0F;
+  /// Place only where a semantic layer holds <code>semantic</code>
+  bool use_semantic = false;
+  level::SemanticId semantic = level::kNoSemantic;
+  /// Place nothing over a cell the collision mask marks
+  bool use_collision = true;
+  /// Which bits of that mask block a placement
+  std::uint8_t blocked = level::collision::kSolid;
+  /// Place only where every cell of the object has no tile yet
+  bool only_empty = true;
+  /// Whether the scatter honours the select tool's region
+  bool region = true;
+};
+
+/**
+ * @brief A named set of objects and the criteria that place them (the Generate panel's Scatter tab)
+ *
+ * The objects are <code>count</code> entries of <code>Project::scatter_objects</code> starting at
+ * <code>first</code> -- the same flat table the level index uses for its object names and a tileset
+ * uses for its group cells, so adding a profile reuses the block rather than leaving the last one
+ * behind in a bump arena. The table is always packed and in the order the profiles are listed.
+ *
+ * Profiles belong to the project because the objects they name do: the tile groups live in the
+ * project's tilesets, and "oaks and pines on grass between these two heights" is a decision about
+ * the world rather than about one level of it.
+ */
+struct ScatterProfile
+{
+  Name name;
+  /// Offset of this profile's first object in <code>Project::scatter_objects</code>
+  std::uint32_t first = 0;
+  std::uint32_t count = 0;
+  ScatterSettings settings;
 };
 
 /**
@@ -164,7 +245,52 @@ struct Project
   memory::Vector<LevelEntry> levels;
   /// Flat name table the LevelEntry spans point into
   memory::Vector<Name> object_names;
+
+  /// Scatter profiles (Generate > Scatter), in the order the project lists them
+  memory::Vector<ScatterProfile> scatter;
+  /// Every profile's objects, back to back in the order the profiles are listed
+  memory::Vector<ScatterObject> scatter_objects;
 };
+
+/// Index of the scatter profile named <code>name</code>, or <code>kNoScatterProfile</code>
+[[nodiscard]] std::size_t find_scatter(const Project& project, std::string_view name);
+
+/**
+ * @brief Adds a scatter profile named <code>name</code>; returns its index
+ *
+ * Returns <code>kNoScatterProfile</code> if the name is empty, a profile already has it, or the
+ * project is full.
+ */
+std::size_t add_scatter(Project& project, std::string_view name);
+
+/// Removes profile <code>index</code>, compacting the object table the later profiles span into
+void remove_scatter(Project& project, std::size_t index);
+
+/// First of profile <code>profile</code>'s objects, or nullptr if it has none
+[[nodiscard]] const ScatterObject* objects_of(const Project& project, const ScatterProfile& profile);
+[[nodiscard]] ScatterObject* objects_of(Project& project, const ScatterProfile& profile);
+
+/**
+ * @brief Adds <code>object</code> to profile <code>index</code>; returns whether there was room
+ *
+ * The object goes on the end of that profile's span, which moves the later profiles' objects along
+ * so the table stays packed.
+ */
+bool add_scatter_object(Project& project, std::size_t index, const ScatterObject& object);
+
+/// Removes object <code>slot</code> of profile <code>index</code>, keeping the table packed
+void remove_scatter_object(Project& project, std::size_t index, std::size_t slot);
+
+/**
+ * @brief Drops every profile whose span does not pack the object table exactly
+ *
+ * What <code>validate_groups</code> is for a tileset's groups, and for the same reason: the table
+ * is always written packed and in order, so anything else is a file that cannot say which objects
+ * belong to which profile. Returns how many profiles were dropped. The manifest loader builds the
+ * table through <code>add_scatter_object</code> and so cannot produce one that fails this; it is
+ * called after a load as the backstop that keeps that true.
+ */
+std::size_t validate_scatter(Project& project);
 
 /// Destroys everything in <code>project</code>, rewinds its arena and re-creates it empty
 void reset(Project& project);

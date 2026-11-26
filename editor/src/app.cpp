@@ -2377,16 +2377,100 @@ void smoke(App& app)
     {
       report(app, Status::error("the tile group's stamp does not hold its cells"));
     }
-    // Removing it goes through the same confirmed delete the panel's button raises
+    break;
+  }
+  case 42: {
+    // Scattering that group over the map (Generate > Scatter): a profile naming it, the criteria
+    // off so the whole map is fair game, and every placement whole and clear of the others
+    project::Project& pr = *app.project;
+    Generators& g = app.generators;
+    const std::size_t layer = 1;
+    if (layer >= app.level->layers.size() or app.level->layers[layer].kind != level::LayerKind::kTiles)
+    {
+      report(app, Status::error("the level has no tile layer to scatter into"));
+      break;
+    }
+    app.panels.generate = true;
+    g.scatter_layer = layer;
+    const std::size_t profile = project::add_scatter(pr, "huts");
+    if (profile == project::kNoScatterProfile or project::find_scatter(pr, "huts") != profile)
+    {
+      report(app, Status::error("could not add a scatter profile"));
+      break;
+    }
+    g.scatter_profile = profile;
+    const project::ScatterObject object{.tileset = pr.tilesets[app.tileset].name, .group = "hut", .weight = 1.0F};
+    if (!project::add_scatter_object(pr, profile, object))
+    {
+      report(app, Status::error("could not add an object to the scatter profile"));
+      break;
+    }
+    pr.scatter[profile].settings = project::ScatterSettings{
+      .count = 8,
+      .spacing = 1,
+      .attempts = 200,
+      .use_band = false,
+      .use_semantic = false,
+      .use_collision = false,
+      .only_empty = false,
+      .region = false};
+    // A profile is project data, so making one is an unsaved change to the project
+    if (!app.project_modified)
+    {
+      report(app, Status::error("adding a scatter profile did not mark the project modified"));
+    }
+    apply_scatter(app);
+    const procgen::ScatterResult& result = g.scatter_result;
+    if (result.placed == 0)
+    {
+      report(app, Status::error("the scatter placed nothing"));
+      break;
+    }
+    // The group is 2x2 with one hole, so three cells per placement -- and exactly three, which is
+    // what says no placement was written over another
+    if (result.cells != result.placed * 3)
+    {
+      report(
+        app, Status::error(format<200>("the scatter wrote %zu cells for %zu placements", result.cells, result.placed)));
+    }
+    if (result.placed + result.unplaced != 8)
+    {
+      report(app, Status::error("the scatter neither placed nor gave up on every object"));
+    }
+    // Both go through the same confirmed deletes the panel's buttons raise
+    app.pending_delete = PendingDelete{
+      .kind = DeleteKind::kScatterProfile,
+      .index = profile,
+      .what = format<128>("scatter profile 'huts'"),
+      .confirmed = true};
+    break;
+  }
+  case 43: {
+    const project::Project& pr = *app.project;
+    if (project::find_scatter(pr, "huts") != project::kNoScatterProfile)
+    {
+      report(app, Status::error("deleting the scatter profile left it in the project"));
+    }
+    if (!pr.scatter_objects.empty())
+    {
+      report(app, Status::error("deleting the scatter profile left its objects behind"));
+    }
+    const level::GroupId group =
+      (app.tileset < pr.tilesets.size()) ? level::find_group(pr.tilesets[app.tileset], "hut") : level::kNoGroup;
+    if (group == level::kNoGroup)
+    {
+      report(app, Status::error("the tile group went away before it was deleted"));
+      break;
+    }
     app.pending_delete = PendingDelete{
       .kind = DeleteKind::kTileGroup,
-      .index = id,
+      .index = group,
       .owner = app.tileset,
       .what = format<128>("tile group 'hut'"),
       .confirmed = true};
     break;
   }
-  case 42: {
+  case 44: {
     // The delete was applied at the end of the last frame, and stamping stopped with it
     const project::Project& pr = *app.project;
     if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "hut") != level::kNoGroup)
@@ -2399,7 +2483,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 43:
+  case 45:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2408,7 +2492,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 44:
+  case 46:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

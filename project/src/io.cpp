@@ -12,6 +12,11 @@
  *   "semantics": [...], "materials": [...], "seasons": [...],
  *   "tilesets": ["tilesets/forest.tileset.json"],
  *   "rules": ["rules/forest.rules.json"],
+ *   "scatter": [
+ *     {"name": "forest", "count": 40, "spacing": 1, "attempts": 64, "low": 0.3, "high": 0.6,
+ *      "semantic": "grass", "blocked": ["nw", "ne", "sw", "se"], "only_empty": true,
+ *      "region": true, "objects": [{"tileset": "forest", "group": "oak", "weight": 3.0}]}
+ *   ],
  *   "levels": [
  *     {"name": "overworld", "file": "levels/overworld.json", "size": [256, 256],
  *      "portals": ["west_gate"], "markers": ["spawn"]}
@@ -31,7 +36,9 @@
  */
 
 // C++ Standard Library
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 #include <utility>
 
@@ -198,6 +205,174 @@ bool load_files(json::Reader& r, const Json& j, std::string_view key, memory::Ve
       return false;
     }
     files.push_back(file);
+  }
+  return r.ok();
+}
+
+/// Collision bits as the flag names level::collision gives them
+void save_blocked(Json& j, std::uint8_t mask)
+{
+  j = Json::array();
+  for (std::size_t i = 0; i < level::collision::kFlagNames.size(); ++i)
+  {
+    if ((mask & (1U << i)) != 0U)
+    {
+      j.push_back(JsonString{level::collision::kFlagNames[i]});
+    }
+  }
+}
+
+bool load_blocked(json::Reader& r, const Json& j, std::uint8_t& mask)
+{
+  if (!r.array(j, "blocked"))
+  {
+    return false;
+  }
+  mask = level::collision::kNone;
+  for (const auto& element : j)
+  {
+    Name name;
+    if (!r.convert(element, name, "blocked"))
+    {
+      return false;
+    }
+    const auto itr = std::find(level::collision::kFlagNames.begin(), level::collision::kFlagNames.end(), name.view());
+    if (itr == level::collision::kFlagNames.end())
+    {
+      return r.fail("unknown collision flag '%s'", name.c_str());
+    }
+    mask |= static_cast<std::uint8_t>(1U << (itr - level::collision::kFlagNames.begin()));
+  }
+  return true;
+}
+
+/**
+ * @brief Writes the scatter profiles, their objects and their criteria
+ *
+ * The ground type goes out by name, as a tile's does, so a profile read into another project means
+ * the same thing there; every optional test is omitted when it is off, so a profile that uses none
+ * of them is a few lines.
+ */
+void save_scatter(Json& j, const Project& project)
+{
+  Json array = Json::array();
+  for (const ScatterProfile& profile : project.scatter)
+  {
+    Json element = Json::object();
+    json::write(element, "name", profile.name);
+    const ScatterSettings& st = profile.settings;
+    json::write(element, "count", st.count);
+    json::write(element, "spacing", st.spacing);
+    json::write(element, "attempts", st.attempts);
+    if (st.use_band)
+    {
+      json::write(element, "low", st.lo);
+      json::write(element, "high", st.hi);
+    }
+    if (st.use_semantic and st.semantic < project.semantics.size())
+    {
+      json::write(element, "semantic", project.semantics[st.semantic].name);
+    }
+    if (st.use_collision)
+    {
+      save_blocked(element["blocked"], st.blocked);
+    }
+    json::write(element, "only_empty", st.only_empty);
+    json::write(element, "region", st.region);
+    Json objects = Json::array();
+    const ScatterObject* entries = objects_of(project, profile);
+    for (std::size_t i = 0; entries != nullptr and i < profile.count; ++i)
+    {
+      Json object = Json::object();
+      json::write(object, "tileset", entries[i].tileset);
+      json::write(object, "group", entries[i].group);
+      json::write(object, "weight", entries[i].weight);
+      objects.push_back(std::move(object));
+    }
+    element["objects"] = std::move(objects);
+    array.push_back(std::move(element));
+  }
+  j[JsonString{"scatter"}] = std::move(array);
+}
+
+bool load_scatter(json::Reader& r, const Json& j, Project& project)
+{
+  project.scatter.clear();
+  project.scatter_objects.clear();
+  const auto itr = j.find("scatter");
+  if (itr == j.end())
+  {
+    return r.ok();
+  }
+  if (!r.array(*itr, "scatter"))
+  {
+    return false;
+  }
+  for (const auto& element : *itr)
+  {
+    Name name;
+    if (!r.get(element, "name", name))
+    {
+      return false;
+    }
+    const std::size_t index = add_scatter(project, name.view());
+    if (index == kNoScatterProfile)
+    {
+      return r.fail(
+        "scatter profile '%s' is a duplicate, unnamed, or past the %zu the project may hold",
+        name.c_str(),
+        kMaxScatterProfiles);
+    }
+    ScatterSettings& st = project.scatter[index].settings;
+    r.get_optional(element, "count", st.count);
+    r.get_optional(element, "spacing", st.spacing);
+    r.get_optional(element, "attempts", st.attempts);
+    st.use_band = element.contains("low") or element.contains("high");
+    r.get_optional(element, "low", st.lo);
+    r.get_optional(element, "high", st.hi);
+    if (const auto semantic = element.find("semantic"); semantic != element.end())
+    {
+      Name entry;
+      if (!r.convert(*semantic, entry, "semantic"))
+      {
+        return false;
+      }
+      st.use_semantic = true;
+      st.semantic = intern_semantic(project, entry.view());
+    }
+    st.use_collision = element.contains("blocked");
+    if (st.use_collision and !load_blocked(r, element["blocked"], st.blocked))
+    {
+      return false;
+    }
+    r.get_optional(element, "only_empty", st.only_empty);
+    r.get_optional(element, "region", st.region);
+    if (!r.ok())
+    {
+      return false;
+    }
+    if (const auto objects = element.find("objects"); objects != element.end())
+    {
+      if (!r.array(*objects, "objects"))
+      {
+        return false;
+      }
+      for (const auto& entry : *objects)
+      {
+        ScatterObject object;
+        r.get(entry, "tileset", object.tileset);
+        r.get(entry, "group", object.group);
+        r.get_optional(entry, "weight", object.weight);
+        if (!r.ok())
+        {
+          return false;
+        }
+        if (!add_scatter_object(project, index, object))
+        {
+          return r.fail("the scatter profiles name more than %zu objects between them", kMaxScatterObjects);
+        }
+      }
+    }
   }
   return r.ok();
 }
@@ -402,6 +577,7 @@ Status save_project(const char* path, Project& project, level::IoContext& ctx)
         save_list(j, "seasons", project.seasons);
         save_files(j, "tilesets", project.tileset_files);
         save_files(j, "rules", project.rule_files);
+        save_scatter(j, project);
         save_levels(j, project);
       },
       2);
@@ -460,11 +636,19 @@ Status load_project(const char* path, Project& project, level::IoContext& ctx)
       }
       if (r.ok())
       {
+        load_scatter(r, j, project);
+      }
+      if (r.ok())
+      {
         load_levels(r, j, project);
       }
       return r.status;
     });
   });
+  if (const std::size_t dropped = validate_scatter(project); dropped > 0)
+  {
+    LVL_LOG_WARN() << "Dropped " << dropped << " scatter profile(s): inconsistent objects";
+  }
   if (!status.ok)
   {
     return status;

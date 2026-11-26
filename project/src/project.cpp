@@ -42,7 +42,9 @@ Project::Project(memory::Arena& arena) :
     tileset_files{memory::ArenaAllocator<Path>{arena}},
     rule_files{memory::ArenaAllocator<Path>{arena}},
     levels{memory::ArenaAllocator<LevelEntry>{arena}},
-    object_names{memory::ArenaAllocator<Name>{arena}}
+    object_names{memory::ArenaAllocator<Name>{arena}},
+    scatter{memory::ArenaAllocator<ScatterProfile>{arena}},
+    scatter_objects{memory::ArenaAllocator<ScatterObject>{arena}}
 {
   semantics.push_back(level::SemanticType{.name = "none", .color = {0, 0, 0, 0}});
   materials.push_back(level::Material{.name = "none", .color = {0, 0, 0, 0}});
@@ -53,6 +55,9 @@ Project::Project(memory::Arena& arena) :
   // Reserved up front and never grown, so every rebuild reuses this one block (see kMaxObjectNames)
   object_names.reserve(kMaxObjectNames);
   levels.reserve(kMaxLevels);
+  // Reserved up front for the same reason: adding or removing a profile repacks the table
+  scatter.reserve(kMaxScatterProfiles);
+  scatter_objects.reserve(kMaxScatterObjects);
 }
 
 void reset(Project& project)
@@ -217,6 +222,129 @@ Status set_level_objects(Project& project, std::size_t index, const LevelObjects
   project.object_names.clear();
   append_names(project.object_names, rebuilt.data(), rebuilt.size());
   return Status::okay();
+}
+
+std::size_t find_scatter(const Project& project, std::string_view name)
+{
+  for (std::size_t i = 0; i < project.scatter.size(); ++i)
+  {
+    if (project.scatter[i].name == name)
+    {
+      return i;
+    }
+  }
+  return kNoScatterProfile;
+}
+
+std::size_t add_scatter(Project& project, std::string_view name)
+{
+  if (name.empty() or project.scatter.size() >= kMaxScatterProfiles or find_scatter(project, name) != kNoScatterProfile)
+  {
+    return kNoScatterProfile;
+  }
+  ScatterProfile profile;
+  profile.name.assign(name);
+  profile.first = static_cast<std::uint32_t>(project.scatter_objects.size());
+  profile.count = 0;
+  project.scatter.push_back(profile);
+  return project.scatter.size() - 1;
+}
+
+void remove_scatter(Project& project, std::size_t index)
+{
+  if (index >= project.scatter.size())
+  {
+    return;
+  }
+  const ScatterProfile profile = project.scatter[index];
+  const std::size_t first = std::min<std::size_t>(profile.first, project.scatter_objects.size());
+  const std::size_t last = std::min<std::size_t>(first + profile.count, project.scatter_objects.size());
+  project.scatter_objects.erase(
+    project.scatter_objects.begin() + static_cast<std::ptrdiff_t>(first),
+    project.scatter_objects.begin() + static_cast<std::ptrdiff_t>(last));
+  project.scatter.erase(project.scatter.begin() + static_cast<std::ptrdiff_t>(index));
+  const auto removed = static_cast<std::uint32_t>(last - first);
+  for (ScatterProfile& later : project.scatter)
+  {
+    later.first -= (later.first > first) ? removed : 0;
+  }
+}
+
+const ScatterObject* objects_of(const Project& project, const ScatterProfile& profile)
+{
+  if (profile.count == 0 or profile.first + profile.count > project.scatter_objects.size())
+  {
+    return nullptr;
+  }
+  return project.scatter_objects.data() + profile.first;
+}
+
+ScatterObject* objects_of(Project& project, const ScatterProfile& profile)
+{
+  const Project& const_project = project;
+  return const_cast<ScatterObject*>(objects_of(const_project, profile));
+}
+
+bool add_scatter_object(Project& project, std::size_t index, const ScatterObject& object)
+{
+  if (index >= project.scatter.size() or project.scatter_objects.size() >= kMaxScatterObjects)
+  {
+    return false;
+  }
+  ScatterProfile& profile = project.scatter[index];
+  const std::size_t at = std::min<std::size_t>(profile.first + profile.count, project.scatter_objects.size());
+  project.scatter_objects.insert(project.scatter_objects.begin() + static_cast<std::ptrdiff_t>(at), object);
+  ++profile.count;
+  for (std::size_t i = 0; i < project.scatter.size(); ++i)
+  {
+    if (i != index and project.scatter[i].first >= at)
+    {
+      ++project.scatter[i].first;
+    }
+  }
+  return true;
+}
+
+void remove_scatter_object(Project& project, std::size_t index, std::size_t slot)
+{
+  if (index >= project.scatter.size() or slot >= project.scatter[index].count)
+  {
+    return;
+  }
+  ScatterProfile& profile = project.scatter[index];
+  const std::size_t at = profile.first + slot;
+  if (at >= project.scatter_objects.size())
+  {
+    return;
+  }
+  project.scatter_objects.erase(project.scatter_objects.begin() + static_cast<std::ptrdiff_t>(at));
+  --profile.count;
+  for (std::size_t i = 0; i < project.scatter.size(); ++i)
+  {
+    if (i != index and project.scatter[i].first > at)
+    {
+      --project.scatter[i].first;
+    }
+  }
+}
+
+std::size_t validate_scatter(Project& project)
+{
+  std::size_t next = 0;
+  bool packed = true;
+  for (const ScatterProfile& profile : project.scatter)
+  {
+    packed = packed and profile.first == next;
+    next += profile.count;
+  }
+  if (packed and next == project.scatter_objects.size())
+  {
+    return 0;
+  }
+  const std::size_t dropped = project.scatter.size();
+  project.scatter.clear();
+  project.scatter_objects.clear();
+  return dropped;
 }
 
 void check_level_files(Project& project)
@@ -548,6 +676,12 @@ void finish_compaction(Project& project, const CatalogPlan& plan)
       t.semantic = planned(plan.semantics, t.semantic);
     }
   }
+  // A profile's ground type is an id for the same reason tile metadata's is -- it survives the entry
+  // being renamed -- so it moves with the rest when the catalogs are renumbered
+  for (ScatterProfile& profile : project.scatter)
+  {
+    profile.settings.semantic = planned(plan.semantics, profile.settings.semantic);
+  }
   drop_retired(project.semantics, plan.semantics);
   drop_retired(project.materials, plan.materials);
 }
@@ -566,6 +700,9 @@ std::size_t semantic_uses(const Project& project, const level::Level& level, lev
     n += static_cast<std::size_t>(std::count_if(
       set.wfc.tiles.begin(), set.wfc.tiles.end(), [id](const level::WfcTile& t) { return t.semantic == id; }));
   }
+  n += static_cast<std::size_t>(std::count_if(project.scatter.begin(), project.scatter.end(), [id](const auto& p) {
+    return p.settings.use_semantic and p.settings.semantic == id;
+  }));
   return n;
 }
 
