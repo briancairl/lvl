@@ -707,6 +707,9 @@ void populate(project::Project& p, memory::Arena& scratch, const std::string& ro
   level::reslice(p.tilesets[ts]);
   p.tilesets[ts].tiles[1].name.assign("cobble");
   p.tilesets[ts].tiles[1].semantic = project::intern_semantic(p, "road");
+  // A tile group: it lives in the tileset, so the manifest carries it through that tileset's file
+  const level::TileIndex rock[] = {0, level::kNoTileIndex};
+  ASSERT_EQ(level::set_group(p.tilesets[ts], "rock", level::Extents{2, 1}, rock), 0);
   p.rules[0].wfc.name = "forest";
   level::add_tile(p.rules[0].wfc, level::TileRef{ts, 1});
   level::set_allowed(p.rules[0].wfc, 0, 0, level::Direction::kEast, true);
@@ -773,6 +776,10 @@ TEST(Manifest, RoundTrips)
   EXPECT_EQ(read.tilesets[0].image, std::string_view{"assets/atlases/forest.png"});
   ASSERT_GT(read.tilesets[0].tiles.size(), 1U);
   EXPECT_EQ(read.tilesets[0].tiles[1].name, std::string_view{"cobble"});
+  ASSERT_EQ(read.tilesets[0].groups.size(), 1U);
+  EXPECT_EQ(read.tilesets[0].groups[0].name, std::string_view{"rock"});
+  EXPECT_EQ(level::group_cell(read.tilesets[0], read.tilesets[0].groups[0], 0, 0), 0);
+  EXPECT_EQ(level::group_cell(read.tilesets[0], read.tilesets[0].groups[0], 1, 0), level::kNoTileIndex);
   EXPECT_EQ(read.semantics[read.tilesets[0].tiles[1].semantic].name, std::string_view{"road"});
   EXPECT_EQ(read.rules[0].wfc.name, std::string_view{"forest"});
   ASSERT_EQ(read.rules[0].wfc.tiles.size(), 1U);

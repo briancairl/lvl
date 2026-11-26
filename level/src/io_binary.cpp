@@ -26,6 +26,8 @@
 namespace lvl::level
 {
 
+template <typename S> constexpr bool is_reader = std::is_same_v<S, binary::Reader>;
+
 template <typename S> void serialize(S& s, Settings& v)
 {
   s.object(v.name);
@@ -71,6 +73,13 @@ template <typename S> void serialize(S& s, SeasonalVariant& v)
   s.value2b(v.material);
 }
 
+template <typename S> void serialize(S& s, TileGroup& v)
+{
+  s.object(v.name);
+  s.object(v.size);
+  s.value4b(v.first);
+}
+
 template <typename S> void serialize(S& s, TileSet& v)
 {
   s.object(v.name);
@@ -81,6 +90,17 @@ template <typename S> void serialize(S& s, TileSet& v)
   s.container(v.tiles, 0xFFFF);
   s.container(v.properties, 1 << 20);
   s.container(v.seasonal, 1 << 20);
+  // Appended in 0.3; a file written before that has no groups rather than bytes here
+  if (binary::has_version(s, 300))
+  {
+    s.container(v.groups, 0xFFFF);
+    s.container2b(v.group_cells, 1 << 22);
+  }
+  else if constexpr (is_reader<S>)
+  {
+    v.groups.clear();
+    v.group_cells.clear();
+  }
 }
 
 template <typename S> void serialize(S& s, WfcTile& v)
@@ -129,8 +149,6 @@ namespace
 
 constexpr std::size_t kMaxList = 1 << 20;
 
-template <typename S> constexpr bool is_reader = std::is_same_v<S, binary::Reader>;
-
 /// Terrains aren't default-constructible either (see serialize_tilesets below)
 struct Terrains
 {
@@ -155,6 +173,7 @@ template <typename S> void serialize_tilesets(S& s, project::Project& project)
     {
       project.tilesets.emplace_back(*project.arena);
       s.object(project.tilesets.back());
+      validate_groups(project.tilesets.back());
     }
   }
   else
@@ -345,7 +364,8 @@ Status load_level_binary(const char* path, project::Project& project, Level& lev
   ObjectRecords records{shared};
   auto headers = memory::make_vector<LayerHeader>(shared);
   Meta meta{&level, &project, &records, &headers};
-  binary::Reader reader{binary::InputAdapter{bytes, size}};
+  binary::Version version;
+  binary::Reader reader{version, binary::InputAdapter{bytes, size}};
   binary::Header header;
   reader.object(header);
   const bool level_kind = header.kind == binary::Kind::kLevel or header.kind == binary::Kind::kProjectLevel;
@@ -359,6 +379,8 @@ Status load_level_binary(const char* path, project::Project& project, Level& lev
   {
     return Status::error("%s: written by a newer editor (version %u)", path, static_cast<unsigned>(header.version));
   }
+  // The metadata block is read in the shape that editor wrote it in
+  version.value = header.version;
   if (meta.shared)
   {
     // A file that carries its rules carries exactly one set, the one its cells were tiled with, so
@@ -584,6 +606,12 @@ Status load_tileset_binary(const char* path, project::Project& project, IoContex
     ts.tiles.push_back(info);
   }
   ts.properties.assign(tileset.properties.begin(), tileset.properties.end());
+  ts.groups.assign(tileset.groups.begin(), tileset.groups.end());
+  ts.group_cells.assign(tileset.group_cells.begin(), tileset.group_cells.end());
+  if (const std::size_t dropped = validate_groups(ts); dropped > 0)
+  {
+    LVL_LOG_WARN() << "Dropped " << dropped << " tile group(s) of '" << ts.name.c_str() << "': inconsistent cells";
+  }
   for (SeasonalVariant v : tileset.seasonal)
   {
     v.material = mapped(material_map, v.material);

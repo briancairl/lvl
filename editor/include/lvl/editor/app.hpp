@@ -206,6 +206,25 @@ struct TileSelection
   }
 };
 
+/**
+ * @brief The tile group chosen in the Tilesets panel, which the paint tool stamps as one thing
+ *
+ * A group is the third thing a stamp can be, after the palette selection and App::paint's tile or
+ * rectangle, and it wins over both -- so which of them is stamped is never ambiguous: choosing a
+ * group empties the palette selection, and clicking in the palette clears the group.
+ */
+struct GroupSelection
+{
+  /// Tileset the group belongs to
+  std::size_t tileset = 0;
+  /// Group within that tileset, or kNoGroup for none
+  level::GroupId group = level::kNoGroup;
+
+  [[nodiscard]] bool active() const { return group != level::kNoGroup; }
+
+  void clear() { group = level::kNoGroup; }
+};
+
 struct View
 {
   /// Cell at the viewport's top-left corner
@@ -324,6 +343,8 @@ enum class DeleteKind : std::uint8_t
   kLevelMember,
   /// A rule set of the project
   kRuleSet,
+  /// A tile group (index within tileset <code>owner</code>)
+  kTileGroup,
 };
 
 /// A delete waiting for confirmation (or, when confirmed, for the end of the frame)
@@ -480,6 +501,10 @@ struct App
   TileSelection selection;
   /// What the batch metadata edit applies to the selected tiles
   level::TileEdit batch;
+  /// The tile group the paint tool stamps, if one is chosen
+  GroupSelection group;
+  /// Name the next group taken from the palette selection gets
+  FixedString<64> group_name;
   /// Selected object (portal, marker or path node)
   level::Entity entity = level::kNullEntity;
   level::GraphId graph = 0;

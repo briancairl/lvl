@@ -917,16 +917,17 @@ void handle_tools(App& app, const Canvas& cv, bool hovered)
     const ImVec2 b = cv.to_screen(
       app.view, static_cast<float>(cell.x + r + footprint.width), static_cast<float>(cell.y + r + footprint.height));
     cv.draw->AddRect(a, b, color, 0, 0, 1.5F);
-    // A multi-tile stamp can have holes (the palette selection's): outline the cells it writes
-    SelectionBounds bounds;
-    if (stamping and app.selection.count >= 2 and selection_bounds(app, bounds))
+    // A multi-tile stamp can have holes (a tile group's, or the palette selection's), which keep
+    // what is under them: outline the cells it actually writes
+    memory::Scope hover_scope{app.memory.frame};
+    Grid<TileRef> hover{app.memory.frame};
+    if (stamping and footprint != Extents{1, 1} and paint_stamp(app, hover))
     {
-      for (int y = 0; y < bounds.height; ++y)
+      for (int y = 0; y < hover.extents.height; ++y)
       {
-        for (int x = 0; x < bounds.width; ++x)
+        for (int x = 0; x < hover.extents.width; ++x)
         {
-          const auto tile = static_cast<TileIndex>((bounds.y + y) * bounds.columns + (bounds.x + x));
-          if (app.selection.has(tile))
+          if (!hover.at(x, y).empty())
           {
             cv.draw->AddRect(
               cv.to_screen(app.view, static_cast<float>(cell.x + x), static_cast<float>(cell.y + y)),
@@ -996,6 +997,23 @@ void toolbar(App& app)
   ImGui::SetNextItemWidth(80.0F);
   ImGui::SliderInt("Radius", &app.brush.radius, 0, 32);
   const Level& lv = *app.level;
+  // What a stamp writes is not visible on the canvas until it is painted, so the toolbar says when
+  // it is a named group rather than the tile in the palette
+  if (const TileGroup* group = chosen_group(app); group != nullptr and app.tool == Tool::kPaint)
+  {
+    ImGui::SameLine();
+    ImGui::Text("group '%s' (%d x %d)", group->name.c_str(), group->size.width, group->size.height);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Painting stamps this tile group as one thing. Choose another, or the same one again to stop, "
+                        "in Tilesets > Tile groups; Ctrl+Shift+A also stops.");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Stop##group"))
+    {
+      app.group.clear();
+    }
+  }
   if (app.tool == Tool::kAutoTile)
   {
     // Which of the two kinds of rules this tile paints with, so it is plain which tab to edit

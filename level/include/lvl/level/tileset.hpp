@@ -6,11 +6,18 @@
  * A tileset is an atlas image sliced into equally-sized tiles (the slicer parameters), plus
  * metadata per tile: semantic type, material, collision mask, free-form properties, and seasonal
  * alternates (a different tile and/or material to use during a named season).
+ *
+ * A tileset also carries named tile groups: a house, a tree or a rock drawn across several tiles,
+ * stamped onto the map as one thing. They belong to the tileset rather than to a level or a rule
+ * set because every tile they name is one of that tileset's -- so a group travels with the atlas it
+ * was cut from, is written by the standalone tileset file a project saves, and goes away with the
+ * tileset without any level or rule set having to be renumbered.
  */
 #pragma once
 
 // C++ Standard Library
 #include <cstdint>
+#include <limits>
 
 // LVL
 #include "lvl/core/fixed_string.hpp"
@@ -80,6 +87,36 @@ struct SeasonalVariant
   MaterialId material = kNoMaterial;
 };
 
+/// Index of a tile group within a tileset
+using GroupId = std::uint16_t;
+
+inline constexpr GroupId kNoGroup = std::numeric_limits<GroupId>::max();
+
+/// A group cell that holds no tile: stamping it leaves whatever is under it alone
+inline constexpr TileIndex kNoTileIndex = std::numeric_limits<TileIndex>::max();
+
+/// Widest/tallest a group may be, in cells
+inline constexpr int kMaxGroupExtent = 64;
+
+/**
+ * @brief A named group of tiles stamped onto the map as one thing: a house, a tree, a rock
+ *
+ * The footprint is a rectangle, and its cells are <code>size.count()</code> tile indices in
+ * row-major order living in the tileset's one flat <code>group_cells</code> table, which this entry
+ * spans into -- the same shape the project's level index uses for its object names, so adding a
+ * group does not leave the last block behind in a bump arena. A cell holding
+ * <code>kNoTileIndex</code> is a hole: a tree's bounding box has corners the tree does not fill,
+ * and stamping must leave what is under them alone rather than erase it.
+ */
+struct TileGroup
+{
+  Name name;
+  /// Footprint, in cells
+  Extents size;
+  /// Offset of this group's first cell in <code>TileSet::group_cells</code>
+  std::uint32_t first = 0;
+};
+
 /**
  * @brief A metadata change for one or more tiles: only the fields whose flag is set are applied
  *
@@ -110,7 +147,9 @@ struct TileSet
   explicit TileSet(memory::Arena& arena) :
       tiles{memory::ArenaAllocator<TileInfo>{arena}},
       properties{memory::ArenaAllocator<TileProperty>{arena}},
-      seasonal{memory::ArenaAllocator<SeasonalVariant>{arena}}
+      seasonal{memory::ArenaAllocator<SeasonalVariant>{arena}},
+      groups{memory::ArenaAllocator<TileGroup>{arena}},
+      group_cells{memory::ArenaAllocator<TileIndex>{arena}}
   {}
 
   Name name;
@@ -124,6 +163,10 @@ struct TileSet
   memory::Vector<TileInfo> tiles;
   memory::Vector<TileProperty> properties;
   memory::Vector<SeasonalVariant> seasonal;
+  /// Named multi-tile stamps; each one spans into <code>group_cells</code>
+  memory::Vector<TileGroup> groups;
+  /// Every group's cells, back to back in the order the groups are listed
+  memory::Vector<TileIndex> group_cells;
 };
 
 /// A project's tilesets, indexed by <code>TileSetId</code>; a level names them, the project owns them
@@ -162,6 +205,39 @@ void set_property(TileSet& tileset, TileIndex tile, std::string_view key, std::s
 
 /// Removes property <code>key</code> of <code>tile</code>, if there is one
 void remove_property(TileSet& tileset, TileIndex tile, std::string_view key);
+
+/// Index of the group named <code>name</code>, or <code>kNoGroup</code>
+GroupId find_group(const TileSet& tileset, std::string_view name);
+
+/// First of group <code>group</code>'s cells, or nullptr if its span does not fit the cell table
+const TileIndex* group_cells_of(const TileSet& tileset, const TileGroup& group);
+
+/// Tile at <code>(x, y)</code> of <code>group</code>, or <code>kNoTileIndex</code> for a hole or an outside cell
+TileIndex group_cell(const TileSet& tileset, const TileGroup& group, int x, int y);
+
+/**
+ * @brief Adds the group <code>name</code>, or replaces the one of that name, from row-major <code>cells</code>
+ *
+ * <code>cells</code> holds <code>size.count()</code> entries; <code>kNoTileIndex</code>, and any
+ * index past the tileset's last tile, is a hole. Returns the group's index, or
+ * <code>kNoGroup</code> if the name is empty, the footprint is empty or larger than
+ * <code>kMaxGroupExtent</code>, every cell is a hole, or the tileset already holds
+ * <code>kNoGroup</code> groups.
+ */
+GroupId set_group(TileSet& tileset, std::string_view name, Extents size, const TileIndex* cells);
+
+/// Removes group <code>index</code>, compacting the cell table the later groups span into
+void remove_group(TileSet& tileset, GroupId index);
+
+/**
+ * @brief Makes <code>tileset</code>'s groups consistent with its cell table and its tile count
+ *
+ * A cell naming a tile the tileset does not have becomes a hole. The cell table is always written
+ * packed and in the order the groups are listed, so a file whose groups do not span it exactly
+ * cannot say which cells are whose -- and a group reading another group's cells is worse than a
+ * tileset with no groups, so all of them are dropped. Returns how many.
+ */
+std::size_t validate_groups(TileSet& tileset);
 
 /// Applies <code>edit</code> to <code>count</code> tiles, skipping indices past the end; returns how many were edited
 std::size_t apply_edit(TileSet& tileset, const TileEdit& edit, const TileIndex* tiles, std::size_t count);

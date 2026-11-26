@@ -21,6 +21,7 @@
 
 // C++ Standard Library
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -309,6 +310,32 @@ void save_tileset(Json& j, const project::Project& project, const TileSet& ts)
     seasonal.push_back(std::move(e));
   }
   j["seasonal"] = std::move(seasonal);
+
+  // Tile groups: a footprint and its cells, row-major, -1 for a hole (as a layer's empty cells are)
+  if (!ts.groups.empty())
+  {
+    Json groups = Json::array();
+    for (const TileGroup& g : ts.groups)
+    {
+      Json e = Json::object();
+      json::write(e, "name", g.name);
+      json::write(e, "width", g.size.width);
+      json::write(e, "height", g.size.height);
+      Json cells = Json::array();
+      for (std::size_t i = 0; i < g.size.count(); ++i)
+      {
+        const TileIndex tile = group_cell(
+          ts,
+          g,
+          static_cast<int>(i % static_cast<std::size_t>(g.size.width)),
+          static_cast<int>(i / static_cast<std::size_t>(g.size.width)));
+        cells.push_back((tile == kNoTileIndex) ? -1 : static_cast<std::int64_t>(tile));
+      }
+      e["cells"] = std::move(cells);
+      groups.push_back(std::move(e));
+    }
+    j["groups"] = std::move(groups);
+  }
 }
 
 bool load_tileset(json::Reader& r, const Json& j, project::Project& project, TileSet& ts)
@@ -406,6 +433,58 @@ bool load_tileset(json::Reader& r, const Json& j, project::Project& project, Til
       return r.fail("seasonal variant tile %u/%u out of range", v.tile, v.alternate);
     }
     ts.seasonal.push_back(v);
+  }
+  for (const auto& e : list("groups"))
+  {
+    Name name;
+    int width = 0;
+    int height = 0;
+    r.get(e, "name", name);
+    r.get(e, "width", width);
+    r.get(e, "height", height);
+    if (!r.ok())
+    {
+      return false;
+    }
+    if (width <= 0 or height <= 0 or width > kMaxGroupExtent or height > kMaxGroupExtent)
+    {
+      return r.fail("tile group '%s' has an invalid size %dx%d", name.c_str(), width, height);
+    }
+    const auto cells = e.find("cells");
+    if (cells == e.end() or !r.array(*cells, "cells"))
+    {
+      return false;
+    }
+    const Extents size{width, height};
+    if (cells->size() != size.count())
+    {
+      return r.fail("tile group '%s' has %zu cells, expected %zu", name.c_str(), cells->size(), size.count());
+    }
+    // A group is at most kMaxGroupExtent squared cells, so its cells are read on the stack and
+    // handed to set_group, which is what keeps the tileset's cell table packed and in order
+    std::array<TileIndex, static_cast<std::size_t>(kMaxGroupExtent) * kMaxGroupExtent> buffer{};
+    std::size_t index = 0;
+    for (const auto& c : *cells)
+    {
+      std::int64_t tile = -1;
+      if (!r.convert(c, tile, "cell"))
+      {
+        return false;
+      }
+      if (tile >= static_cast<std::int64_t>(tile_count))
+      {
+        return r.fail(
+          "tile group '%s' names tile %lld, past the tileset's %u",
+          name.c_str(),
+          static_cast<long long>(tile),
+          tile_count);
+      }
+      buffer[index++] = (tile < 0) ? kNoTileIndex : static_cast<TileIndex>(tile);
+    }
+    if (set_group(ts, name.view(), size, buffer.data()) == kNoGroup)
+    {
+      return r.fail("tile group '%s' holds no tiles", name.c_str());
+    }
   }
   return r.ok();
 }

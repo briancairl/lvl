@@ -269,11 +269,26 @@ bool palette_layout(const App& app, level::Grid<level::TileRef>& out);
 /**
  * @brief The tiles one application of the paint tool writes, laid out as the palette has them
  *
- * With two or more tiles selected in the palette it is the selection's layout (so a multi-tile
+ * A chosen tile group (App::group) is stamped first of all, since it is a thing the user named;
+ * then, with two or more tiles selected in the palette, the selection's layout (so a multi-tile
  * object keeps its shape; cells the selection skips are left alone), otherwise the paint stamp: one
  * tile, or the rectangle a palette drag picked. False if there is no tile to paint with.
  */
 bool paint_stamp(const App& app, level::Grid<level::TileRef>& out);
+
+/// The chosen tile group (<code>App::group</code>), or nullptr if none is chosen or it has gone
+const level::TileGroup* chosen_group(const App& app);
+
+/// Fills <code>out</code> with the chosen tile group's cells; false if none is chosen
+bool group_stamp(const App& app, level::Grid<level::TileRef>& out);
+
+/**
+ * @brief Chooses the group <code>group</code> of the open tileset to be stamped, or clears the choice
+ *
+ * A group and the palette selection are two answers to "what does a stamp write?", so choosing one
+ * empties the other, and choosing a group reaches for the paint tool as a palette click does.
+ */
+void choose_group(App& app, level::GroupId group);
 
 /// Footprint of <code>paint_stamp</code>, without building it (for the cursor's hover preview)
 level::Extents stamp_extents(const App& app);

@@ -151,8 +151,65 @@ void selection_preview(const App& app, float thumb, int max_rows)
   ImGui::EndChild();
 }
 
+const TileGroup* chosen_group(const App& app)
+{
+  const project::Project& pr = *app.project;
+  if (!app.group.active() or app.group.tileset >= pr.tilesets.size())
+  {
+    return nullptr;
+  }
+  const TileSet& ts = pr.tilesets[app.group.tileset];
+  if (app.group.group >= ts.groups.size())
+  {
+    return nullptr;
+  }
+  return &ts.groups[app.group.group];
+}
+
+void choose_group(App& app, GroupId group)
+{
+  app.group.tileset = app.tileset;
+  app.group.group = group;
+  if (group == kNoGroup)
+  {
+    return;
+  }
+  app.selection.clear();
+  if (app.tool != Tool::kPaint and app.tool != Tool::kRect)
+  {
+    app.tool = Tool::kPaint;
+  }
+}
+
+bool group_stamp(const App& app, Grid<TileRef>& out)
+{
+  const TileGroup* group = chosen_group(app);
+  if (group == nullptr)
+  {
+    return false;
+  }
+  const TileSet& ts = app.project->tilesets[app.group.tileset];
+  out.assign(group->size, kEmptyTile);
+  for (int y = 0; y < group->size.height; ++y)
+  {
+    for (int x = 0; x < group->size.width; ++x)
+    {
+      // A hole keeps whatever is under it, which is how a tree's bounding box corners behave
+      if (const TileIndex tile = group_cell(ts, *group, x, y); tile != kNoTileIndex)
+      {
+        out.at(x, y) = TileRef{static_cast<TileSetId>(app.group.tileset), tile};
+      }
+    }
+  }
+  return true;
+}
+
 Extents stamp_extents(const App& app)
 {
+  if (const TileGroup* group = chosen_group(app); group != nullptr)
+  {
+    return group->size;
+  }
   SelectionBounds bounds;
   if (app.selection.count >= 2 and selection_bounds(app, bounds))
   {
@@ -163,6 +220,11 @@ Extents stamp_extents(const App& app)
 
 bool paint_stamp(const App& app, Grid<TileRef>& out)
 {
+  // A chosen tile group is a thing the user named, so it is what a stamp means
+  if (group_stamp(app, out))
+  {
+    return true;
+  }
   // Two or more selected tiles are painted as the palette lays them out, holes and all
   if (app.selection.count >= 2 and palette_layout(app, out))
   {
