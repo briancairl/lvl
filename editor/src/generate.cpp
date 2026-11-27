@@ -189,6 +189,11 @@ void watershed_section(App& app)
   ImGui::DragFloat("River threshold", &p.river_threshold, 1.0F, 1.0F, 100000.0F, "%.0f cells");
   ImGui::DragFloat("River depth", &p.river_depth, 0.001F, 0.0F, 1.0F, "%.3f");
   ImGui::DragFloat("Carve", &p.carve, 0.01F, 0.0F, 4.0F);
+  ImGui::DragFloat("River width", &p.river_width, 0.02F, 0.0F, 8.0F, "%.2f cells");
+  ImGui::DragFloat("Max river width", &p.river_width_max, 0.1F, 0.0F, 64.0F, "%.1f cells");
+  ImGui::DragFloat("Bank width", &p.bank_width, 0.05F, 0.0F, 16.0F, "%.2f cells");
+  ImGui::SliderInt("Channel smoothing", &p.channel_smoothing, 0, 8);
+  ImGui::TextDisabled("Half-width gained per doubling of flow past the threshold, and the taper");
   enum_combo("Depressions", p.mode);
   if (p.mode == procgen::DepressionMode::kFillLakes)
   {

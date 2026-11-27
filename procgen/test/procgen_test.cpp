@@ -213,6 +213,129 @@ TEST_F(Procgen, WatershedBreachCutsTunnelsThroughRidges)
   EXPECT_TRUE(tunnel_in_ridge);
 }
 
+/**
+ * @brief A river is a bed as wide as the flow it carries, with banks that taper into the terrain
+ *
+ * The map is a steep-sided valley running east: every cell of a wall drains straight into the
+ * middle row, so the only channel over the threshold is the trunk, and the flow in it grows as it
+ * goes. That is what the widths and the taper are read off.
+ */
+TEST_F(Procgen, WatershedWidensRiversWithFlow)
+{
+  constexpr int kWidth = 64;
+  constexpr int kHeight = 33;
+  constexpr int kMiddle = 16;
+  constexpr int kColumn = 48;
+  const auto make_valley = [](Grid<float>& g) {
+    g.assign({kWidth, kHeight}, 0.0F);
+    for (int y = 0; y < kHeight; ++y)
+    {
+      for (int x = 0; x < kWidth; ++x)
+      {
+        g.at(x, y) = 1.0F - 0.4F * static_cast<float>(x) / static_cast<float>(kWidth) +
+          0.1F * static_cast<float>(std::abs(y - kMiddle));
+      }
+    }
+  };
+  const auto wet_in_column = [](const Grid<float>& water, int x) {
+    int count = 0;
+    for (int y = 0; y < kHeight; ++y)
+    {
+      count += (water.at(x, y) > 1e-4F) ? 1 : 0;
+    }
+    return count;
+  };
+
+  WatershedParams params;
+  params.erode = false;
+  params.iterations = 1;
+  params.river_threshold = 20.0F;
+
+  // With no width at all, the channel is the one cell the flow line runs through, as it always was
+  {
+    Grid<float> h{doc};
+    make_valley(h);
+    Grid<float> water{doc};
+    water.assign(h.extents, 0.0F);
+    WatershedParams narrow = params;
+    narrow.river_width = 0.0F;
+    narrow.river_width_max = 0.0F;
+    narrow.bank_width = 0.0F;
+    narrow.channel_smoothing = 0;
+    const auto result = run_watershed(h, WatershedOutputs{.water = &water}, narrow, 1, scratch);
+    EXPECT_GT(result.river_cells, 0UL);
+    EXPECT_EQ(wet_in_column(water, kColumn), 1);
+    EXPECT_GT(water.at(kColumn, kMiddle), 0.0F);
+    EXPECT_EQ(scratch.utilized, 0UL);
+  }
+
+  // With the defaults the bed is several cells across, and both the water and the carve fall away
+  // from the middle of it rather than stepping
+  Grid<float> h{doc};
+  make_valley(h);
+  const auto before = h.values;
+  Grid<float> water{doc};
+  water.assign(h.extents, 0.0F);
+  Grid<std::uint16_t> semantic{doc};
+  semantic.assign(h.extents, 0);
+  const WatershedOutputs outputs{.water = &water, .semantic = &semantic, .river_id = 1, .lake_id = 2};
+  const auto result = run_watershed(h, outputs, params, 1, scratch);
+  EXPECT_EQ(scratch.utilized, 0UL);
+  EXPECT_GT(result.river_cells, 0UL);
+  EXPECT_EQ(result.lake_cells, 0UL);
+  EXPECT_GT(wet_in_column(water, kColumn), 3);
+  // The semantics cover the whole widened bed, not just the flow line
+  int river_semantics = 0;
+  for (int y = 0; y < kHeight; ++y)
+  {
+    river_semantics += (semantic.at(kColumn, y) == 1) ? 1 : 0;
+  }
+  EXPECT_EQ(river_semantics, wet_in_column(water, kColumn));
+
+  // Away from the middle row: shallower water every step, and a carve that only lessens
+  int last_wet = kMiddle;
+  while (last_wet + 1 < kHeight and water.at(kColumn, last_wet + 1) > 1e-4F)
+  {
+    ++last_wet;
+  }
+  EXPECT_GT(last_wet, kMiddle + 2);
+  const auto carved = [&](int y) {
+    const std::size_t i = h.extents.index(kColumn, y);
+    return before[i] - h.values[i];
+  };
+  for (int y = kMiddle; y < last_wet; ++y)
+  {
+    EXPECT_LE(water.at(kColumn, y + 1), water.at(kColumn, y)) << "water deepens away from the channel at y=" << y;
+    EXPECT_LE(carved(y + 1), carved(y) + 1e-6F) << "the carve deepens away from the channel at y=" << y;
+  }
+  // The bank is a ramp rather than a wall: between the bed and dry ground are cells of its own,
+  // which is the whole point of the taper -- an edge the tiles and the preview can grade over
+  int ramp = 0;
+  for (int y = kMiddle; y <= last_wet; ++y)
+  {
+    const float f = water.at(kColumn, y) / water.at(kColumn, kMiddle);
+    ramp += (f > 0.05F and f < 0.9F) ? 1 : 0;
+  }
+  EXPECT_GE(ramp, 2);
+  EXPECT_LT(water.at(kColumn, last_wet), water.at(kColumn, kMiddle));
+  EXPECT_GT(carved(kMiddle), 0.0F);
+  // A river carrying more flow is wider: the valley collects all the way east
+  EXPECT_GT(wet_in_column(water, 56), wet_in_column(water, 8));
+
+  // However much flow collects, the bed stops widening at river_width_max
+  Grid<float> capped_height{doc};
+  make_valley(capped_height);
+  Grid<float> capped{doc};
+  capped.assign(capped_height.extents, 0.0F);
+  WatershedParams tight = params;
+  tight.river_width_max = 1.0F;
+  tight.bank_width = 0.0F;
+  tight.channel_smoothing = 0;
+  run_watershed(capped_height, WatershedOutputs{.water = &capped}, tight, 1, scratch);
+  EXPECT_EQ(wet_in_column(capped, 56), 3);
+  EXPECT_LT(wet_in_column(capped, 56), wet_in_column(water, 56));
+}
+
 namespace
 {
 
