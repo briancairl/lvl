@@ -924,6 +924,42 @@ instead of offering one, and lists the tile layers top-first as the viewport sta
 layer if the level has none, takes the undo snapshot, and reports how many cells changed. It is one
 undoable layer edit, not a job.
 
+**The collision pass has two modes, and the choice is the user's** (`level::CollisionDerive`).
+`kReplace` clears the layer first, so it ends up saying exactly what the tiles say -- which is what
+makes the pass re-runnable, since a wall whose tile has gone goes with it. `kAdd` unions onto what is
+there and clears nothing, which is how collision no tile accounts for survives: a wall painted by
+hand, or the water the water-shedding pass blocked. They are not the same pass run twice -- the
+additive one cannot take a wall away -- so neither is a safe default for the other's level, and
+getting it wrong the quiet way means a wiped wall.
+
+So it is **Edit > Refresh collision from tiles...**, a dialog like the semantic one, for the mode
+rather than for the layers: which layers are read is not a choice, as a cell's collision is the union
+of every visible one. `editor::refresh_collision` is the command (`App::collision`, a
+`CollisionRefresh`): it adds a collision layer if the level has none, takes the undo snapshot, and
+reports how many cells changed. Both modes count a cell as changed only if its mask really ends up
+different, which is why the pass gathers the visible layers' planes in `scratch` and decides each
+cell once rather than clearing the layer and ORing layer by layer.
+
+### ImGui ids
+
+Two visible items of one id in one window is an ImGui programmer error: it draws the "conflicting
+ID" tooltip, and the two items share one activation state, so pressing one makes the other look
+pressed. Two habits keep it out, and both are load-bearing rather than cosmetic:
+
+- **A helper that labels its own items takes an id from its caller**, since the same window may draw
+  it twice: `collision_edit` (the Tile metadata panel draws one for the tile and one for the batch
+  edit) and `deselect_all_button` (every batch context draws one, and the adjacency window's
+  palette-layout and batch-constraints sections are up together) both push that id around
+  themselves. A helper whose items are labelled by the caller -- `catalog_combo`, `layer_combo`,
+  `input_text` -- needs nothing, and a `##suffix` is enough where one item of a pair shares a label
+  with the other ("Ground type" and "Ground type##fill" in the Fill tab).
+- **A list of rows pushes the list's name as well as the row's index.** `PushID(i)` alone makes row
+  0 of one list and row 0 of the next the same item, which bites wherever a window holds several
+  lists whose rows start with a `delete_button` (it is labelled "x##delete" for all of them): the
+  Project panel's levels/tilesets/rule sets, the Objects panel's path graphs beside the portal and
+  marker rows (which push an entity id, a small number too), and the catalogs panel's two catalogs,
+  which is what its `PushID(title)` has always been for.
+
 ### Deleting
 
 Rows of layers, semantic types, materials, seasons, path graphs, portals/markers, tile groups,
@@ -1017,7 +1053,10 @@ one check to mark required:
 - `//core`: logging (incl. no interleaving across threads, death tests on `cond:`), memory, JSON/binary
   serialization and file errors (including a file written before a field existed still reading, via
   the header version in the serializer's context), JSON zero-heap check, jobs/random, images.
-- `//level`: model operations (resize, derivation -- including semantics squashed from chosen tile
+- `//level`: model operations (resize, derivation -- including collision replaced or only added to
+  (a cell blocked by hand surviving the additive pass and its wall outliving the tile, both going
+  when the pass replaces, a hidden layer counting for neither, and a re-run reporting no change) and
+  semantics squashed from chosen tile
   layers: the topmost tile that has a semantic type winning, a tile with none not masking the one
   below it, precedence following the level's order and not the caller's list, a subset of the layers,
   the unmatched cells cleared or kept, no layers named at all, and the tile read as drawn in the
@@ -1121,7 +1160,9 @@ one check to mark required:
   rather than duplicating it, selecting it, and leaving a second profile alone) and then removed with
   its objects, the semantic layer refreshed from two tile layers (the
   topmost winning, dropping it re-reading the one below, and the unmatched cells kept and then
-  cleared), a thirteen-tile terrain taken from one palette selection and painted (the
+  cleared), collision refreshed from the tiles in both modes (the
+  additive pass keeping a cell blocked by hand and the replacing one clearing it), a thirteen-tile
+  terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
   layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of

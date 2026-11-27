@@ -1039,6 +1039,32 @@ void refresh_semantics(App& app)
                  << " cell(s) changed";
 }
 
+void refresh_collision(App& app)
+{
+  level::Level& lv = *app.level;
+  CollisionRefresh& c = app.collision;
+  // A level with no collision layer gets one, as the old menu item did, so the command works on a
+  // map that never had one
+  std::size_t target = c.layer;
+  if (target >= lv.layers.size() or lv.layers[target].kind != level::LayerKind::kCollision)
+  {
+    target = level::find_layer(lv, level::LayerKind::kCollision);
+    if (target >= lv.layers.size())
+    {
+      target = level::add_layer(lv, level::LayerKind::kCollision, "collision");
+    }
+    c.layer = target;
+  }
+  app.undo.snapshot(lv, target, "Refresh collision");
+  c.changed = level::derive_collision(app.project->tilesets, lv, target, view_season(app), c.mode, app.memory.frame);
+  c.ran = true;
+  app.modified = app.modified or c.changed > 0;
+  invalidate_layer(app, target);
+  LVL_LOG_INFO() << "Refreshed collision from the tiles ("
+                 << (c.mode == level::CollisionDerive::kReplace ? "replacing" : "adding only") << "): " << c.changed
+                 << " cell(s) changed";
+}
+
 namespace
 {
 
@@ -1153,10 +1179,113 @@ void semantics_popup(App& app, bool open)
   ImGui::EndPopup();
 }
 
+/**
+ * @brief Edit > Refresh collision from tiles: the visible tile layers' collision masks unioned
+ *
+ * A dialog rather than a menu item because of the mode: which layers are read is not a choice (a
+ * cell's collision is the union of all of them), but what happens to collision no tile accounts for
+ * is -- and getting that wrong the quiet way, by wiping a wall that was painted by hand, is exactly
+ * what a confirmation is for.
+ */
+void collision_popup(App& app, bool open)
+{
+  level::Level& lv = *app.level;
+  CollisionRefresh& c = app.collision;
+  if (open)
+  {
+    c.layer = level::find_layer(lv, level::LayerKind::kCollision);
+    c.ran = false;
+    ImGui::OpenPopup("Refresh collision");
+  }
+  if (!ImGui::BeginPopupModal("Refresh collision", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    return;
+  }
+  ImGui::TextDisabled("Each cell takes the union of the collision masks of the tiles on every");
+  ImGui::TextDisabled("visible tile layer, as they are drawn this season.");
+
+  const std::size_t none = lv.layers.size();
+  if (c.layer < none and lv.layers[c.layer].kind == level::LayerKind::kCollision)
+  {
+    if (ImGui::BeginCombo("Collision layer", lv.layers[c.layer].name.c_str()))
+    {
+      for (std::size_t i = 0; i < lv.layers.size(); ++i)
+      {
+        if (
+          lv.layers[i].kind == level::LayerKind::kCollision and
+          ImGui::Selectable(format<96>("%s##%zu", lv.layers[i].name.c_str(), i), i == c.layer))
+        {
+          c.layer = i;
+        }
+      }
+      ImGui::EndCombo();
+    }
+  }
+  else
+  {
+    ImGui::TextDisabled("The level has no collision layer; one will be added.");
+  }
+
+  ImGui::SeparatorText("What happens to what the layer holds");
+  bool replace = (c.mode == level::CollisionDerive::kReplace);
+  if (ImGui::RadioButton("Replace it", replace))
+  {
+    c.mode = level::CollisionDerive::kReplace;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("The layer ends up saying exactly what the tiles say: every cell is cleared first, so a "
+                      "wall whose tile has gone goes with it. Collision painted by hand, or written by the "
+                      "water-shedding pass, goes too.");
+  }
+  if (ImGui::RadioButton("Add to it", !replace))
+  {
+    c.mode = level::CollisionDerive::kAdd;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Only ever sets bits, clearing nothing, so collision no tile accounts for survives -- at "
+                      "the price of not being able to take a wall away.");
+  }
+  std::size_t tile_layers = 0;
+  for (const level::Layer& layer : lv.layers)
+  {
+    tile_layers += (layer.kind == level::LayerKind::kTiles and layer.visible) ? 1 : 0;
+  }
+  ImGui::SeparatorText("");
+  if (tile_layers == 0)
+  {
+    ImGui::TextColored(
+      ImVec4{1.0F, 0.6F, 0.3F, 1.0F},
+      c.mode == level::CollisionDerive::kReplace ? "No visible tile layer, so the layer will be cleared."
+                                                 : "No visible tile layer, so nothing will change.");
+  }
+  else
+  {
+    ImGui::TextDisabled("Reading %zu visible tile layer(s).", tile_layers);
+  }
+  if (c.ran)
+  {
+    ImGui::TextDisabled("%zu cell(s) changed.", c.changed);
+  }
+
+  if (ImGui::Button("Refresh"))
+  {
+    refresh_collision(app);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Close") or ImGui::IsKeyPressed(ImGuiKey_Escape))
+  {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 void main_menu(App& app)
 {
   bool open_new = false;
   bool open_resize = false;
+  bool open_collision = false;
   bool open_semantics = false;
   if (ImGui::BeginMainMenuBar())
   {
@@ -1297,18 +1426,7 @@ void main_menu(App& app)
       }
       ImGui::Separator();
       open_resize = ImGui::MenuItem("Resize level...");
-      if (ImGui::MenuItem("Derive collision from tiles"))
-      {
-        std::size_t c = level::find_layer(*app.level, level::LayerKind::kCollision);
-        if (c == app.level->layers.size())
-        {
-          c = level::add_layer(*app.level, level::LayerKind::kCollision, "collision");
-        }
-        app.undo.snapshot(*app.level, c, "Derive collision");
-        level::derive_collision(app.project->tilesets, *app.level, c, view_season(app));
-        invalidate_layer(app, c);
-        app.modified = true;
-      }
+      open_collision = ImGui::MenuItem("Refresh collision from tiles...") or open_collision;
       open_semantics = ImGui::MenuItem("Refresh semantics from tiles...") or open_semantics;
       if (ImGui::MenuItem("Derive materials from tiles"))
       {
@@ -1382,6 +1500,7 @@ void main_menu(App& app)
   }
   new_level_popup(app, open_new);
   resize_popup(app, open_resize);
+  collision_popup(app, open_collision);
   semantics_popup(app, open_semantics);
 }
 
@@ -2838,7 +2957,56 @@ void smoke(App& app)
     ts.tiles[1].collision = level::collision::kNone;
     break;
   }
-  case 48:
+  case 48: {
+    // Edit > Refresh collision from tiles, in both modes: a tile that blocks put on a layer, and a
+    // cell of the mask blocked by hand beside it, which is what the two modes disagree about
+    project::Project& pr = *app.project;
+    level::Level& lv = *app.level;
+    const std::size_t tiles = level::find_layer(lv, level::LayerKind::kTiles);
+    const std::size_t col = level::find_layer(lv, level::LayerKind::kCollision);
+    if (app.tileset >= pr.tilesets.size() or tiles >= lv.layers.size() or col >= lv.layers.size())
+    {
+      report(app, Status::error("no tile or collision layer to refresh collision from"));
+      break;
+    }
+    pr.tilesets[app.tileset].tiles[0].collision = level::collision::kSolid;
+    lv.layers[tiles].visible = true;
+    plane<level::TileGrid>(lv.layers[tiles]).at(0, 0) = level::TileRef{static_cast<level::TileSetId>(app.tileset), 0};
+    // Cell (1,0) is emptied on every tile layer, so no tile accounts for it at all: this is a
+    // populated demo level, and a cell the tiles still cover would make the two modes agree
+    for (level::Layer& layer : lv.layers)
+    {
+      if (layer.kind == level::LayerKind::kTiles)
+      {
+        plane<level::TileGrid>(layer).at(1, 0) = level::kEmptyTile;
+      }
+    }
+    auto& mask = plane<level::MaskGrid>(lv.layers[col]);
+    mask.fill(level::collision::kNone);
+    mask.at(1, 0) = level::collision::kSolid;
+
+    app.collision = CollisionRefresh{};
+    app.collision.layer = col;
+    app.collision.mode = level::CollisionDerive::kAdd;
+    refresh_collision(app);
+    if (mask.at(0, 0) != level::collision::kSolid or mask.at(1, 0) != level::collision::kSolid)
+    {
+      report(app, Status::error("adding collision from the tiles did not keep the cell blocked by hand"));
+    }
+    if (!app.collision.ran or app.collision.changed == 0)
+    {
+      report(app, Status::error("the additive collision refresh reported nothing"));
+    }
+    // Replacing says exactly what the tiles say, so the cell no tile accounts for is cleared
+    app.collision.mode = level::CollisionDerive::kReplace;
+    refresh_collision(app);
+    if (mask.at(0, 0) != level::collision::kSolid or mask.at(1, 0) != level::collision::kNone)
+    {
+      report(app, Status::error("replacing the collision did not clear the cell no tile accounts for"));
+    }
+    break;
+  }
+  case 49:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -2847,7 +3015,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 49:
+  case 50:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

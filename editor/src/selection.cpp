@@ -97,9 +97,13 @@ bool selection_bounds(const App& app, SelectionBounds& out)
   return true;
 }
 
-bool deselect_all_button(App& app)
+bool deselect_all_button(App& app, const char* id)
 {
   const bool empty = app.selection.count == 0;
+  // Scoped by who is drawing it, because every batch context draws one and two of them share a
+  // window: the adjacency window's palette-layout and batch-constraints sections are both up at
+  // once, and two items of one ID in one window is what ImGui's "programmer error" popup is about
+  ImGui::PushID(id);
   ImGui::BeginDisabled(empty);
   const bool clicked = ImGui::SmallButton("Deselect all");
   ImGui::EndDisabled();
@@ -112,6 +116,7 @@ bool deselect_all_button(App& app)
   {
     app.selection.clear();
   }
+  ImGui::PopID();
   return clicked;
 }
 

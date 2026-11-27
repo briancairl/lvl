@@ -442,7 +442,7 @@ void fill_section(App& app)
   if (app.selection.count > 0)
   {
     ImGui::SameLine();
-    deselect_all_button(app);
+    deselect_all_button(app, "fill");
   }
   if (tiles.size() > 1)
   {
@@ -481,7 +481,9 @@ void fill_section(App& app)
   }
   if (g.fill_use_id and layer_combo("Semantic layer", lv, LayerKind::kSemantic, g.fill_id_layer))
   {
-    semantic_combo("Ground type", pr, g.fill_id);
+    // "##fill" because the checkbox above is labelled "Ground type" too, and two items of one ID in
+    // one window is what ImGui raises its "programmer error" popup over
+    semantic_combo("Ground type##fill", pr, g.fill_id);
   }
   ImGui::Checkbox("Only empty cells", &g.fill_only_empty);
   if (ImGui::IsItemHovered())

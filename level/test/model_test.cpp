@@ -312,14 +312,59 @@ TEST_F(LevelModel, DeriveCollisionAndMaterialsFromTiles)
   ground.at(0, 0) = TileRef{id, 0};
   ground.at(1, 0) = TileRef{id, 1};
   const auto col = find_layer(level, LayerKind::kCollision);
-  derive_collision(tilesets, level, col, "default");
+  EXPECT_EQ(derive_collision(tilesets, level, col, "default", CollisionDerive::kReplace, arena), 1UL);
   const auto& mask = plane<MaskGrid>(level.layers[col]);
   EXPECT_EQ(mask.at(0, 0), collision::kNone);
   EXPECT_EQ(mask.at(1, 0), collision::kSolid);
+  // Re-running changes nothing, so the count tells a real refresh from one that had nothing to do
+  EXPECT_EQ(derive_collision(tilesets, level, col, "default", CollisionDerive::kReplace, arena), 0UL);
 
   const auto mat = add_layer(level, LayerKind::kMaterial, "materials");
   derive_materials(tilesets, level, mat, "default");
   EXPECT_EQ(plane<IdGrid>(level.layers[mat]).at(1, 0), ts.tiles[1].material);
+}
+
+TEST_F(LevelModel, DeriveCollisionReplacesOrOnlyAdds)
+{
+  Level level{arena};
+  create_default(level, Settings{.extents = {3, 1}});
+  TileSets tilesets = memory::make_vector<TileSet>(arena);
+  tilesets.emplace_back(arena);
+  constexpr TileSetId id = 0;
+  auto& ts = tilesets.back();
+  ts.image_width = 32;
+  ts.image_height = 16;
+  reslice(ts);
+  ts.tiles[1].collision = collision::kSolid;
+  plane<TileGrid>(level.layers[1]).at(1, 0) = TileRef{id, 1};
+
+  // A wall of the level's own, which no tile accounts for: the water-shedding pass writes these, and
+  // so does painting the mask by hand
+  const auto col = find_layer(level, LayerKind::kCollision);
+  auto& mask = plane<MaskGrid>(level.layers[col]);
+  mask.at(2, 0) = collision::kSolid;
+
+  // Adding sets the tile's cell and leaves the hand-painted one alone
+  EXPECT_EQ(derive_collision(tilesets, level, col, "default", CollisionDerive::kAdd, arena), 1UL);
+  EXPECT_EQ(mask.at(1, 0), collision::kSolid);
+  EXPECT_EQ(mask.at(2, 0), collision::kSolid);
+  EXPECT_EQ(derive_collision(tilesets, level, col, "default", CollisionDerive::kAdd, arena), 0UL);
+
+  // Adding never takes a bit away, so the wall survives its tile going
+  plane<TileGrid>(level.layers[1]).at(1, 0) = kEmptyTile;
+  EXPECT_EQ(derive_collision(tilesets, level, col, "default", CollisionDerive::kAdd, arena), 0UL);
+  EXPECT_EQ(mask.at(1, 0), collision::kSolid);
+
+  // Replacing says exactly what the tiles say, so both of them go
+  EXPECT_EQ(derive_collision(tilesets, level, col, "default", CollisionDerive::kReplace, arena), 2UL);
+  EXPECT_EQ(mask.at(1, 0), collision::kNone);
+  EXPECT_EQ(mask.at(2, 0), collision::kNone);
+
+  // A hidden tile layer counts for neither mode
+  plane<TileGrid>(level.layers[1]).at(1, 0) = TileRef{id, 1};
+  level.layers[1].visible = false;
+  EXPECT_EQ(derive_collision(tilesets, level, col, "default", CollisionDerive::kAdd, arena), 0UL);
+  EXPECT_EQ(mask.at(1, 0), collision::kNone);
 }
 
 TEST_F(LevelModel, DeriveSemanticsSquashesTheChosenTileLayersTopFirst)

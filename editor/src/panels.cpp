@@ -26,9 +26,17 @@ namespace
 
 using namespace level;
 
-/// Collision mask editor: four quadrant toggles plus flags
-bool collision_edit(std::uint8_t& mask)
+/**
+ * @brief Collision mask editor: four quadrant toggles plus flags
+ *
+ * Its items are labelled once and for all ("##nw", "Platform", "Solid", ...), so it has to be told
+ * who is drawing it: the Tile metadata panel draws one for the tile and another for the batch edit,
+ * and two items of one ID in one window is what ImGui raises its "programmer error" popup over --
+ * besides making the two buttons share the one activation state.
+ */
+bool collision_edit(const char* id, std::uint8_t& mask)
 {
+  ImGui::PushID(id);
   bool changed = false;
   ImGui::TextUnformatted("Collision");
   const auto quadrant = [&](const char* id, std::uint8_t bit) {
@@ -74,6 +82,7 @@ bool collision_edit(std::uint8_t& mask)
     changed = true;
   }
   ImGui::EndGroup();
+  ImGui::PopID();
   return changed;
 }
 
@@ -256,7 +265,7 @@ void layers_panel(App& app)
         catalog_combo("Material", pr.materials, app.paint.material);
         break;
       case LayerKind::kCollision:
-        collision_edit(app.paint.collision);
+        collision_edit("paint", app.paint.collision);
         break;
       default:
         ImGui::TextDisabled("Brush mode/strength/value in the viewport toolbar");
@@ -780,7 +789,7 @@ void tilesets_panel(App& app)
     {
       ImGui::Text("%zu tiles selected", selection_size(app));
       ImGui::SameLine();
-      deselect_all_button(app);
+      deselect_all_button(app, "palette");
       ImGui::SameLine();
       ImGui::TextDisabled("(Tile metadata > Batch edit, Generate > WFC rules)");
     }
@@ -937,7 +946,7 @@ void batch_edit_section(App& app, TileSet& ts)
     if (count == 1)
     {
       ImGui::SameLine();
-      deselect_all_button(app);
+      deselect_all_button(app, "batch");
     }
     return;
   }
@@ -957,7 +966,7 @@ void batch_edit_section(App& app, TileSet& ts)
     ImGui::SetTooltip("Fills the fields below with the metadata of the tile shown above");
   }
   ImGui::SameLine();
-  if (deselect_all_button(app))
+  if (deselect_all_button(app, "batch"))
   {
     return;
   }
@@ -972,7 +981,7 @@ void batch_edit_section(App& app, TileSet& ts)
   batch_field("##batch_hidden", edit.set_hidden, [&] {
     ImGui::Checkbox("Hidden from palettes/generation##batch", &edit.hidden);
   });
-  batch_field("##batch_collision", edit.set_collision, [&] { collision_edit(edit.collision); });
+  batch_field("##batch_collision", edit.set_collision, [&] { collision_edit("batch", edit.collision); });
   batch_field("##batch_weight", edit.set_scatter_weight, [&] {
     ImGui::SetNextItemWidth(110.0F);
     ImGui::DragFloat("Scatter weight##batch", &edit.scatter_weight, 0.05F, 0.0F, 1000.0F, "%.2f");
@@ -1042,7 +1051,7 @@ void tile_meta_panel(App& app)
   ImGui::EndGroup();
   changed |= catalog_combo("Semantic type", pr.semantics, info.semantic);
   changed |= catalog_combo("Material", pr.materials, info.material);
-  changed |= collision_edit(info.collision);
+  changed |= collision_edit("tile", info.collision);
   ImGui::SetNextItemWidth(110.0F);
   changed |= ImGui::DragFloat("Scatter weight", &info.scatter_weight, 0.05F, 0.0F, 1000.0F, "%.2f");
   if (ImGui::IsItemHovered())
@@ -1366,6 +1375,9 @@ void project_panel(App& app)
   for (std::size_t i = 0; i < pr.levels.size(); ++i)
   {
     project::LevelEntry& entry = pr.levels[i];
+    // Scoped by the list as well as the row: every one of this window's lists starts its rows with a
+    // delete button, so a bare PushID(i) makes row 0 of each of them the same item to ImGui
+    ImGui::PushID("levels");
     ImGui::PushID(static_cast<int>(i));
     if (delete_button("Remove from the project (the file stays on disk)"))
     {
@@ -1410,6 +1422,7 @@ void project_panel(App& app)
         "%dx%d, %u portal(s)  %s", entry.extents.width, entry.extents.height, entry.portal_count, entry.file.c_str());
     }
     ImGui::PopID();
+    ImGui::PopID();
   }
   if (pr.levels.empty())
   {
@@ -1438,6 +1451,7 @@ void project_panel(App& app)
     const level::TileSet& ts = pr.tilesets[i];
     const bool outside =
       !ts.image.empty() and !app.project_path.empty() and !project::is_inside(pr.root.view(), ts.image.view());
+    ImGui::PushID("tilesets");
     ImGui::PushID(static_cast<int>(i));
     ImGui::BulletText("%s  %s", ts.name.c_str(), ts.image.empty() ? "(no atlas)" : ts.image.c_str());
     if (outside)
@@ -1456,6 +1470,7 @@ void project_panel(App& app)
         copy_asset_into_project(app, FileAction::kAtlasImage, ts.image.view());
       }
     }
+    ImGui::PopID();
     ImGui::PopID();
   }
   if (pr.tilesets.empty())
@@ -1481,6 +1496,7 @@ void project_panel(App& app)
   ImGui::SeparatorText("Rule sets");
   for (std::size_t i = 0; i < pr.rules.size(); ++i)
   {
+    ImGui::PushID("rules");
     ImGui::PushID(static_cast<int>(i));
     if (delete_button("Delete rule set"))
     {
@@ -1499,6 +1515,7 @@ void project_panel(App& app)
       used ? " (this level)" : "",
       pr.rules[i].wfc.tiles.size(),
       pr.rules[i].auto_tiles.terrains.size() + pr.rules[i].steps.terrains.size());
+    ImGui::PopID();
     ImGui::PopID();
   }
   if (ImGui::SmallButton("Add a rule set"))
@@ -1650,6 +1667,10 @@ void objects_panel(App& app)
     for (std::size_t g = 0; g < lv.graphs.size(); ++g)
     {
       PathGraph& graph = lv.graphs[g];
+      // A graph's index and an entity's integral are both small numbers, and the portal and marker
+      // rows below push theirs the same way, so the list needs a scope of its own: graph 0 and the
+      // entity numbered 0 would otherwise draw their delete buttons under one id
+      ImGui::PushID("graphs");
       ImGui::PushID(static_cast<int>(g));
       std::size_t nodes = 0;
       for (auto [e, node] : reg.view<PathNode>().each())
@@ -1674,6 +1695,7 @@ void objects_panel(App& app)
       {
         app.graph = static_cast<GraphId>(g);
       }
+      ImGui::PopID();
       ImGui::PopID();
     }
     if (app.graph < lv.graphs.size())
