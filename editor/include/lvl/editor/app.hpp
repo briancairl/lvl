@@ -363,6 +363,25 @@ struct SemanticDerive
   [[nodiscard]] std::size_t count() const { return layers.count(); }
 };
 
+/**
+ * @brief What Edit > Refresh collision from tiles writes (App::collision)
+ *
+ * No layers to choose, unlike the semantic derivation: a cell's collision is the union of every
+ * visible tile layer's, so there is nothing for the user to pick between. What there is to choose is
+ * what happens to collision the tiles do not account for, which is the mode.
+ */
+struct CollisionRefresh
+{
+  /// The collision layer written
+  std::size_t layer = 0;
+  /// Replace what the layer holds, or only add to it
+  level::CollisionDerive mode = level::CollisionDerive::kReplace;
+  /// Cells the last run changed, so the dialog can report it
+  std::size_t changed = 0;
+  /// Whether a run has happened, so "0 cells changed" can be told from "not run yet"
+  bool ran = false;
+};
+
 /// What a delete button removes
 enum class DeleteKind : std::uint8_t
 {
@@ -581,6 +600,8 @@ struct App
   level::TileEdit batch;
   /// What Edit > Refresh semantics from tiles reads and writes
   SemanticDerive derive;
+  /// What Edit > Refresh collision from tiles writes
+  CollisionRefresh collision;
   /// The tile group the paint tool stamps, if one is chosen
   GroupSelection group;
   /// Name the next group taken from the palette selection gets

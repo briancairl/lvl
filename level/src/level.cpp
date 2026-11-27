@@ -218,15 +218,58 @@ void for_each_visible_tile(const TileSets& tilesets, const Level& level, std::st
 
 }  // namespace
 
-void derive_collision(const TileSets& tilesets, Level& level, std::size_t collision_layer, std::string_view season)
+std::size_t derive_collision(
+  const TileSets& tilesets,
+  Level& level,
+  std::size_t collision_layer,
+  std::string_view season,
+  CollisionDerive mode,
+  memory::Arena& scratch)
 {
   LVL_ASSERT_LT(collision_layer, level.layers.size());
   LVL_ASSERT(level.layers[collision_layer].kind == LayerKind::kCollision);
   auto& out = plane<MaskGrid>(level.layers[collision_layer]);
-  out.fill(collision::kNone);
-  for_each_visible_tile(tilesets, level, season, [&out](std::size_t i, const TileSet& ts, TileIndex, TileIndex drawn) {
-    out.values[i] |= ts.tiles[drawn].collision;
-  });
+
+  memory::Scope scope{scratch};
+  // The visible tile layers' planes, so a cell's whole union is known before anything is written:
+  // that is what lets the two modes share one pass and still report what really changed -- clearing
+  // the layer first and ORing layer by layer would count a cell that ends up as it began
+  auto planes = memory::make_vector<const TileGrid*>(scratch);
+  planes.reserve(level.layers.size());
+  for (const Layer& layer : level.layers)
+  {
+    if (layer.kind != LayerKind::kTiles or !layer.visible)
+    {
+      continue;
+    }
+    if (const auto& g = plane<TileGrid>(layer); g.extents == out.extents)
+    {
+      planes.push_back(&g);
+    }
+  }
+
+  std::size_t changed = 0;
+  for (std::size_t i = 0; i < out.values.size(); ++i)
+  {
+    std::uint8_t mask = (mode == CollisionDerive::kAdd) ? out.values[i] : collision::kNone;
+    for (const TileGrid* g : planes)
+    {
+      const TileRef t = g->values[i];
+      if (t.empty() or t.tileset >= tilesets.size())
+      {
+        continue;
+      }
+      const TileSet& ts = tilesets[t.tileset];
+      const TileIndex drawn = seasonal_tile(ts, t.tile, season);
+      if (drawn < ts.tiles.size())
+      {
+        mask = static_cast<std::uint8_t>(mask | ts.tiles[drawn].collision);
+      }
+    }
+    changed += (mask != out.values[i]) ? 1 : 0;
+    out.values[i] = mask;
+  }
+  return changed;
 }
 
 void derive_materials(const TileSets& tilesets, Level& level, std::size_t material_layer, std::string_view season)

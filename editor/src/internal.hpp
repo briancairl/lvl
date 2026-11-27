@@ -278,6 +278,15 @@ void apply_scatter(App& app);
  */
 void refresh_semantics(App& app);
 
+/**
+ * @brief Edit > Refresh collision from tiles: the union of the visible tile layers' collision masks
+ *
+ * Adds a collision layer if the level has none, and records how many cells changed in
+ * <code>CollisionRefresh::changed</code>. <code>CollisionRefresh::mode</code> says whether what the
+ * layer already holds is replaced or only added to.
+ */
+void refresh_collision(App& app);
+
 /// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked
 bool deselect_all_button(App& app);
 

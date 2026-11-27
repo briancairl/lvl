@@ -142,13 +142,38 @@ GraphId add_graph(Level& level, std::string_view name, GraphKind kind);
 /// Removes a path graph and its nodes/edges
 void remove_graph(Level& level, GraphId id);
 
+/// What <code>derive_collision</code> does with the mask a cell already holds
+enum class CollisionDerive : std::uint8_t
+{
+  /// The layer says exactly what the tiles say: every cell is cleared first
+  kReplace,
+  /// Only ever sets bits, so a wall painted by hand or written by the water-shedding pass survives
+  kAdd,
+};
+
 /**
  * @brief Recomputes a collision layer from the tile layers' tile metadata
  *
  * Each cell gets the union of the collision masks of the tiles on every visible tile layer at that
  * cell, as drawn during <code>season</code>.
+ *
+ * <code>kReplace</code> clears the layer first, so what it ends up holding is exactly what the tiles
+ * say -- which is what makes the pass re-runnable: a wall whose tile has gone goes with it.
+ * <code>kAdd</code> unions onto what is there instead, clearing nothing, which is how collision that
+ * no tile accounts for -- painted by hand, or written by the water-shedding pass -- survives a
+ * refresh. The two are not the same pass run twice: the additive one cannot take a wall away, so it
+ * is the one to use on a level whose collision is partly its own.
+ *
+ * <code>scratch</code> holds one pointer per visible tile layer and is rewound on return. Returns how
+ * many cells changed.
  */
-void derive_collision(const TileSets& tilesets, Level& level, std::size_t collision_layer, std::string_view season);
+std::size_t derive_collision(
+  const TileSets& tilesets,
+  Level& level,
+  std::size_t collision_layer,
+  std::string_view season,
+  CollisionDerive mode,
+  memory::Arena& scratch);
 
 /// As derive_collision, for a material layer (topmost non-empty tile with a material wins)
 void derive_materials(const TileSets& tilesets, Level& level, std::size_t material_layer, std::string_view season);
