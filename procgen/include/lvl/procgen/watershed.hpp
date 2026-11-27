@@ -8,6 +8,13 @@
  * of rivers, lakes and tunnels. Each iteration carves the rivers found into the terrain, so later
  * iterations follow (and deepen) established channels.
  *
+ * A river is not a single cell: a cell just over <code>river_threshold</code> is the one cell it has
+ * always been, and past that the bed widens with the flow that collects in it
+ * (<code>river_width</code>, capped by <code>river_width_max</code>), tapering to nothing over
+ * <code>bank_width</code> cells of bank -- so a trunk river is wide, a headwater is not, and neither
+ * cuts a notch into the terrain. The heightmap, the water depth and the river semantic ids all
+ * follow that one profile.
+ *
  * Depressions are either filled (becoming lakes) or breached: the drainage path is cut through the
  * rim. Cuts deeper than <code>tunnel_threshold</code> become tunnels (water passes under the terrain,
  * which keeps its height); shallower cuts are carved as gorges.
@@ -70,6 +77,14 @@ struct WatershedParams
   float river_depth = 0.02F;
   /// Terrain lowered per unit of river depth, per iteration
   float carve = 0.5F;
+  /// Half-width a river bed gains per doubling of the flow it carries past the threshold, in cells
+  float river_width = 0.5F;
+  /// Largest half-width a bed reaches, however much flow collects in it
+  float river_width_max = 6.0F;
+  /// Cells of bank beyond the bed, over which the carve and the water taper to nothing
+  float bank_width = 1.5F;
+  /// Smoothing passes over the bed, so its depth does not jump where a tributary joins
+  int channel_smoothing = 1;
   DepressionMode mode = DepressionMode::kFillLakes;
   /// Minimum fill depth to count as lake
   float lake_min_depth = 0.002F;

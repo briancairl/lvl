@@ -98,6 +98,85 @@ float take(Grid<float>& h, float x, float y, float amount, int radius)
   return taken;
 }
 
+/**
+ * @brief The cross-section of a river bed at distance <code>d</code> from its centre line
+ *
+ * Flat out to <code>half</code>, then a smoothstep down to nothing over <code>bank</code> cells of
+ * bank, so the bed has a floor for tiles to sit on and still blends into the terrain around it.
+ */
+float channel_profile(float d, float half, float bank)
+{
+  if (d <= half)
+  {
+    return 1.0F;
+  }
+  if (bank <= 0.0F or d >= half + bank)
+  {
+    return 0.0F;
+  }
+  const float t = (d - half) / bank;
+  return 1.0F - t * t * (3.0F - 2.0F * t);
+}
+
+/**
+ * @brief Stamps a bed of <code>depth</code> and half-width <code>half</code> around (cx, cy)
+ *
+ * Stamps combine by keeping the deepest, rather than by accumulating: where channels overlap --
+ * along every stretch of river, since each of its cells stamps one, and at every confluence -- the
+ * sum would dig a hole far deeper than the river it came from.
+ */
+void splat_channel(float* bed, Extents e, int cx, int cy, float depth, float half, float bank)
+{
+  const int r = static_cast<int>(std::ceil(half + bank));
+  for (int dy = -r; dy <= r; ++dy)
+  {
+    for (int dx = -r; dx <= r; ++dx)
+    {
+      if (!e.contains(cx + dx, cy + dy))
+      {
+        continue;
+      }
+      const float w = channel_profile(std::sqrt(static_cast<float>(dx * dx + dy * dy)), half, bank);
+      if (w <= 0.0F)
+      {
+        continue;
+      }
+      float& cell = bed[e.index(cx + dx, cy + dy)];
+      cell = std::max(cell, depth * w);
+    }
+  }
+}
+
+/**
+ * @brief One 3x3 box pass of <code>src</code> into <code>dst</code>, over the cells of the grid
+ *
+ * Averaging leaves the inside of a flat region alone, so this keeps a bed's full depth while
+ * smoothing the steps in depth that <code>log2(flow)</code> leaves wherever a tributary joins.
+ */
+void box_blur(const float* src, float* dst, Extents e)
+{
+  for (int y = 0; y < e.height; ++y)
+  {
+    for (int x = 0; x < e.width; ++x)
+    {
+      float sum = 0.0F;
+      int count = 0;
+      for (int dy = -1; dy <= 1; ++dy)
+      {
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+          if (e.contains(x + dx, y + dy))
+          {
+            sum += src[e.index(x + dx, y + dy)];
+            ++count;
+          }
+        }
+      }
+      dst[e.index(x, y)] = sum / static_cast<float>(count);
+    }
+  }
+}
+
 struct FloodNode
 {
   float level;
@@ -208,6 +287,9 @@ WatershedResult run_watershed(
   auto visited = memory::make_vector<std::uint8_t>(scratch, n, std::uint8_t{0});
   auto cut = memory::make_vector<float>(scratch, n, 0.0F);
   auto flow = memory::make_vector<float>(scratch, n, 0.0F);
+  auto bed = memory::make_vector<float>(scratch, n, 0.0F);
+  auto blurred = memory::make_vector<float>(scratch, n, 0.0F);
+  auto tunnelled = memory::make_vector<std::uint8_t>(scratch, n, std::uint8_t{0});
   auto rank = memory::make_vector<std::uint32_t>(scratch, n, 0U);
   auto heap = memory::make_vector<FloodNode>(scratch);
   heap.reserve(n);
@@ -338,22 +420,65 @@ WatershedResult run_watershed(
       }
     }
 
-    // Carve into the terrain for the next iteration: breach cuts (except tunnels) and river beds
+    // Widen each channel into a bed: the cells carrying enough flow stamp a cross-section whose
+    // depth and half-width both follow the same log2(flow) term, so a river grows as water collects
+    // in it and its banks taper off into the terrain either side
+    std::fill(bed.begin(), bed.end(), 0.0F);
+    const float half_max = std::max(0.0F, p.river_width_max);
+    const float bank = std::max(0.0F, p.bank_width);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+      if (flow[i] < p.river_threshold)
+      {
+        continue;
+      }
+      const float scale = std::log2(flow[i] / p.river_threshold + 1.0F);
+      // A cell carrying just enough flow to be a river is still the one cell it always was: the
+      // width is what the flow gathers *past* the threshold, so only the trunks grow wide, and the
+      // bank narrows with the bed rather than ringing every trickle with the same two cells
+      const float grow = std::max(0.0F, scale - 1.0F);
+      const level::Cell c = e.cell(i);
+      splat_channel(
+        bed.data(),
+        e,
+        c.x,
+        c.y,
+        p.river_depth * scale,
+        std::min(std::max(0.0F, p.river_width) * grow, half_max),
+        bank * std::min(1.0F, grow));
+    }
+    // Smoothing works inside the bed the profile laid down, never outside it: a box pass spreads a
+    // ninth of a cell's depth into every neighbour, which is plenty to count as wet, so letting it
+    // write where there was no water would dilate every channel by a cell a pass and make the width
+    // the profile's business no longer. How wide a river is stays one question, how even it is
+    // another
+    for (int pass = 0; pass < p.channel_smoothing; ++pass)
+    {
+      box_blur(bed.data(), blurred.data(), e);
+      for (std::size_t i = 0; i < n; ++i)
+      {
+        if (bed[i] > 0.0F)
+        {
+          bed[i] = blurred[i];
+        }
+      }
+    }
+
+    // Carve into the terrain for the next iteration: breach cuts (except tunnels) and river beds.
+    // A tunnel keeps its height, so it has to be remembered rather than recomputed below: the bed
+    // its neighbours stamp covers it, and carving that would sink the ground the water runs under
     for (std::size_t i = 0; i < n; ++i)
     {
       const bool river = flow[i] >= p.river_threshold;
-      bool tunnel = false;
-      if (p.mode == DepressionMode::kBreach and cut[i] > 0.0F)
+      tunnelled[i] =
+        static_cast<std::uint8_t>(p.mode == DepressionMode::kBreach and river and cut[i] > p.tunnel_threshold);
+      if (p.mode == DepressionMode::kBreach and cut[i] > 0.0F and tunnelled[i] == 0)
       {
-        tunnel = river and cut[i] > p.tunnel_threshold;
-        if (!tunnel)
-        {
-          height.values[i] -= cut[i];
-        }
+        height.values[i] -= cut[i];
       }
-      if (river and !tunnel)
+      if (tunnelled[i] == 0)
       {
-        height.values[i] -= p.carve * p.river_depth * std::log2(flow[i] / p.river_threshold + 1.0F);
+        height.values[i] -= p.carve * bed[i];
       }
     }
     if (progress != nullptr)
@@ -362,15 +487,19 @@ WatershedResult run_watershed(
     }
   }
 
-  // Outputs from the final routing
+  // Outputs from the final routing, the rivers taken from the bed the last iteration carved so the
+  // water and the semantics cover the same widened, tapering channel the terrain does. A cell off
+  // the centre line counts as a river only where its bed holds water the preview would draw: the
+  // bank tapers to nothing, so anything less would tag dry cells as river
+  constexpr float kWet = 1e-4F;
   Grid<float>& water = *out.water;
   for (std::size_t i = 0; i < n; ++i)
   {
     float depth = 0.0F;
     std::uint16_t id = 0;
-    const bool river = flow[i] >= p.river_threshold;
-    const bool tunnel = (p.mode == DepressionMode::kBreach) and river and cut[i] > p.tunnel_threshold;
-    const float river_depth = river ? p.river_depth * std::log2(flow[i] / p.river_threshold + 1.0F) : 0.0F;
+    const bool tunnel = tunnelled[i] != 0;
+    const bool river = flow[i] >= p.river_threshold or bed[i] > kWet;
+    const float river_depth = (bed[i] > kWet) ? bed[i] : 0.0F;
     const float fill_depth = (p.mode == DepressionMode::kFillLakes) ? filled[i] - height.values[i] : 0.0F;
     // Shallow fills along carved river beds are still river; deeper than the river, it's a lake
     if (fill_depth > p.lake_min_depth and fill_depth > river_depth)
@@ -448,6 +577,10 @@ bool load(json::Reader& r, const Json& j, WatershedParams& v)
   r.get_optional(j, "river_threshold", v.river_threshold);
   r.get_optional(j, "river_depth", v.river_depth);
   r.get_optional(j, "carve", v.carve);
+  r.get_optional(j, "river_width", v.river_width);
+  r.get_optional(j, "river_width_max", v.river_width_max);
+  r.get_optional(j, "bank_width", v.bank_width);
+  r.get_optional(j, "channel_smoothing", v.channel_smoothing);
   r.get_optional(j, "mode", v.mode);
   r.get_optional(j, "lake_min_depth", v.lake_min_depth);
   r.get_optional(j, "tunnel_threshold", v.tunnel_threshold);
@@ -464,6 +597,10 @@ void save(Json& j, const WatershedParams& v)
   json::write(j, "river_threshold", v.river_threshold);
   json::write(j, "river_depth", v.river_depth);
   json::write(j, "carve", v.carve);
+  json::write(j, "river_width", v.river_width);
+  json::write(j, "river_width_max", v.river_width_max);
+  json::write(j, "bank_width", v.bank_width);
+  json::write(j, "channel_smoothing", v.channel_smoothing);
   json::write(j, "mode", v.mode);
   json::write(j, "lake_min_depth", v.lake_min_depth);
   json::write(j, "tunnel_threshold", v.tunnel_threshold);

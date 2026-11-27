@@ -1425,9 +1425,35 @@ void smoke(App& app)
     app.generators.watershed.iterations = 2;
     start_watershed(app);
     break;
-  case 3:
+  case 3: {
+    // Water-shedding should have left beds several cells across rather than one-cell cracks. The
+    // widths come from the generator's own defaults, so this is what checks that the path a user
+    // takes still asks for them
+    const std::size_t water = level::find_layer(*app.level, level::LayerKind::kWater);
+    if (water >= app.level->layers.size())
+    {
+      report(app, Status::error("water-shedding left no water layer"));
+      break;
+    }
+    const auto& wet = level::plane<level::ScalarGrid>(app.level->layers[water]);
+    constexpr float kWet = 1e-4F;
+    bool wide = false;
+    for (int y = 1; y + 1 < wet.height() and !wide; ++y)
+    {
+      for (int x = 1; x + 1 < wet.width() and !wide; ++x)
+      {
+        wide = wet.at(x, y) > kWet and
+          ((wet.at(x - 1, y) > kWet and wet.at(x + 1, y) > kWet) or
+           (wet.at(x, y - 1) > kWet and wet.at(x, y + 1) > kWet));
+      }
+    }
+    if (!wide)
+    {
+      report(app, Status::error("water-shedding left no river wider than one cell"));
+    }
     start_wfc(app, 1);
     break;
+  }
   case 4:
     // Undo the WFC run, then redo it
     if (!app.undo.can_undo())
