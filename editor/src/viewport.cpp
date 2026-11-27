@@ -1029,7 +1029,7 @@ void toolbar(App& app)
                           "rules > Auto-tiling.");
       }
     }
-    else
+    else if (kWfcUi)
     {
       ImGui::SetNextItemWidth(80.0F);
       ImGui::SliderInt("Refill", &app.auto_tile.radius, 1, 8);
@@ -1058,6 +1058,17 @@ void toolbar(App& app)
                             "neighbors instead. Those rules cannot prescribe inner and outer corners: give the tile a "
                             "terrain under View > Tile adjacency rules > Auto-tiling for that.");
         }
+      }
+    }
+    else
+    {
+      // With WFC held back (kWfcUi) a terrain is the only thing the tool can paint with, so a tile
+      // that has none says so rather than offering the fallback's settings
+      ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "no terrain for this tile");
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("The tile being painted belongs to no auto-tiling terrain, so nothing can be tiled around "
+                          "it. Give it one under View > Tile adjacency rules > Auto-tiling.");
       }
     }
   }
@@ -1108,6 +1119,15 @@ void auto_tile_stroke(App& app, std::size_t layer, const Cell* painted, std::siz
     status.cells = result.covered;
     status.changed = result.changed;
     status.trouble = result.missing;
+  }
+  else if (!kWfcUi)
+  {
+    // With WFC held back (kWfcUi) the fallback is not offered, so a tile with no terrain paints
+    // nothing and the toolbar says why
+    status.terrain = false;
+    status.name = "no terrain";
+    app.auto_tile_status = status;
+    return;
   }
   else
   {

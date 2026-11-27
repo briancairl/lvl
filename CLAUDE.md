@@ -477,10 +477,22 @@ own rather than a section of the Tilesets panel, because the tree, the chosen gr
 the "new group" fields together grow taller than the palette can spare -- and the palette is what
 they are used beside, since a group is made out of the palette selection. It repeats the tileset
 combo, so it stands on its own wherever it is docked, and choosing a tileset in either place is the
-same `App::tileset`. It holds the tree, a delete button per row, the chosen
-group drawn as it will be stamped with its name and folder, and "From the palette selection", which is how one is made --
-the palette is already how several tiles are picked and already how they are laid out, so the house
-in the atlas is the house on the map, holes included. Choosing a group sets `App::group` (a
+same `App::tileset`. **Making one comes first**: "From the palette selection" and the name and
+folder it gets are at the top, since that is what the palette beside the window is for, and the
+listing below them is a bordered child that **scrolls** (and can be dragged taller or shorter), so
+a tileset with many groups does not push the chosen group's preview off the bottom. The listing is
+the tree with a delete button per row, and under it the chosen group drawn as it will be stamped,
+with its name and folder. Taking one from the palette is how a group is made -- the palette is
+already how several tiles are picked and already how they are laid out, so the house in the atlas
+is the house on the map, holes included.
+
+**Shift+G in the Tilesets panel** asks for a group without leaving it: `App::new_group_prompt`
+raises `new_group_popup`, the same name and folder fields and the same "add" with a preview of the
+selection, and **no listing** -- the point is to name what is selected in the palette right now,
+and the palette is in the window underneath. The key belongs to the Tilesets panel (it fires only
+while that window or a child of it has focus) rather than to the global shortcuts, for the same
+reason; the shortcut table now ignores a shifted key, so Shift+G is no longer also the Fill tool's
+`G`. Choosing a group sets `App::group` (a
 `GroupSelection`: a tileset and a `GroupId`), and **`paint_stamp` returns it before anything else**,
 which is the whole of the stamping work: the paint tool, the hover footprint and the hover outline
 of the cells a stamp writes all go through that one function. A group and the palette selection are
@@ -821,6 +833,22 @@ off fills with the first selected tile instead, which is the plain whole-map fil
 
 A fill is instant even on a large map, so it is not a job; it is one undoable layer edit.
 
+### WFC is held back from the UI
+
+`editor::kWfcUi` (`editor/src/internal.hpp`) is `false`, and nothing in the UI reaches
+wave-function collapse while it is: the Generate panel's **WFC** tab, the adjacency rules window's
+**WFC** tab and the pop-out **neighbor editor** (its View menu item with it) are not drawn, and the
+Auto tool paints only with an auto-tiling terrain -- a tile with no terrain says so in the toolbar
+rather than falling back to scoring the adjacencies. `App::rules_mode` therefore defaults to
+`kAutoTile`, and the rules window moves a request for the WFC tab to it.
+
+Everything behind the flag is untouched and still built: `level::WfcRules`, `procgen::solve`,
+`procgen::autotile`, the rule file that carries the adjacencies beside the terrains (so importing
+and exporting a rule set still round-trips them), the jobs, and every test over all of it. The
+scripted session follows the flag rather than skipping the steps, so the code keeps being compiled
+and exercised. It is a `constexpr bool` and not a preprocessor switch for that reason: turning WFC
+back on is the one edit it takes.
+
 ### Tile adjacency rules
 
 Both kinds of rules live in one window, `adjacency_window` (View > Tile adjacency rules,
@@ -828,7 +856,7 @@ Both kinds of rules live in one window, `adjacency_window` (View > Tile adjacenc
 that carries both are shared, and `App::rules_mode` is the tab (it is the source of truth, so
 another panel or the scripted test can switch tabs).
 
-The **WFC** tab holds "Add palette tile(s)", the rules from the palette layout, the rule-tile strip,
+The **WFC** tab (not drawn while `kWfcUi` is off) holds "Add palette tile(s)", the rules from the palette layout, the rule-tile strip,
 the selected tile's constraints, the batch constraints and the allowed neighbors per direction. The
 generators read `level::WfcRules`, so this is not a tab of the Generate panel; the Generate panel's
 WFC tab shows how many tiles and adjacencies it holds and has an "Edit rules..." button that opens
@@ -1158,7 +1186,8 @@ one check to mark required:
   multi-tile paint stamp, the palette overlays drawn over a tile that has a semantic type, a material
   and collision and over one that has none of them, a tile group made out of the palette selection, chosen, stamped holes and
   all, filed under a folder (still found by name, its segments split, and the list ordered for the
-  tree) and deleted (which stops the stamping), a scatter profile naming that group placing it over
+  tree), the Shift+G New group prompt drawn and cancelled without adding one, and the group deleted
+  (which stops the stamping), a scatter profile naming that group placing it over
   the map (every placement whole, none written over another, and the profile marking the project
   modified), exported and read back into the project that already held it by name (replacing it
   rather than duplicating it, selecting it, and leaving a second profile alone) and then removed with

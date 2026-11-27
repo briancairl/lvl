@@ -293,10 +293,165 @@ namespace
 {
 
 /**
- * @brief The tileset's named multi-tile stamps: the list, what is chosen, and how one is made
+ * @brief Adds the palette selection as a group named by App::group_name
  *
  * A group is made out of the palette selection, because that is already how several tiles are
  * picked and already how they are laid out -- the house in the atlas is the house on the map.
+ *
+ * @return true if a group was added (or the one of that name replaced)
+ */
+bool add_group_from_selection(App& app, TileSet& ts)
+{
+  memory::Scope scope{app.memory.frame};
+  Grid<TileRef> layout{app.memory.frame};
+  if (!palette_layout(app, layout))
+  {
+    report(app, Status::error("the palette selection is empty"));
+    return false;
+  }
+  // Only this tileset's tiles can be in its own group; the selection is of one tileset anyway
+  auto cells = memory::make_vector<TileIndex>(app.memory.frame, layout.extents.count(), kNoTileIndex);
+  for (std::size_t i = 0; i < layout.extents.count(); ++i)
+  {
+    const TileRef tile = layout.values[i];
+    cells[i] = (tile.empty() or tile.tileset != app.tileset) ? kNoTileIndex : tile.tile;
+  }
+  const GroupId id = set_group(ts, app.group_name.view(), layout.extents, cells.data());
+  if (id == kNoGroup)
+  {
+    report(app, Status::error("could not add tile group '%s'", app.group_name.c_str()));
+    return false;
+  }
+  ts.groups[id].folder = app.group_folder;
+  LVL_LOG_INFO() << "Tile group '" << app.group_name.c_str() << "' holds " << layout.extents.width << "x"
+                 << layout.extents.height << " cells";
+  app.project_modified = true;
+  choose_group(app, id);
+  return true;
+}
+
+/// Whether the New group fields and the palette selection are enough to make a group
+bool can_add_group(const App& app) { return selection_size(app) > 0 and !app.group_name.empty(); }
+
+/// Tooltip saying what the New group button still wants
+const char* new_group_hint(const App& app)
+{
+  if (selection_size(app) == 0)
+  {
+    return "Select the group's tiles in the palette first";
+  }
+  return app.group_name.empty() ? "Name the group first"
+                                : "Adds the selection as a group, or replaces the one of that name";
+}
+
+/**
+ * @brief The "New group" fields: the name, the folder and the button that takes the selection
+ *
+ * It is what the Tile groups window puts above its listing and what the Shift+G prompt is, so the
+ * two ask for a group in the same words.
+ */
+void new_group_section(App& app, TileSet& ts)
+{
+  ImGui::SetNextItemWidth(160.0F);
+  input_text("Name##new_group", app.group_name);
+  ImGui::SetNextItemWidth(160.0F);
+  input_text("Folder##new_group", app.group_folder);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!can_add_group(app));
+  const bool add = ImGui::Button("From the palette selection");
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+  {
+    ImGui::SetTooltip("%s", new_group_hint(app));
+  }
+  if (add)
+  {
+    add_group_from_selection(app, ts);
+  }
+}
+
+/// The tileset's groups as a folder tree, so a tileset with a hundred of them stays pickable
+void groups_tree(App& app, TileSet& ts)
+{
+  if (ts.groups.empty())
+  {
+    ImGui::TextDisabled("This tileset has no groups.");
+    return;
+  }
+  memory::Scope tree_scope{app.memory.frame};
+  const auto order = group_order(ts, app.memory.frame);
+  group_tree(ts, order.data(), order.size(), 0, [&app, &ts](GroupId id) {
+    const TileGroup& group = ts.groups[id];
+    ImGui::PushID(static_cast<int>(id));
+    if (delete_button("Remove this tile group"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kTileGroup,
+          .index = id,
+          .owner = app.tileset,
+          .what = format<128>("tile group '%s'", group.name.c_str()),
+          .detail = "Only the group goes; the tiles it stamped onto the map stay where they are."});
+    }
+    const bool chosen = app.group.tileset == app.tileset and app.group.group == id;
+    if (ImGui::Selectable(format<96>("%s  (%d x %d)", group.name.c_str(), group.size.width, group.size.height), chosen))
+    {
+      choose_group(app, chosen ? kNoGroup : id);
+    }
+    ImGui::PopID();
+  });
+}
+
+/// The chosen group's name, folder and footprint, drawn as it will be stamped (a hole is a gap)
+void chosen_group_section(App& app, TileSet& ts)
+{
+  const TileGroup* group = chosen_group(app);
+  if (group == nullptr or app.group.tileset != app.tileset)
+  {
+    return;
+  }
+  ImGui::SeparatorText(group->name.c_str());
+  if (input_text("Name##group", ts.groups[app.group.group].name))
+  {
+    app.project_modified = true;
+  }
+  if (input_text("Folder##group", ts.groups[app.group.group].folder))
+  {
+    app.project_modified = true;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Where this group is filed in the list, '/'-separated (\"nature/trees\"). Organisation "
+                      "only: a group is found by name, so re-filing it breaks nothing that points at it.");
+  }
+  const float thumb = 24.0F;
+  for (int y = 0; y < group->size.height; ++y)
+  {
+    for (int x = 0; x < group->size.width; ++x)
+    {
+      if (x > 0)
+      {
+        ImGui::SameLine();
+      }
+      if (const TileIndex tile = group_cell(ts, *group, x, y); tile == kNoTileIndex)
+      {
+        ImGui::Dummy(ImVec2{thumb, thumb});
+      }
+      else
+      {
+        tile_image(app, TileRef{static_cast<TileSetId>(app.tileset), tile}, thumb);
+      }
+    }
+  }
+}
+
+/**
+ * @brief The tileset's named multi-tile stamps: how one is made, then the ones it has
+ *
+ * Making one comes first, since that is what the palette beside it is for; the listing is a
+ * scrolling section of its own, so a tileset with many groups does not push the chosen group's
+ * preview off the bottom of the window.
  */
 void groups_section(App& app, TileSet& ts)
 {
@@ -314,126 +469,72 @@ void groups_section(App& app, TileSet& ts)
       app.group.clear();
     }
   }
-  if (ts.groups.empty())
-  {
-    ImGui::TextDisabled("This tileset has no groups.");
-  }
-  // Drawn as a folder tree, so a tileset with a hundred groups stays pickable
-  {
-    memory::Scope tree_scope{app.memory.frame};
-    const auto order = group_order(ts, app.memory.frame);
-    group_tree(ts, order.data(), order.size(), 0, [&app, &ts](GroupId id) {
-      const TileGroup& group = ts.groups[id];
-      ImGui::PushID(static_cast<int>(id));
-      if (delete_button("Remove this tile group"))
-      {
-        request_delete(
-          app,
-          PendingDelete{
-            .kind = DeleteKind::kTileGroup,
-            .index = id,
-            .owner = app.tileset,
-            .what = format<128>("tile group '%s'", group.name.c_str()),
-            .detail = "Only the group goes; the tiles it stamped onto the map stay where they are."});
-      }
-      const bool chosen = app.group.tileset == app.tileset and app.group.group == id;
-      if (ImGui::Selectable(
-            format<96>("%s  (%d x %d)", group.name.c_str(), group.size.width, group.size.height), chosen))
-      {
-        choose_group(app, chosen ? kNoGroup : id);
-      }
-      ImGui::PopID();
-    });
-  }
-
-  // The chosen group, drawn as it will be stamped (a hole shows through as a gap)
-  if (const TileGroup* group = chosen_group(app); group != nullptr and app.group.tileset == app.tileset)
-  {
-    ImGui::SeparatorText(group->name.c_str());
-    if (input_text("Name##group", ts.groups[app.group.group].name))
-    {
-      app.project_modified = true;
-    }
-    if (input_text("Folder##group", ts.groups[app.group.group].folder))
-    {
-      app.project_modified = true;
-    }
-    if (ImGui::IsItemHovered())
-    {
-      ImGui::SetTooltip("Where this group is filed in the list, '/'-separated (\"nature/trees\"). Organisation "
-                        "only: a group is found by name, so re-filing it breaks nothing that points at it.");
-    }
-    const float thumb = 24.0F;
-    for (int y = 0; y < group->size.height; ++y)
-    {
-      for (int x = 0; x < group->size.width; ++x)
-      {
-        if (x > 0)
-        {
-          ImGui::SameLine();
-        }
-        if (const TileIndex tile = group_cell(ts, *group, x, y); tile == kNoTileIndex)
-        {
-          ImGui::Dummy(ImVec2{thumb, thumb});
-        }
-        else
-        {
-          tile_image(app, TileRef{static_cast<TileSetId>(app.tileset), tile}, thumb);
-        }
-      }
-    }
-  }
-
   ImGui::SeparatorText("New group");
-  const std::size_t selected = selection_size(app);
-  ImGui::SetNextItemWidth(160.0F);
-  input_text("Name##new_group", app.group_name);
-  ImGui::SetNextItemWidth(160.0F);
-  input_text("Folder##new_group", app.group_folder);
-  ImGui::SameLine();
-  const bool ready = selected > 0 and !app.group_name.empty();
+  new_group_section(app, ts);
+  ImGui::SeparatorText(format<64>("%zu group%s", ts.groups.size(), ts.groups.size() == 1 ? "" : "s"));
+  // Scrolls, and can be dragged taller or shorter: the tree is the part that grows without bound
+  ImGui::BeginChild(
+    "groups", ImVec2{0, 10 * ImGui::GetTextLineHeightWithSpacing()}, ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY);
+  groups_tree(app, ts);
+  ImGui::EndChild();
+  chosen_group_section(app, ts);
+}
+
+/**
+ * @brief The New group controls as a modal, which Shift+G in the Tilesets panel raises
+ *
+ * The listing is deliberately left out: the point of the prompt is to name what is selected in the
+ * palette right now without going to the Tile groups window for it, and the palette is in the
+ * window underneath.
+ */
+void new_group_popup(App& app, TileSet& ts)
+{
+  if (!app.new_group_prompt)
+  {
+    return;
+  }
+  ImGui::OpenPopup("New tile group");
+  if (!ImGui::BeginPopupModal("New tile group", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    return;
+  }
+  ImGui::TextDisabled("The palette selection, stamped as one thing.");
+  if (selection_size(app) == 0)
+  {
+    ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "Nothing is selected in the palette.");
+  }
+  else
+  {
+    selection_preview(app, 24.0F, 4);
+  }
+  ImGui::SetNextItemWidth(200.0F);
+  input_text("Name", app.group_name);
+  ImGui::SetNextItemWidth(200.0F);
+  input_text("Folder", app.group_folder);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Where the group is filed in the list, '/'-separated (\"nature/trees\")");
+  }
+  const bool ready = can_add_group(app);
   ImGui::BeginDisabled(!ready);
-  const bool add = ImGui::Button("From the palette selection");
+  // Enter adds it, as it takes the other prompts' first button
+  const bool add = ImGui::Button("Add group") or (ready and ImGui::IsKeyPressed(ImGuiKey_Enter));
   ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+  if (!ready and ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
   {
-    ImGui::SetTooltip(
-      selected == 0 ? "Select the group's tiles in the palette first"
-                    : (app.group_name.empty() ? "Name the group first"
-                                              : "Adds the selection as a group, or replaces the one of that name"));
+    ImGui::SetTooltip("%s", new_group_hint(app));
   }
-  if (add)
+  ImGui::SameLine();
+  const bool cancel = ImGui::Button("Cancel") or ImGui::IsKeyPressed(ImGuiKey_Escape);
+  if (cancel or (add and add_group_from_selection(app, ts)))
   {
-    memory::Scope scope{app.memory.frame};
-    Grid<TileRef> layout{app.memory.frame};
-    if (!palette_layout(app, layout))
-    {
-      report(app, Status::error("the palette selection is empty"));
-    }
-    else
-    {
-      // Only this tileset's tiles can be in its own group; the selection is of one tileset anyway
-      auto cells = memory::make_vector<TileIndex>(app.memory.frame, layout.extents.count(), kNoTileIndex);
-      for (std::size_t i = 0; i < layout.extents.count(); ++i)
-      {
-        const TileRef tile = layout.values[i];
-        cells[i] = (tile.empty() or tile.tileset != app.tileset) ? kNoTileIndex : tile.tile;
-      }
-      const GroupId id = set_group(ts, app.group_name.view(), layout.extents, cells.data());
-      if (id == kNoGroup)
-      {
-        report(app, Status::error("could not add tile group '%s'", app.group_name.c_str()));
-      }
-      else
-      {
-        ts.groups[id].folder = app.group_folder;
-        LVL_LOG_INFO() << "Tile group '" << app.group_name.c_str() << "' holds " << layout.extents.width << "x"
-                       << layout.extents.height << " cells";
-        app.project_modified = true;
-        choose_group(app, id);
-      }
-    }
+    app.new_group_prompt = false;
   }
+  if (!app.new_group_prompt)
+  {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
 }
 
 }  // namespace
@@ -775,7 +876,17 @@ void tilesets_panel(App& app)
     ImGui::SetTooltip("Opens the Tile groups window: this tileset's named multi-tile stamps");
   }
   ImGui::SameLine();
-  ImGui::TextDisabled("%zu group%s", ts.groups.size(), ts.groups.size() == 1 ? "" : "s");
+  ImGui::TextDisabled("%zu group%s (shift+G: new)", ts.groups.size(), ts.groups.size() == 1 ? "" : "s");
+  // Shift+G asks for a group out of the palette selection without leaving this panel, which is
+  // where the selection is made. It belongs to the panel rather than to the global shortcuts
+  // because it is the palette underneath that it acts on.
+  if (
+    ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) and !ImGui::GetIO().WantTextInput and
+    ImGui::GetIO().KeyShift and !ImGui::GetIO().KeyCtrl and ImGui::IsKeyPressed(ImGuiKey_G))
+  {
+    app.new_group_prompt = true;
+  }
+  new_group_popup(app, ts);
 
   if (ImGui::CollapsingHeader("Palette", ImGuiTreeNodeFlags_DefaultOpen))
   {

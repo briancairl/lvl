@@ -608,6 +608,8 @@ struct App
   FixedString<64> group_name;
   /// Folder the next group is filed under ('/'-separated; empty is the top level)
   FixedString<64> group_folder;
+  /// Shift+G in the Tilesets panel: the New group prompt is up (the fields without the listing)
+  bool new_group_prompt = false;
   /// Selected object (portal, marker or path node)
   level::Entity entity = level::kNullEntity;
   level::GraphId graph = 0;
@@ -623,8 +625,8 @@ struct App
   bool wfc_preview = true;
   /// What the batch edit applies to the constraints of the selected rule tiles
   level::WfcTileEdit wfc_batch;
-  /// Which kind of rules the rules window is editing
-  RulesMode rules_mode = RulesMode::kWfc;
+  /// Which kind of rules the rules window is editing (never kWfc while kWfcUi is off)
+  RulesMode rules_mode = RulesMode::kAutoTile;
   /// Auto-tiling rules: the terrain being edited
   level::TerrainId terrain = 0;
   /// Height-step rules: the terrain being edited

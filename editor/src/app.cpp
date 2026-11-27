@@ -912,11 +912,15 @@ void shortcuts(App& app)
     {ImGuiKey_N, Tool::kPathNode},
     {ImGuiKey_K, Tool::kPathEdge},
   };
-  for (const auto& h : kHotkeys)
+  // Unmodified keys: shift+G is the Tilesets panel's "new group", not the Fill tool
+  if (!io.KeyShift)
   {
-    if (ImGui::IsKeyPressed(h.key, false))
+    for (const auto& h : kHotkeys)
     {
-      app.tool = h.tool;
+      if (ImGui::IsKeyPressed(h.key, false))
+      {
+        app.tool = h.tool;
+      }
     }
   }
   if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket))
@@ -1460,7 +1464,11 @@ void main_menu(App& app)
       ImGui::MenuItem("Project", nullptr, &app.panels.project);
       ImGui::MenuItem("Generate", nullptr, &app.panels.generate);
       ImGui::MenuItem("Tile adjacency rules", nullptr, &app.panels.adjacency);
-      ImGui::MenuItem("Tile neighbors", nullptr, &app.panels.neighbors);
+      if (kWfcUi)
+      {
+        // The neighbor editor edits the WFC adjacencies alone, which are held back for now
+        ImGui::MenuItem("Tile neighbors", nullptr, &app.panels.neighbors);
+      }
       ImGui::MenuItem("Objects & paths", nullptr, &app.panels.objects);
       ImGui::MenuItem("Mini-preview", nullptr, &app.panels.minimap);
       ImGui::MenuItem("Log", nullptr, &app.panels.log);
@@ -1639,10 +1647,10 @@ void smoke(App& app)
     close_file_dialog(app);
     break;
   case 17:
-    // The adjacency rules window and the neighbor editor draw for a frame; corner rules are
-    // derived from the sides
+    // The adjacency rules window draws for a frame; corner rules are derived from the sides. The
+    // neighbor editor is only shown while the WFC UI is (kWfcUi), so the window follows the flag.
     app.panels.adjacency = true;
-    app.panels.neighbors = true;
+    app.panels.neighbors = kWfcUi;
     rule_set(app).wfc.diagonals = true;
     level::derive_diagonals(rule_set(app).wfc, app.memory.frame);
     if (level::diagonal_count(rule_set(app).wfc) == 0)
@@ -2254,7 +2262,7 @@ void smoke(App& app)
     {
       report(app, Status::error("drawing the steps again moved tiles"));
     }
-    app.rules_mode = RulesMode::kWfc;
+    app.rules_mode = kWfcUi ? RulesMode::kWfc : RulesMode::kAutoTile;
     break;
   }
   case 26: {
@@ -2719,9 +2727,27 @@ void smoke(App& app)
     {
       report(app, Status::error("removing the second tile group disturbed the first"));
     }
+    // Shift+G in the Tilesets panel: the New group fields as a modal, which the next frame draws
+    app.group_name = "prompted";
+    app.group_folder = "nature/huts";
+    app.new_group_prompt = true;
     break;
   }
   case 42: {
+    // The New group prompt drew, and cancelling it (Escape, or its Cancel button) adds nothing
+    project::Project& pr = *app.project;
+    if (!app.new_group_prompt)
+    {
+      report(app, Status::error("the New group prompt went away on its own"));
+    }
+    app.new_group_prompt = false;
+    if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "prompted") != level::kNoGroup)
+    {
+      report(app, Status::error("the New group prompt added a group before it was answered"));
+    }
+    break;
+  }
+  case 43: {
     // Scattering that group over the map (Generate > Scatter): a profile naming it, the criteria
     // off so the whole map is fair game, and every placement whole and clear of the others
     project::Project& pr = *app.project;
@@ -2781,7 +2807,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 43: {
+  case 44: {
     // A profile is a file of its own: exported, it reads back into a project that already holds it
     // by name rather than becoming a second copy, and other profiles sit beside it untouched
     project::Project& pr = *app.project;
@@ -2839,7 +2865,7 @@ void smoke(App& app)
       .confirmed = true};
     break;
   }
-  case 44: {
+  case 45: {
     const project::Project& pr = *app.project;
     if (project::find_scatter(pr, "huts") != project::kNoScatterProfile)
     {
@@ -2865,7 +2891,7 @@ void smoke(App& app)
       .confirmed = true};
     break;
   }
-  case 45: {
+  case 46: {
     // The delete was applied at the end of the last frame, and stamping stopped with it
     const project::Project& pr = *app.project;
     if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "hut") != level::kNoGroup)
@@ -2878,7 +2904,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 46: {
+  case 47: {
     // Refreshing the semantic layer from the tile layers: the topmost tile that has a semantic type
     // is the one that lands, which is the whole point of reading them as a stack
     level::Level& lv = *app.level;
@@ -2955,7 +2981,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 47: {
+  case 48: {
     // The palette overlays: the tile metadata drawn over the atlas, so a tile with none is obvious.
     // All three on at once, with a tile given a semantic type and a material and the one beside it
     // left bare, which is the pair the stripes have to tell apart.
@@ -2983,7 +3009,7 @@ void smoke(App& app)
     ts.tiles[1].collision = level::collision::kNone;
     break;
   }
-  case 48: {
+  case 49: {
     // Edit > Refresh collision from tiles, in both modes: a tile that blocks put on a layer, and a
     // cell of the mask blocked by hand beside it, which is what the two modes disagree about
     project::Project& pr = *app.project;
@@ -3032,7 +3058,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 49:
+  case 50:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -3041,7 +3067,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 50:
+  case 51:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -3314,7 +3340,7 @@ void frame(App& app)
   {
     adjacency_window(app);
   }
-  if (app.panels.neighbors)
+  if (kWfcUi and app.panels.neighbors)
   {
     neighbors_window(app);
   }

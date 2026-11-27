@@ -1480,7 +1480,8 @@ void generate_panel(App& app)
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("WFC"))
+    // WFC is held back for now (kWfcUi), so the tab that runs it is not offered
+    if (kWfcUi and ImGui::BeginTabItem("WFC"))
     {
       ImGui::BeginChild("tab");
       wfc_section(app);
