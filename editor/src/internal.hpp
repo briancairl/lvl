@@ -287,8 +287,13 @@ void refresh_semantics(App& app);
  */
 void refresh_collision(App& app);
 
-/// A "Deselect all" button (disabled with nothing selected); empties the palette selection when clicked
-bool deselect_all_button(App& app);
+/**
+ * @brief A "Deselect all" button (disabled with nothing selected); empties the palette selection
+ *
+ * <code>id</code> says who is drawing it, since several batch contexts draw one and two of them
+ * share a window; it never shows, so it is a word for the section rather than a label.
+ */
+bool deselect_all_button(App& app, const char* id);
 
 /// Fills <code>out</code> (an arena-backed grid) with the selected tiles as the palette lays them
 /// out, empty where a cell of the rectangle is not selected; false if nothing is selected

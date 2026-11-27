@@ -442,7 +442,7 @@ void fill_section(App& app)
   if (app.selection.count > 0)
   {
     ImGui::SameLine();
-    deselect_all_button(app);
+    deselect_all_button(app, "fill");
   }
   if (tiles.size() > 1)
   {

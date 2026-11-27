@@ -940,6 +940,26 @@ reports how many cells changed. Both modes count a cell as changed only if its m
 different, which is why the pass gathers the visible layers' planes in `scratch` and decides each
 cell once rather than clearing the layer and ORing layer by layer.
 
+### ImGui ids
+
+Two visible items of one id in one window is an ImGui programmer error: it draws the "conflicting
+ID" tooltip, and the two items share one activation state, so pressing one makes the other look
+pressed. Two habits keep it out, and both are load-bearing rather than cosmetic:
+
+- **A helper that labels its own items takes an id from its caller**, since the same window may draw
+  it twice: `collision_edit` (the Tile metadata panel draws one for the tile and one for the batch
+  edit) and `deselect_all_button` (every batch context draws one, and the adjacency window's
+  palette-layout and batch-constraints sections are up together) both push that id around
+  themselves. A helper whose items are labelled by the caller -- `catalog_combo`, `layer_combo`,
+  `input_text` -- needs nothing, and a `##suffix` is enough where one item of a pair shares a label
+  with the other ("Ground type" and "Ground type##fill" in the Fill tab).
+- **A list of rows pushes the list's name as well as the row's index.** `PushID(i)` alone makes row
+  0 of one list and row 0 of the next the same item, which bites wherever a window holds several
+  lists whose rows start with a `delete_button` (it is labelled "x##delete" for all of them): the
+  Project panel's levels/tilesets/rule sets, the Objects panel's path graphs beside the portal and
+  marker rows (which push an entity id, a small number too), and the catalogs panel's two catalogs,
+  which is what its `PushID(title)` has always been for.
+
 ### Deleting
 
 Rows of layers, semantic types, materials, seasons, path graphs, portals/markers, tile groups,

@@ -88,7 +88,7 @@ void palette_layout_section(App& app)
     if (selection_size(app) == 1)
     {
       ImGui::SameLine();
-      deselect_all_button(app);
+      deselect_all_button(app, "wfc_layout");
     }
     return;
   }
@@ -124,7 +124,7 @@ void palette_layout_section(App& app)
   ImGui::SameLine();
   ImGui::TextDisabled(rules.diagonals ? "(sides and corners)" : "(sides only)");
   ImGui::SameLine();
-  if (deselect_all_button(app))
+  if (deselect_all_button(app, "wfc_layout"))
   {
     return;
   }
@@ -144,13 +144,13 @@ void batch_constraints_section(App& app)
     if (app.selection.count > 0)
     {
       ImGui::SameLine();
-      deselect_all_button(app);
+      deselect_all_button(app, "wfc_batch");
     }
     return;
   }
   ImGui::Text("%zu rule tiles selected", tiles.size());
   ImGui::SameLine();
-  if (deselect_all_button(app))
+  if (deselect_all_button(app, "wfc_batch"))
   {
     return;
   }
@@ -564,7 +564,7 @@ bool terrain_layout_section(App& app, AutoTerrain& terrain)
   {
     if (selection_size(app) == 1)
     {
-      deselect_all_button(app);
+      deselect_all_button(app, "terrain_layout");
     }
     return false;
   }
@@ -596,7 +596,7 @@ bool terrain_layout_section(App& app, AutoTerrain& terrain)
     ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "inner corners need the blob neighborhood");
   }
   ImGui::SameLine();
-  if (deselect_all_button(app))
+  if (deselect_all_button(app, "terrain_layout"))
   {
     return changed;
   }
