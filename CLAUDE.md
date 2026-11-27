@@ -107,7 +107,7 @@ allocations, GL/GLFW, `std::thread` bookkeeping, and `std::filesystem` in the fi
 | `//core` | `logging` (`LVL_LOG_*`, `LVL_ASSERT*`, thread-safe line buffering, log history for the UI), `types` (`FixedString`, `overloaded`), `memory`, `file` (atomic `file::Writer`), `json`, `binary`, `jobs` (`parallel_for`, `Background<Job>`, `Progress`, seeded `random`), `image` |
 | `//level` | `model`: `Level`, `Grid<T>`, `Layer` (`LayerKind` → plane type), tileset slicing and metadata (`TileInfo`, properties, `SeasonalVariant`, `TileGroup` multi-tile stamps), `WfcRules` (side adjacency, plus corner adjacency when `diagonals` is set), `AutoTileRules` (terrains keyed on a neighbor pattern), `StepRules` (terrains keyed on the difference in height level), EnTT objects (portals, markers, path nodes/edges). A `Level` is now its settings, layers, path graphs and objects: the tilesets its cells name, the catalogs they index, the seasons it follows and all three kinds of tile rules belong to its `//project`. `for_each_id_cell`/`count_id_cells` and the four `clear_tileset_refs` overloads (one per `Level`/`WfcRules`/`AutoTileRules`/`StepRules`) are the primitives the project drives them through, and `derive_collision`/`derive_materials`/`derive_semantics` take the `TileSets` they read. `io`: level/tileset/rules/path files in JSON and binary |
 | `//project` | `paths`: the folder tree a project owns (`Folder`, `subfolder`/`resolve`/`relativize`, `ensure_tree`, `plan_copy`/`apply_copy` for copying an asset in). `model`: `Project` (the tilesets its levels draw from, the `RuleSet`s they auto-tile with (`find_rules`/`add_rules`/`intern_rules`/`rules_of`/`remove_rules`), the seasons they follow and the semantic/material catalogs their cells index, the tileset/rule-set files it owns, the `ScatterProfile`s its levels are populated from (`find_scatter`/`add_scatter`/`remove_scatter`/`add_scatter_object`/`remove_scatter_object`/`validate_scatter`), and a `LevelEntry` index of its member levels), `portal_link`. `io`: the `project.json` manifest |
-| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels; a river's bed widens with the flow it gathers past the threshold and tapers into the terrain over its banks), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `scatter` (`scatter_groups`: tile groups placed over an area, whole and clear of each other), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them) |
+| `//procgen` | `noise` (heightmaps), `watershed` (erosion, flow routing, rivers/lakes/tunnels; a river's bed widens with the flow it gathers past the threshold and tapers into the terrain over its banks), `wfc` (solver), `autotile` (`paint_terrain`: a terrain and its border; `autotile`: the WFC-scored fallback), `fill` (`fill_masked`: a whole-map fill masked by the other layers), `scatter` (`scatter_groups`: tile groups placed over an area, whole and clear of each other), `steps` (`terrace`: a heightmap cut into whole levels; `tidy_levels`: squaring them into shapes the tiles can draw; `tile_steps`: the cliffs between them), `shape` (`apply_pyramid`: a mound stamped over a rectangle; `smooth_scalar`/`blurred_at`: a heightmap box-blurred) |
 | `//render` | `preview` (`colorize`: a layer as one RGBA pixel per cell, used by the editor's overlays, the layer export and the mini-preview), `compose` (full map PNG, mini-preview, `export_layer_png`) |
 | `//editor` | `undo`, `jobs` (background jobs, incl. `RescanProjectJob` and `CompactCatalogsJob`), `style` (ImGui style profiles <-> JSON), `editor` (UI: `app.cpp` menus/jobs/dialogs/demo level, `viewport.cpp` canvas and tools, `panels.cpp`, `generate.cpp` the Generate panel's tabs (heightmap, water-shedding, WFC, fill, scatter, height steps), `panels.cpp` (including the Project panel: members, tilesets, rule sets), `adjacency.cpp` the Tile adjacency rules window, `neighbors.cpp` the pop-out drag-and-drop neighbor editor, `platform.cpp` window/GL/ImGui, `file_dialog.cpp` file dialogs, `recent.cpp` the recent levels, `deletion.cpp` delete buttons, `web.cpp` browser file upload/download), `config` (`config_path`/`write_config`: per-user settings files), `lvl` binary, `web` (wasm) |
 | `//tools` | `lvl_convert` |
@@ -500,6 +500,19 @@ two answers to "what does a stamp write?", so choosing a group empties the selec
 the palette clears the group, and Ctrl+Shift+A clears both; the toolbar names the chosen group while
 the Paint tool is active, since a stamp is not visible on the canvas until it is painted.
 
+**The palette boxes them**, so which tiles a group is made of is visible without picking the group:
+the Palette header's **Groups** toggle (beside the overlay toggles) draws each group's tiles as one
+box in a color of its own, labelled with the group's name. The color follows the group's *name*,
+through a small fixed set that deliberately leaves out the selection's yellow -- so a group keeps
+its color when another is added before it or removed, which is what makes the box worth reading as
+an identity, and a box is never mistaken for the selection drawn over the same tiles. A group's
+cells are tile *indices* and need not sit together in the palette, so the box is drawn side by side
+rather than as a bounding rectangle: a side is drawn wherever the palette cell next to it is not
+the same group's. Tiles that do sit together come out as one box (an L-shaped group draws an L),
+and ones that do not are boxed where they are instead of being joined by a rectangle that would
+claim tiles belong when they do not. A hole in the footprint is not one of the group's tiles, so it
+is not boxed either.
+
 Groups are tileset data, so adding, renaming or removing one marks the **project** modified rather
 than the level, and like the other tile metadata it is not undoable. Stamping is an ordinary layer
 edit and is.
@@ -667,6 +680,28 @@ level really owes the game is the **levels**, not the tiles.
   (`square_corners`) then backstops it, growing a terrace a cell at a time until `step_type_of` has
   an answer; `tile_steps` counts whatever is still left as `unexpressed`.
 
+  **The band between one terrace and the next is held open too** (`terrace_ledge`). That band is
+  the tread of the step and is what is actually seen; where it pinches to a single cell the two
+  cliffs are drawn hard against each other, with no plain ground between them and nowhere for the
+  border of the upper terrace to go -- which is wrong to look at and a pattern the auto-tiling has
+  no answer for either. A single cell of a terrace jutting out anywhere is the same fault. So each
+  upper set must contain the one above it grown by `min_feature` cells (never fewer than 2, since
+  one of them is the cliff itself), which leaves at least one cell of plain ground between
+  consecutive cliffs on every side and corner. `tile_steps` counts what is left as `pinched`,
+  exactly as it counts `unexpressed`.
+
+  The fix **grows the lower terrace** rather than cutting the upper one. Shrinking the terrace
+  above leaves a notch that the repair fills straight back, so the two passes trade the cell
+  forever; growing cascades downward only -- the band is itself at level k, so level k-1 must
+  clear it in turn -- which is the stepped pyramid the rule is asking for. The grown set goes into
+  the mask *before* the morphology, so the lattice squares the ledge off with everything else, and
+  `Morphology::ledge` tops up afterwards whatever the opening or the vote took back; it runs in
+  the repair's own bounded loop, since each answers the other and both only ever grow.
+
+  It costs less of the terrain than it sounds. On a 64x64 Perlin map it moves 4% of the cells at
+  three bands, 7% at five and 14% at eight, no peak is lost, and no cell moves by more than a
+  level or two.
+
   **Voting a block at a time is the point.** The repair on its own cascades: raising a cell to fix
   a 45-degree boundary makes offenders of its neighbors, and a diagonal carries that along its
   whole length, so valleys flood -- on a 96x96 map of five terraces it moved half the cells and
@@ -711,7 +746,63 @@ level really owes the game is the **levels**, not the tiles.
 
 Generate > Height steps runs the passes (`editor::apply_terrace`, which tidies as well unless that
 is turned off, and `editor::apply_steps`), and recutting the levels redraws the tiles unless that is
-turned off. The panel reports what the tidy moved and how many cells the tiles still cannot express.
+turned off. The tidy's options are checkboxes there, "Terrace ledges" among them, and the panel
+reports what the tidy moved, how many cells the tiles still cannot express, and how many cells have
+a terrace drawn hard against the one above.
+
+### Shaping a heightmap by hand
+
+Noise makes terrain that looks like terrain, which is not the same thing as terrain the tiles can
+draw. So once there is a heightmap, two operations are what shape it: a **mound** stamped over a
+rectangle, and a **smoothing** pass over one (`//procgen:shape`). Both are free functions over the
+one plane, instant even on a large map, and neither reads anything but the heightmap.
+
+**`procgen::apply_pyramid`** writes a mound over a rectangle -- the whole grid, or the select tool's
+region. The rectangle *is* the base: its center is the peak and its rim is `base`, and the distance
+is normalized per axis, so an oblong rectangle gives an oblong mound. The base is the rectangle **as
+asked for rather than as clipped**, so a mound running off the map is the part of one that fits
+rather than a whole one squeezed into what is left.
+
+`ShapeKind` is how the distance is measured, and that is the whole of the shape: Chebyshev gives a
+square pyramid, Euclidean a cone, Manhattan a diamond. **The square one is the point.** The
+Chebyshev distance is constant along a square ring, so a pyramid cut into levels is nested squares
+-- which is exactly the shape `tidy_levels` would otherwise have to square off, and every corner of
+it is one `level::step_type_of` has a tile for. `steps` cuts the slope into that many flat rings,
+quantized to `steps + 1` heights with the innermost exactly `peak` and the outermost exactly `base`,
+so a stepped pyramid is already the terraces it will be cut into; `//procgen:procgen_test` checks
+that one terraced and tiled comes out with `unexpressed` and `pinched` both 0 and nothing for the
+repair or the ledge rule to do. `plateau` is how far out the flat top reaches and `rounded` eases the
+slope off at both ends.
+
+`ShapeBlend` is how the mound meets what is already there, and all five are worth having:
+`kReplace`, `kAdd`, `kMax` (so a mound never digs into higher ground), `kMin`, and `kMultiply` --
+which scales the heights by the mound and is therefore the island falloff, written as a stamp.
+Nothing is clamped: the heights a stamp writes are the ones asked for, since a layer's range is the
+user's to set.
+
+**`procgen::smooth_scalar`** box-blurs a region of the heightmap: `radius` cells each way, `amount`
+of the way towards the mean, over `iterations` passes. Each pass reads what the last one left (a
+copy of the whole plane in `scratch`, rewound on return), so no cell is blurred against neighbors
+the same pass has already moved. Cells outside the region keep their heights **but are still read**,
+which is what leaves no seam at the region's edge. Off-grid cells are left out of the mean rather
+than counted as 0, so smoothing never pulls the map's edge down towards nothing.
+
+A move smaller than a millionth of the value is **not written**, because the mean of equal values is
+not exactly equal to them in floating point: without that, flat ground drifts and every pass over an
+already-smooth map reports that it changed every cell.
+
+`procgen::blurred_at` is one cell of that blur, and **the editor's smooth brush is the same
+function**, so a stroke and a pass over the whole map cannot drift apart. The brush's kernel radius
+is `Brush::smooth_radius`, which the viewport toolbar offers beside the mode while Smooth is chosen.
+
+In the editor the two are the Layers panel's **Heightmap tools**, drawn only while the selected
+layer is a heightmap -- that is the layer they both write, and the controls would mean nothing beside
+a tile or a semantic layer. They sit there rather than in the Generate panel for the same reason the
+Generate panel's heightmap tab is where noise lives: that tab *makes* a heightmap, while these two
+are what is reached for with one already in front of the user. `editor::stamp_pyramid` and
+`editor::smooth_heights` are the commands (`Generators::pyramid`/`smooth`, and `shape_region` for
+whether they honour the select tool's rectangle); each is one undoable layer edit, not a job, as a
+fill is.
 
 ### Auto-tiled painting
 
@@ -1141,7 +1232,7 @@ one check to mark required:
   project there, a named tileset file that has gone refusing the project, stable when written twice,
   missing level files flagged, create/open, named after its folder, which entries are retired, and
   every malformed shape refused).
-- `//procgen`: scattered objects (whole groups placed and repeated for a seed, placements that never
+- `//procgen`: heightmap shaping (a pyramid square and flat along every ring, round and diamond shapes, the flat top, steps quantized to exact heights with every ring used, one terraced and tiled needing no repair, all five blends, a region leaving the rest of the map alone, an oblong base, a mound half off the map staying half a mound; smoothing a spike and leaving flat ground untouched, the map edge kept, each pass reading what the last left, a wider radius reaching further, and a region written but its surroundings only read); scattered objects (whole groups placed and repeated for a seed, placements that never
   overlap and keep their spacing, the band / ground type / collision mask obeyed, a placement
   straddling two kinds of ground refused, weighted shares and a weight of zero, what is drawn spared,
   a region honoured, and objects it cannot place skipped); masked fills (a height band, a ground type, the two together, the scatter being even
@@ -1156,8 +1247,13 @@ one check to mark required:
   a given range, clamping and the ceiling, and the skew -- equal bands unchanged, each band a
   fixed fraction of the last in either direction, and converging bands held at the ceiling); tidying (spurs and notches, the map edge kept, a lone
   high corner squared off rather than shaved, every pattern drawable afterwards across several
-  seeds and band counts, the repair being a fixed point, and the terrain surviving it -- nine cells
-  in ten unmoved, none by more than one level);
+  seeds and band counts (`pinched` 0 among them), the repair being a fixed point, the terrain
+  surviving it -- nine cells in ten unmoved, none by more than one level -- and the band between
+  two terraces held open by widening the lower one (no cell ever lowered, the top of the hill
+  intact, a ledge all round rather than a bump at one corner, nothing left for `pinched` to count,
+  settled on a re-run, and the band left pinched with `terrace_ledge` off), a terrace stacked on a
+  straight *edge* pulled back just as one on a corner is, so a sheer two-level face becomes two
+  steps);
   noise determinism, parallel == serial heightmaps, seed images, erosion,
   rivers/lakes, breach tunnels, a river bed widening with the flow it carries and tapering over its
   banks (one cell at the threshold as before, the water and the semantics covering the same bed the
@@ -1198,7 +1294,8 @@ one check to mark required:
   terrain taken from one palette selection and painted (the
   auto-tiling tab), a masked fill (scattered over a height band, stable when re-run, weighted shares and a
   weight of zero, and with the scatter off), a heightmap terraced, tidied and its steps drawn onto a layer per level (the
-  layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, the blocked cells the ones at the foot of
+  layers added by the cut itself, each holding its own ground and nothing below it, every cell's tile the one its level's shape calls for, nothing left that the tiles cannot express, no terrace left
+  drawn hard against the one above it, the blocked cells the ones at the foot of
   a step, and redrawing changing nothing), saving making the open level a member of its project and
   a portal resolving against it (its own portals from the live registry, a level no member is named
   after and a portal a member does not have both reported), deleting a catalog entry retiring it and
@@ -1214,6 +1311,9 @@ one check to mark required:
   outside the project asking first, with the plan naming where it would land, and once copied in
   being stored relative to the root and asking nothing; saving a level and exporting a tileset each
   offering the project folder that kind of file belongs in;
+  the Layers panel's heightmap tools over the selected height layer (a stepped pyramid stamped over
+  the whole map and undone, one confined to the select tool's region, a spike smoothed out, and a
+  pass over flat ground reporting nothing moved);
   and the unsaved-changes prompt (cancelled, then "Save and quit" ends the session). It requires no
   errors logged; the final frame and exports are kept as test outputs.
 - `//tools:convert_test`.

@@ -9,6 +9,7 @@
 
 // C++ Standard Library
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 // Dear ImGui
@@ -119,6 +120,116 @@ void tile_image(const App& app, TileRef tile, float size)
 // -------------------------------------------------------------------------------------------------
 // Layers
 // -------------------------------------------------------------------------------------------------
+
+/**
+ * @brief Shaping a heightmap by hand: a mound stamped over it, and a smoothing pass
+ *
+ * Drawn only while the selected layer is a heightmap, because that is the layer both act on -- the
+ * controls would mean nothing beside a tile or a semantic layer, and both write scalar heights.
+ * They sit here rather than in the Generate panel for the same reason: the Generate panel's
+ * heightmap tab makes a heightmap out of noise, while these two are what the user reaches for with
+ * one already in front of them.
+ */
+void height_tools_section(App& app, std::size_t layer)
+{
+  Generators& g = app.generators;
+  ImGui::SeparatorText("Heightmap tools");
+  const bool has_region = g.region_w > 0 and g.region_h > 0;
+  if (has_region)
+  {
+    ImGui::Checkbox("Only the selected region", &g.shape_region);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip(
+        "The select tool's rectangle is %d x %d cells. Off, both tools act on the whole map.", g.region_w, g.region_h);
+    }
+  }
+  else
+  {
+    ImGui::TextDisabled("Whole map (drag a region with the select tool to shape part of it)");
+  }
+  if (ImGui::TreeNodeEx("pyramid", ImGuiTreeNodeFlags_DefaultOpen, "Pyramid"))
+  {
+    procgen::PyramidParams& p = g.pyramid;
+    ImGui::SetNextItemWidth(120.0F);
+    enum_combo("Shape", p.kind);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("A pyramid is square, so every terrace cut out of it is a square ring the step tiles have a "
+                        "corner for. A cone or a diamond is a shape to look at rather than one to tile.");
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0F);
+    enum_combo("Combine", p.blend);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How the mound meets the heights already there: it replaces them, adds to them, keeps "
+                        "whichever is higher or lower, or scales them (which fades a map to its rim).");
+    }
+    ImGui::DragFloat("Peak", &p.peak, 0.005F);
+    ImGui::DragFloat("Base", &p.base, 0.005F);
+    ImGui::SliderFloat("Flat top", &p.plateau, 0.0F, 1.0F);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How far out the flat top reaches, as a fraction of the way to the rim. The rest is slope.");
+    }
+    ImGui::SliderInt("Steps", &p.steps, 0, 16, p.steps == 0 ? "smooth" : "%d");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Cuts the slope into this many flat rings, so the mound is already the terraces it will be "
+                        "cut into -- which is how a hill comes out of Height steps with nothing the tiles cannot "
+                        "draw. 0 leaves the slope smooth.");
+    }
+    ImGui::Checkbox("Rounded", &p.rounded);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Eases the slope off at the top and the bottom rather than leaving it straight.");
+    }
+    if (ImGui::Button("Stamp pyramid", ImVec2{-1, 0}))
+    {
+      stamp_pyramid(app, layer);
+    }
+    if (g.pyramid_result.cells > 0)
+    {
+      ImGui::TextDisabled("%zu of %zu cell(s) changed", g.pyramid_result.changed, g.pyramid_result.cells);
+    }
+    ImGui::TreePop();
+  }
+  if (ImGui::TreeNodeEx("smooth", ImGuiTreeNodeFlags_DefaultOpen, "Smooth"))
+  {
+    procgen::SmoothParams& sm = g.smooth;
+    ImGui::SliderInt("Radius", &sm.radius, 1, 8, "%d cell(s)");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How far each cell is averaged over. A larger radius takes out larger bumps.");
+    }
+    ImGui::SliderFloat("Amount", &sm.amount, 0.0F, 1.0F);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How much of the averaged value each cell takes. 1 is fully smoothed.");
+    }
+    ImGui::SliderInt("Passes", &sm.iterations, 1, 8);
+    if (ImGui::Button("Smooth heights", ImVec2{-1, 0}))
+    {
+      smooth_heights(app, layer);
+    }
+    if (g.smooth_result.cells > 0)
+    {
+      ImGui::TextDisabled(
+        "%zu of %zu cell(s) changed, largest %.3f",
+        g.smooth_result.changed,
+        g.smooth_result.cells,
+        static_cast<double>(g.smooth_result.max_delta));
+    }
+    ImGui::TextDisabled("Brush: pick Smooth in the viewport toolbar");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("The same averaging under the brush, so one stroke takes the roughness out of one hill "
+                        "instead of the whole map.");
+    }
+    ImGui::TreePop();
+  }
+}
 
 void layers_panel(App& app)
 {
@@ -270,6 +381,10 @@ void layers_panel(App& app)
       default:
         ImGui::TextDisabled("Brush mode/strength/value in the viewport toolbar");
         break;
+      }
+      if (layer.kind == LayerKind::kHeight)
+      {
+        height_tools_section(app, app.layer);
       }
     }
     else
@@ -717,6 +832,130 @@ void overlay_tooltip(const App& app, const TileSet& ts, TileIndex tile)
   }
 }
 
+/// Whether the palette draws a box around each of the tileset's tile groups (Palette header)
+bool g_group_boxes = true;
+
+/**
+ * @brief The colors a group's box is drawn in
+ *
+ * A fixed set rather than a hue off the hash: eight colors chosen to be told apart at the size of
+ * a tile, and **none of them the selection's yellow**, which is drawn over the same tiles.
+ */
+constexpr std::array<ImU32, 8> kGroupColors = {
+  IM_COL32(90, 200, 255, 255),
+  IM_COL32(255, 120, 190, 255),
+  IM_COL32(120, 230, 140, 255),
+  IM_COL32(255, 140, 90, 255),
+  IM_COL32(180, 150, 255, 255),
+  IM_COL32(90, 220, 215, 255),
+  IM_COL32(230, 130, 255, 255),
+  IM_COL32(150, 190, 90, 255)};
+
+/**
+ * @brief The color group <code>name</code> is boxed in
+ *
+ * It follows the name rather than the group's index, so a group keeps its color when another is
+ * added before it or removed -- which is what makes the box worth reading as an identity.
+ */
+ImU32 group_color(std::string_view name)
+{
+  // FNV-1a, as the binary chunks use
+  std::uint32_t hash = 2166136261U;
+  for (const char c : name)
+  {
+    hash = (hash ^ static_cast<std::uint32_t>(static_cast<std::uint8_t>(c))) * 16777619U;
+  }
+  return kGroupColors[hash % kGroupColors.size()];
+}
+
+/**
+ * @brief Draws each tile group's tiles as one box in the group's own color, labelled with its name
+ *
+ * Which tiles a group is made of is otherwise only visible by picking the group in the Tile groups
+ * window, so a tileset of houses and trees reads as one undifferentiated sheet.
+ *
+ * A group's tiles are tile *indices* and need not be a block of the palette -- its footprint is
+ * laid out in its own coordinates, and re-slicing or hand-editing can scatter them -- so the box is
+ * drawn side by side rather than as a bounding rectangle, which would enclose tiles of other
+ * groups: a side is drawn wherever the palette cell next to it is not part of the same group. Tiles
+ * that do sit together therefore come out as one box, and ones that do not are boxed where they
+ * are instead of being joined by a rectangle that lies about which tiles belong.
+ */
+void group_boxes(
+  const TileSet& ts,
+  const Texture& tex,
+  level::Extents grid,
+  ImVec2 origin,
+  float zoom,
+  ImDrawList* draw)
+{
+  const int cols = std::max(1, grid.width);
+  for (const TileGroup& group : ts.groups)
+  {
+    const TileIndex* cells = group_cells_of(ts, group);
+    const std::size_t count = group.size.count();
+    const ImU32 color = group_color(group.name.view());
+    const auto member = [&](int tile) {
+      if (tile < 0)
+      {
+        return false;
+      }
+      for (std::size_t i = 0; i < count; ++i)
+      {
+        if (cells[i] != kNoTileIndex and static_cast<int>(cells[i]) == tile)
+        {
+          return true;
+        }
+      }
+      return false;
+    };
+    // The name goes on the group's first tile in the palette, which is where the eye starts
+    int label = -1;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+      const TileIndex t = cells[i];
+      // A hole in the footprint is not one of the group's tiles, so it is not boxed either
+      if (t == kNoTileIndex or static_cast<std::size_t>(t) >= ts.tiles.size())
+      {
+        continue;
+      }
+      label = (label < 0) ? static_cast<int>(t) : std::min(label, static_cast<int>(t));
+      const TileRect r = tile_rect(ts.slice, tex.width, tex.height, t);
+      const ImVec2 a{origin.x + r.x * zoom, origin.y + r.y * zoom};
+      const ImVec2 b{a.x + r.width * zoom, a.y + r.height * zoom};
+      const int index = static_cast<int>(t);
+      const int column = index % cols;
+      if (!member((column == 0) ? -1 : index - 1))
+      {
+        draw->AddLine(ImVec2{a.x, a.y}, ImVec2{a.x, b.y}, color, 2.0F);
+      }
+      if (!member((column + 1 >= cols) ? -1 : index + 1))
+      {
+        draw->AddLine(ImVec2{b.x, a.y}, ImVec2{b.x, b.y}, color, 2.0F);
+      }
+      if (!member(index - cols))
+      {
+        draw->AddLine(ImVec2{a.x, a.y}, ImVec2{b.x, a.y}, color, 2.0F);
+      }
+      if (!member(index + cols))
+      {
+        draw->AddLine(ImVec2{a.x, b.y}, ImVec2{b.x, b.y}, color, 2.0F);
+      }
+    }
+    if (label < 0)
+    {
+      continue;
+    }
+    const TileRect r = tile_rect(ts.slice, tex.width, tex.height, static_cast<TileIndex>(label));
+    const ImVec2 at{origin.x + r.x * zoom + 2.0F, origin.y + r.y * zoom + 2.0F};
+    const ImVec2 size = ImGui::CalcTextSize(group.name.c_str());
+    // Backed, since the atlas underneath it is any color at all
+    draw->AddRectFilled(
+      ImVec2{at.x - 2.0F, at.y - 1.0F}, ImVec2{at.x + size.x + 2.0F, at.y + size.y + 1.0F}, IM_COL32(0, 0, 0, 170));
+    draw->AddText(at, color, group.name.c_str());
+  }
+}
+
 /// The overlay toggles and their opacity, above the palette
 void overlay_controls(App& app)
 {
@@ -733,6 +972,12 @@ void overlay_controls(App& app)
   ImGui::SetNextItemWidth(110.0F);
   ImGui::SliderFloat("Opacity##overlay", &o.opacity, 0.1F, 1.0F, "%.2f");
   ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::Checkbox("Groups##overlay", &g_group_boxes);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Boxes the tiles of each of this tileset's tile groups, in a color of its own, with its name");
+  }
   if (o.any())
   {
     ImGui::TextDisabled("A stripe per overlay, top to bottom; struck through in pink where the tile has none.");
@@ -948,6 +1193,12 @@ void tilesets_panel(App& app)
         {
           draw->AddRect(a, b, hidden ? IM_COL32(255, 80, 80, 60) : IM_COL32(255, 255, 255, 40));
         }
+      }
+      // Over the slicing grid, since a group's box is what says these tiles are one thing, and it
+      // has to be readable against it
+      if (g_group_boxes)
+      {
+        group_boxes(ts, tex, grid, origin, zoom, draw);
       }
       if (ImGui::IsItemHovered())
       {

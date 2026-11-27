@@ -274,6 +274,25 @@ void add_step_layers(App& app);
  */
 void apply_steps(App& app);
 
+/**
+ * @brief Stamps a mound onto the scalar layer <code>layer</code> (the Layers panel's Heightmap tools)
+ *
+ * The shape, the heights and how it combines with what is there come from
+ * <code>Generators::pyramid</code>, and the rectangle from the select tool's region when
+ * <code>Generators::shape_region</code> is on. One undoable layer edit, like a fill; what it did is
+ * recorded in <code>Generators::pyramid_result</code>.
+ */
+void stamp_pyramid(App& app, std::size_t layer);
+
+/**
+ * @brief Smooths the scalar layer <code>layer</code> (the Layers panel's Heightmap tools)
+ *
+ * Box-blurs it with <code>Generators::smooth</code>, over the select tool's region when
+ * <code>Generators::shape_region</code> is on. One undoable layer edit; what it did is recorded in
+ * <code>Generators::smooth_result</code>.
+ */
+void smooth_heights(App& app, std::size_t layer);
+
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count);
 
 /**

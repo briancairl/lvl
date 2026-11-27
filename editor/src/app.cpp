@@ -2181,6 +2181,13 @@ void smoke(App& app)
       report(app, Status::error("drawing the steps left shapes it could not draw"));
       break;
     }
+    // The tidy holds open the band between one terrace and the next, so no cliff is drawn hard
+    // against the one above it
+    if (g.step_result.pinched != 0)
+    {
+      report(app, Status::error("a terrace was left drawn hard against the one above it"));
+      break;
+    }
 
     const auto& levels = level::plane<level::IdGrid>(lv.layers[level_layer]);
     const auto& mask = level::plane<level::MaskGrid>(lv.layers[collision_layer]);
@@ -3058,7 +3065,89 @@ void smoke(App& app)
     }
     break;
   }
-  case 50:
+  case 50: {
+    // The Layers panel's heightmap tools, which only show while a heightmap is the selected layer:
+    // a mound stamped over the map or over the select tool's region, and a smoothing pass
+    level::Level& lv = *app.level;
+    Generators& g = app.generators;
+    const std::size_t height_layer = level::find_layer(lv, level::LayerKind::kHeight);
+    if (height_layer >= lv.layers.size())
+    {
+      report(app, Status::error("the smoke level has no height layer to shape"));
+      break;
+    }
+    app.layer = height_layer;
+    auto& heights = plane<level::ScalarGrid>(lv.layers[height_layer]);
+    heights.fill(0.0F);
+
+    // A stepped square pyramid over the whole map: the shape worth having, since its terraces are
+    // nested squares the step tiles have a corner for
+    g.shape_region = false;
+    g.pyramid = procgen::PyramidParams{
+      .kind = procgen::ShapeKind::kPyramid,
+      .blend = procgen::ShapeBlend::kReplace,
+      .peak = 1.0F,
+      .base = 0.0F,
+      .steps = 3};
+    stamp_pyramid(app, height_layer);
+    if (g.pyramid_result.changed == 0 or g.pyramid_result.cells != heights.size())
+    {
+      report(app, Status::error("stamping a pyramid over the whole map changed nothing"));
+    }
+    const level::Cell middle{heights.width() / 2, heights.height() / 2};
+    if (!(heights.at(middle) > heights.at(0, 0)))
+    {
+      report(app, Status::error("the stamped pyramid has no peak above its rim"));
+    }
+    // It is one undoable layer edit, like a fill
+    app.undo.undo(lv);
+    if (heights.at(middle) != 0.0F)
+    {
+      report(app, Status::error("undo did not take the stamped pyramid back off"));
+    }
+
+    // Over the select tool's region instead, which is what leaves the rest of the map alone
+    g.region_x = 2;
+    g.region_y = 2;
+    g.region_w = 5;
+    g.region_h = 5;
+    g.shape_region = true;
+    stamp_pyramid(app, height_layer);
+    if (g.pyramid_result.cells != 25)
+    {
+      report(app, Status::error("the pyramid did not honour the selected region"));
+    }
+    if (heights.at(4, 4) == 0.0F or heights.at(10, 10) != 0.0F)
+    {
+      report(app, Status::error("the pyramid was not confined to the selected region"));
+    }
+
+    // Smoothing: a spike put beside the mound comes down, and a second pass over ground that is
+    // already smooth reports nothing moved
+    heights.at(12, 12) = 1.0F;
+    g.shape_region = false;
+    g.smooth = procgen::SmoothParams{.radius = 1, .amount = 1.0F, .iterations = 1};
+    smooth_heights(app, height_layer);
+    if (g.smooth_result.changed == 0 or g.smooth_result.max_delta <= 0.0F)
+    {
+      report(app, Status::error("smoothing the heightmap reported no change"));
+    }
+    if (!(heights.at(12, 12) < 1.0F) or !(heights.at(11, 12) > 0.0F))
+    {
+      report(app, Status::error("smoothing did not even out the spike"));
+    }
+    heights.fill(0.25F);
+    smooth_heights(app, height_layer);
+    if (g.smooth_result.changed != 0)
+    {
+      report(app, Status::error("smoothing flat ground reported that it moved"));
+    }
+    g.region_w = 0;
+    g.region_h = 0;
+    heights.fill(0.0F);
+    break;
+  }
+  case 51:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -3067,7 +3156,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 51:
+  case 52:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {

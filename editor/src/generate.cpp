@@ -949,6 +949,13 @@ void steps_section(App& app)
       ImGui::SetTooltip("The one that matters: it grows a terrace until every cell of it is a shape the table "
                         "has a tile for. Turning it off will leave cells flat that should be cliffs.");
     }
+    ImGui::Checkbox("Terrace ledges", &g.tidy.terrace_ledge);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Holds open the band between one terrace and the next, to the narrowest feature above, by "
+                        "widening the lower one -- so a hill steps back as it rises and no cliff is drawn hard "
+                        "against the one above it.");
+    }
     ImGui::Unindent();
   }
   ImGui::Checkbox("Redraw the tiles too", &g.step_tile_after_terrace);
@@ -1065,6 +1072,17 @@ void steps_section(App& app)
       if (ImGui::IsItemHovered())
       {
         ImGui::SetTooltip("One-cell spurs or 45-degree edges in the levels. Tidy the levels to square them off.");
+      }
+    }
+    if (r.pinched > 0)
+    {
+      ImGui::TextColored(
+        ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "%zu cell(s) where a terrace is hard against the one above", r.pinched);
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("The band between the two has pinched out, so their cliffs are drawn against each other "
+                          "with nowhere for the upper one's border to go. Tidy the levels with \"Terrace ledges\" "
+                          "on to step the hill back.");
       }
     }
   }
@@ -1230,6 +1248,60 @@ void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const 
   }
   invalidate_layer(app, layer);
   LVL_LOG_INFO() << "Fill: " << g.fill_result.matched << " cell(s) matched, " << g.fill_result.changed << " changed";
+}
+
+namespace
+{
+
+/// The rectangle the heightmap tools act over: the select tool's region, or the whole map
+procgen::Region shape_region(const App& app)
+{
+  const Generators& g = app.generators;
+  if (g.shape_region and g.region_w > 0 and g.region_h > 0)
+  {
+    return procgen::Region{.x = g.region_x, .y = g.region_y, .width = g.region_w, .height = g.region_h};
+  }
+  return procgen::Region{};
+}
+
+}  // namespace
+
+void stamp_pyramid(App& app, std::size_t layer)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  if (layer >= lv.layers.size() or !is_scalar(lv.layers[layer].kind))
+  {
+    return;
+  }
+  app.undo.snapshot(lv, layer, "Stamp pyramid");
+  g.pyramid_result = procgen::apply_pyramid(g.pyramid, shape_region(app), plane<ScalarGrid>(lv.layers[layer]));
+  if (g.pyramid_result.changed > 0)
+  {
+    app.modified = true;
+  }
+  invalidate_layer(app, layer);
+  LVL_LOG_INFO() << "Pyramid: " << g.pyramid_result.changed << " of " << g.pyramid_result.cells << " cell(s) changed";
+}
+
+void smooth_heights(App& app, std::size_t layer)
+{
+  Level& lv = *app.level;
+  Generators& g = app.generators;
+  if (layer >= lv.layers.size() or !is_scalar(lv.layers[layer].kind))
+  {
+    return;
+  }
+  app.undo.snapshot(lv, layer, "Smooth");
+  g.smooth_result =
+    procgen::smooth_scalar(g.smooth, shape_region(app), plane<ScalarGrid>(lv.layers[layer]), app.memory.frame);
+  if (g.smooth_result.changed > 0)
+  {
+    app.modified = true;
+  }
+  invalidate_layer(app, layer);
+  LVL_LOG_INFO() << "Smooth: " << g.smooth_result.changed << " of " << g.smooth_result.cells
+                 << " cell(s) changed, largest " << g.smooth_result.max_delta;
 }
 
 void apply_scatter(App& app)

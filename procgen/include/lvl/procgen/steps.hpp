@@ -96,6 +96,13 @@ struct TidyParams
   bool fill_notches = true;
   /// Square off terraces that meet only at a corner, which would put a 45-degree edge in the map
   bool square_corners = true;
+  /**
+   * @brief Keep a one-cell ledge of every terrace around the one standing on it
+   *
+   * So no cell of the terrace above touches the rim of the one below it, on any side or corner: a
+   * hill steps back by a cell at every level, and no cliff is more than one level tall.
+   */
+  bool terrace_ledge = true;
   /// Rounds of the three; it stops early as soon as a round changes nothing
   int passes = 8;
 };
@@ -156,6 +163,18 @@ struct StepFillResult
   std::size_t changed = 0;
   /// Cells no terrain reaches, so nothing is drawn there at all
   std::size_t untermed = 0;
+  /**
+   * @brief Cells where a terrace's own rim is up against the terrace above it
+   *
+   * The band between two terraces is the tread of the step, and it is what is actually seen. Where
+   * it pinches to a single cell the two cliffs are drawn hard against each other, with no plain
+   * ground between them and nowhere for the border of the upper terrace to go -- which is both
+   * wrong to look at and a pattern the auto-tiling has no answer for. A cell is counted when the
+   * terrace below draws it as part of its rim and the terrace above is on it or beside it.
+   * <code>TidyParams::terrace_ledge</code> is what keeps this at 0; like <code>unexpressed</code>
+   * it is the honest measure of whether the levels are a shape the tiles can draw.
+   */
+  std::size_t pinched = 0;
   /// Cells whose terrain has no tile for the pattern they need
   std::size_t missing = 0;
   /// Cells marked solid (0 unless <code>collision</code> asks for it)
