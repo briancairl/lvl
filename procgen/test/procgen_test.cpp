@@ -16,6 +16,7 @@
 #include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/scatter.hpp"
+#include "lvl/procgen/shape.hpp"
 #include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/procgen/wfc.hpp"
@@ -1564,6 +1565,110 @@ TEST_F(Procgen, TidyKeepsTheMapEdgeAndSeveralLevels)
   EXPECT_EQ(untouched.at(0, 0), 1);
 }
 
+TEST_F(Procgen, TidyHoldsOpenTheBandBetweenTwoTerraces)
+{
+  // What is actually seen of a terrace is the band between it and the one above -- the tread of
+  // the step. Here the level-2 ground runs right up to the rim of the level-1 ground along the
+  // north and the west, so the two cliffs would be drawn one against the other with no plain
+  // ground between them and nowhere for the upper one's border to go. The band has to be held
+  // open. Only the squaring passes are run, so what moves is this rule and not the smoothing.
+  const auto hill = [&] {
+    return levels_of(
+      doc,
+      {"000000000",
+       "022211000",
+       "022211000",
+       "022211000",
+       "011111000",
+       "011111000",
+       "000000000",
+       "000000000",
+       "000000000"});
+  };
+  const TidyParams square_only{.remove_spurs = false, .fill_notches = false};
+  const StepRules rules = per_level_rules(doc, 3);
+  const auto draw_all = [&](const Grid<std::uint16_t>& levels) {
+    Terraces drawn{doc, levels.extents, 3};
+    return tile_steps(rules, levels, StepFillParams{}, drawn.ptrs.data(), drawn.ptrs.size(), nullptr);
+  };
+  // As drawn, the band pinches out: the level-1 rim is up against the level-2 ground
+  Grid<std::uint16_t> raw = hill();
+  EXPECT_GT(draw_all(raw).pinched, 0U);
+
+  // Turning the rule off leaves it that way, and leaves the shapes alone: two nested rectangles
+  // are already shapes the table can draw, so nothing else has anything to say about them
+  Grid<std::uint16_t> kept = hill();
+  const TidyParams without{.remove_spurs = false, .fill_notches = false, .terrace_ledge = false};
+  EXPECT_EQ(tidy_levels(kept, without, scratch).changed, 0U);
+  EXPECT_GT(draw_all(kept).pinched, 0U) << "with the rule off the band is still pinched";
+
+  // With it on, the terrace below is widened until there is a band of it all the way round
+  Grid<std::uint16_t> levels = hill();
+  const TidyResult result = tidy_levels(levels, square_only, scratch);
+  EXPECT_TRUE(result.stable);
+  EXPECT_GT(result.changed, 0U);
+  const StepFillResult after = draw_all(levels);
+  EXPECT_EQ(after.pinched, 0U) << "no terrace should be drawn hard against the one above it";
+  EXPECT_EQ(after.unexpressed, 0U) << "and what it leaves behind is still drawable";
+  // The band really is open: two cells of level-1 ground west of the level-2 block, so the two
+  // cliffs have plain ground between them rather than being drawn against each other
+  EXPECT_EQ(levels.at(1, 2), 2);
+  EXPECT_EQ(levels.at(0, 2), 1);
+
+  // It grows the terrace below rather than cutting the one above: no cell is ever lowered, and the
+  // level-2 ground is exactly where it was
+  Grid<std::uint16_t> before = hill();
+  for (std::size_t i = 0; i < levels.values.size(); ++i)
+  {
+    EXPECT_GE(levels.values[i], before.values[i]) << "cell " << i << " was lowered";
+  }
+  for (int y = 1; y <= 3; ++y)
+  {
+    for (int x = 1; x <= 3; ++x)
+    {
+      EXPECT_EQ(levels.at(x, y), 2) << "the top of the hill should not be cut back";
+    }
+  }
+  // The ledge is a band all round, not a bump at one corner: that is what keeps a single cell
+  // from jutting out of the terrace below, which the auto-tiling has no answer for either
+  EXPECT_EQ(levels.at(0, 0), 1);
+  EXPECT_EQ(levels.at(0, 4), 1);
+  EXPECT_EQ(levels.at(4, 0), 1);
+  // Running it again settles immediately
+  EXPECT_EQ(tidy_levels(levels, square_only, scratch).changed, 0U);
+}
+
+TEST_F(Procgen, TidyPullsBackATerraceStackedOnAStraightEdgeToo)
+{
+  // Not only corners. A terrace sitting on the straight edge of the one below would be a cliff two
+  // levels tall, which there is no art for either, so the rule is a band of clear ground on every
+  // side and a sheer two-level face becomes two steps.
+  Grid<std::uint16_t> levels =
+    levels_of(doc, {"0000000", "0122210", "0122210", "0122210", "0111110", "0111110", "0000000"});
+  const StepRules rules = per_level_rules(doc, 3);
+  Terraces raw{doc, levels.extents, 3};
+  EXPECT_GT(tile_steps(rules, levels, StepFillParams{}, raw.ptrs.data(), raw.ptrs.size(), nullptr).pinched, 0U);
+  // The level-2 ground runs along the top edge of the level-1 ground, which layer 1 draws as a
+  // straight rim rather than a corner -- and it is still wrong
+  EXPECT_EQ(type_of(raw.grids[1].at(3, 1)), StepType::kOutwardTop);
+
+  const TidyParams square_only{.remove_spurs = false, .fill_notches = false};
+  const TidyResult result = tidy_levels(levels, square_only, scratch);
+  EXPECT_TRUE(result.stable);
+  EXPECT_GT(result.changed, 0U) << "a stacked straight edge has to be pulled back as well";
+
+  Terraces drawn{doc, levels.extents, 3};
+  const StepFillResult filled =
+    tile_steps(rules, levels, StepFillParams{}, drawn.ptrs.data(), drawn.ptrs.size(), nullptr);
+  EXPECT_EQ(filled.pinched, 0U);
+  EXPECT_EQ(filled.unexpressed, 0U);
+  // The level-1 ground now reaches past the level-2 ground along that edge, so layer 1 draws
+  // plain ground under the cell that used to be its rim
+  EXPECT_EQ(levels.at(3, 1), 2);
+  EXPECT_EQ(type_of(drawn.grids[1].at(3, 1)), StepType::kFlat);
+  EXPECT_EQ(type_of(drawn.grids[2].at(3, 1)), StepType::kOutwardTop);
+}
+
 TEST_F(Procgen, TidyMakesEveryPatternOneTheTableCanDraw)
 {
   // The point of the pass. gft's table names 20 of the 255 ways a cell can stand above its
@@ -1594,6 +1699,10 @@ TEST_F(Procgen, TidyMakesEveryPatternOneTheTableCanDraw)
       const StepFillResult after = tile();
       EXPECT_EQ(after.unexpressed, 0U) << "seed " << seed << ", " << bands << " bands";
       EXPECT_EQ(after.missing, 0U);
+      // And no terrace is left drawn hard against the one above it, over real terrain. A raw
+      // terracing of smooth noise pinches only here and there (none at all at three bands), which
+      // is why this checks the result rather than the difference
+      EXPECT_EQ(after.pinched, 0U) << "seed " << seed << ", " << bands << " bands";
       // The repair on its own is a fixed point: there is nothing left for it to square off. The
       // smoothing is not, because the repair may leave a one-cell notch -- which the inward corner
       // tiles draw perfectly well -- and a two-cell smoothing would fill it again
@@ -2105,4 +2214,277 @@ TEST_F(Procgen, ScatterSkipsObjectsItCannotPlace)
   const ScatterObject one[] = {object(1)};
   EXPECT_EQ(
     scatter_groups(o.tilesets, one, 1, ScatterMask{}, ScatterParams{.count = 0}, 1, scratch, f.tiles).placed, 0U);
+}
+
+// -------------------------------------------------------------------------------------------------
+// Heightmap shaping: a mound stamped over a rectangle, and smoothing
+// -------------------------------------------------------------------------------------------------
+
+namespace
+{
+
+Grid<float> flat(memory::Arena& arena, Extents e, float value)
+{
+  Grid<float> g{arena};
+  g.assign(e, value);
+  return g;
+}
+
+}  // namespace
+
+TEST_F(Procgen, PyramidIsSquareAndFlatAlongEveryRing)
+{
+  Grid<float> g = flat(doc, Extents{9, 9}, 0.0F);
+  const PyramidParams params{.blend = ShapeBlend::kReplace, .peak = 1.0F, .base = 0.0F};
+  const ShapeResult result = apply_pyramid(params, Region{}, g);
+  EXPECT_EQ(result.cells, 81U);
+  EXPECT_EQ(result.changed, 49U) << "every cell but the outermost ring, which is already the base height";
+
+  // The peak is at the center, the rim is the base, and the slope is straight between them
+  EXPECT_FLOAT_EQ(g.at(4, 4), 1.0F);
+  EXPECT_FLOAT_EQ(g.at(0, 0), 0.0F);
+  EXPECT_FLOAT_EQ(g.at(4, 0), 0.0F);
+  EXPECT_FLOAT_EQ(g.at(5, 4), 0.75F);
+  EXPECT_FLOAT_EQ(g.at(6, 4), 0.5F);
+
+  // A square ring is one height all the way round -- which is what makes a pyramid terrace into
+  // nested squares rather than into shapes the step tiles have no corner for
+  for (int r = 1; r <= 4; ++r)
+  {
+    const float want = 1.0F - 0.25F * static_cast<float>(r);
+    for (int y = 4 - r; y <= 4 + r; ++y)
+    {
+      for (int x = 4 - r; x <= 4 + r; ++x)
+      {
+        if (std::max(std::abs(x - 4), std::abs(y - 4)) == r)
+        {
+          EXPECT_FLOAT_EQ(g.at(x, y), want) << "ring " << r << " at (" << x << ", " << y << ")";
+        }
+      }
+    }
+  }
+}
+
+TEST_F(Procgen, PyramidRoundShapesAreRoundAndTheFlatTopIsFlat)
+{
+  // A cone's corner is further from the center than its edge, so it bottoms out before it
+  Grid<float> cone = flat(doc, Extents{9, 9}, 0.0F);
+  apply_pyramid(PyramidParams{.kind = ShapeKind::kCone, .blend = ShapeBlend::kReplace}, Region{}, cone);
+  EXPECT_FLOAT_EQ(cone.at(4, 4), 1.0F);
+  EXPECT_FLOAT_EQ(cone.at(0, 4), 0.0F);
+  EXPECT_FLOAT_EQ(cone.at(0, 0), 0.0F) << "the corner is past the rim, and is clamped to the base";
+  EXPECT_GT(cone.at(2, 2), 0.0F);
+  EXPECT_LT(cone.at(2, 2), cone.at(2, 4)) << "the diagonal falls away faster than the axis";
+
+  // A diamond is the other way round: its corners are the base and its axes reach furthest
+  Grid<float> diamond = flat(doc, Extents{9, 9}, 0.0F);
+  apply_pyramid(PyramidParams{.kind = ShapeKind::kDiamond, .blend = ShapeBlend::kReplace}, Region{}, diamond);
+  EXPECT_FLOAT_EQ(diamond.at(2, 2), 0.0F);
+  EXPECT_GT(diamond.at(2, 4), 0.0F);
+
+  // The flat top takes the given fraction of the way out, and the slope is the rest
+  Grid<float> plateau = flat(doc, Extents{9, 9}, 0.0F);
+  apply_pyramid(PyramidParams{.blend = ShapeBlend::kReplace, .plateau = 0.5F}, Region{}, plateau);
+  for (int y = 3; y <= 5; ++y)
+  {
+    for (int x = 3; x <= 5; ++x)
+    {
+      EXPECT_FLOAT_EQ(plateau.at(x, y), 1.0F) << "flat top at (" << x << ", " << y << ")";
+    }
+  }
+  EXPECT_FLOAT_EQ(plateau.at(7, 4), 0.5F);
+  EXPECT_FLOAT_EQ(plateau.at(8, 4), 0.0F);
+}
+
+TEST_F(Procgen, PyramidStepsAreFlatRingsOfExactHeights)
+{
+  Grid<float> g = flat(doc, Extents{17, 17}, 0.0F);
+  apply_pyramid(PyramidParams{.blend = ShapeBlend::kReplace, .steps = 4}, Region{}, g);
+  // Quantized to steps + 1 heights, the innermost exactly the peak and the outermost exactly the
+  // base, so the mound is already the terraces it will be cut into
+  for (const float v : g.values)
+  {
+    const float q = std::round(v * 4.0F) / 4.0F;
+    EXPECT_FLOAT_EQ(v, q) << "height " << v << " is not one of five";
+  }
+  EXPECT_FLOAT_EQ(g.at(8, 8), 1.0F);
+  EXPECT_FLOAT_EQ(g.at(0, 0), 0.0F);
+  std::array<int, 5> seen = {};
+  for (const float v : g.values)
+  {
+    ++seen[static_cast<std::size_t>(std::lround(v * 4.0F))];
+  }
+  for (std::size_t i = 0; i < seen.size(); ++i)
+  {
+    EXPECT_GT(seen[i], 0) << "no cell at height " << i << "/4";
+  }
+}
+
+TEST_F(Procgen, PyramidTerracesIntoGroundTheStepTilesCanDraw)
+{
+  // The point of a square pyramid: cut into levels it is nested squares, which the step table has
+  // an answer for everywhere -- so it needs no tidying at all
+  Grid<float> heights = flat(doc, Extents{33, 33}, 0.0F);
+  apply_pyramid(PyramidParams{.blend = ShapeBlend::kReplace, .steps = 4}, Region{}, heights);
+  Grid<std::uint16_t> levels{doc};
+  levels.assign(heights.extents, std::uint16_t{0});
+  const TerraceResult cut = terrace(heights, TerraceParams{.levels = 5}, levels);
+  EXPECT_EQ(cut.top, 4);
+
+  const StepRules rules = per_level_rules(doc, 5);
+  Terraces drawn{doc, levels.extents, 5};
+  const StepFillResult result =
+    tile_steps(rules, levels, StepFillParams{}, drawn.ptrs.data(), drawn.ptrs.size(), nullptr);
+  EXPECT_EQ(result.unexpressed, 0U) << "a square pyramid is drawable as it stands";
+  EXPECT_EQ(result.pinched, 0U) << "and its terraces each have a band of ground round the one above";
+
+  // So neither the repair nor the ledge rule has anything to say about it. (The morphology still
+  // nudges it, because its lattice is anchored at the grid's origin and these rings are not --
+  // which is the documented cost of voting a block at a time, not a fault in the shape.)
+  Grid<std::uint16_t> tidied{doc};
+  tidied.assign(levels.extents, std::uint16_t{0});
+  tidied.values = levels.values;
+  const TidyParams square_and_ledge{.remove_spurs = false, .fill_notches = false};
+  EXPECT_EQ(tidy_levels(tidied, square_and_ledge, scratch).changed, 0U);
+}
+
+TEST_F(Procgen, PyramidCombinesWithWhatIsThere)
+{
+  const PyramidParams shape{.blend = ShapeBlend::kMax, .peak = 0.5F, .base = 0.0F};
+
+  // kMax never digs into higher ground
+  Grid<float> high = flat(doc, Extents{9, 9}, 0.8F);
+  apply_pyramid(shape, Region{}, high);
+  for (const float v : high.values)
+  {
+    EXPECT_FLOAT_EQ(v, 0.8F);
+  }
+
+  Grid<float> add = flat(doc, Extents{9, 9}, 0.1F);
+  apply_pyramid(PyramidParams{.blend = ShapeBlend::kAdd, .peak = 1.0F}, Region{}, add);
+  EXPECT_FLOAT_EQ(add.at(4, 4), 1.1F);
+  EXPECT_FLOAT_EQ(add.at(0, 0), 0.1F);
+
+  // Multiply fades what is there to the rim, which is the island shape
+  Grid<float> fade = flat(doc, Extents{9, 9}, 1.0F);
+  apply_pyramid(PyramidParams{.blend = ShapeBlend::kMultiply, .peak = 1.0F, .base = 0.0F}, Region{}, fade);
+  EXPECT_FLOAT_EQ(fade.at(4, 4), 1.0F);
+  EXPECT_FLOAT_EQ(fade.at(0, 0), 0.0F);
+}
+
+TEST_F(Procgen, PyramidOverARegionLeavesTheRestOfTheMapAlone)
+{
+  Grid<float> g = flat(doc, Extents{20, 20}, 0.25F);
+  const Region region{.x = 4, .y = 6, .width = 5, .height = 5};
+  const ShapeResult result =
+    apply_pyramid(PyramidParams{.blend = ShapeBlend::kReplace, .peak = 1.0F, .base = 0.0F}, region, g);
+  EXPECT_EQ(result.cells, 25U);
+  EXPECT_FLOAT_EQ(g.at(6, 8), 1.0F) << "the peak is the region's center";
+  EXPECT_FLOAT_EQ(g.at(4, 6), 0.0F) << "and its corner is the base";
+  for (int y = 0; y < 20; ++y)
+  {
+    for (int x = 0; x < 20; ++x)
+    {
+      if (x < 4 or x > 8 or y < 6 or y > 10)
+      {
+        EXPECT_FLOAT_EQ(g.at(x, y), 0.25F) << "outside the region at (" << x << ", " << y << ")";
+      }
+    }
+  }
+
+  // An oblong region gives an oblong mound: the rim is the rim on both axes
+  Grid<float> oblong = flat(doc, Extents{20, 20}, 0.0F);
+  apply_pyramid(PyramidParams{.blend = ShapeBlend::kReplace}, Region{.x = 0, .y = 0, .width = 17, .height = 5}, oblong);
+  EXPECT_FLOAT_EQ(oblong.at(8, 2), 1.0F);
+  EXPECT_FLOAT_EQ(oblong.at(0, 2), 0.0F);
+  EXPECT_FLOAT_EQ(oblong.at(8, 0), 0.0F);
+}
+
+TEST_F(Procgen, PyramidHalfOffTheMapIsHalfAMound)
+{
+  // The base is the rectangle as asked for, not as clipped, so a mound running off the map is the
+  // part of it that fits rather than a whole one squeezed into what is left
+  Grid<float> g = flat(doc, Extents{9, 9}, 0.0F);
+  apply_pyramid(PyramidParams{.blend = ShapeBlend::kReplace}, Region{.x = -4, .y = 0, .width = 9, .height = 9}, g);
+  EXPECT_FLOAT_EQ(g.at(0, 4), 1.0F) << "the peak is off the left edge, so column 0 is the ridge";
+  EXPECT_FLOAT_EQ(g.at(4, 4), 0.0F) << "and the rim lands four cells in";
+}
+
+TEST_F(Procgen, SmoothEvensOutASpikeAndLeavesFlatGroundAlone)
+{
+  Grid<float> flat_map = flat(doc, Extents{16, 16}, 0.3F);
+  const SmoothResult none = smooth_scalar(SmoothParams{}, Region{}, flat_map, scratch);
+  EXPECT_EQ(none.cells, 256U);
+  EXPECT_EQ(none.changed, 0U) << "there is nothing to smooth out of flat ground";
+  EXPECT_FLOAT_EQ(none.max_delta, 0.0F);
+
+  Grid<float> spike = flat(doc, Extents{16, 16}, 0.0F);
+  spike.at(8, 8) = 0.9F;
+  const SmoothResult result = smooth_scalar(SmoothParams{}, Region{}, spike, scratch);
+  EXPECT_EQ(result.changed, 9U) << "the spike and its eight neighbors";
+  EXPECT_FLOAT_EQ(spike.at(8, 8), 0.1F) << "a ninth of the spike, the kernel being 3x3";
+  EXPECT_FLOAT_EQ(spike.at(7, 8), 0.1F);
+  EXPECT_FLOAT_EQ(spike.at(6, 8), 0.0F);
+  EXPECT_FLOAT_EQ(result.max_delta, 0.8F);
+
+  // Half the amount takes half of the way there
+  Grid<float> half = flat(doc, Extents{16, 16}, 0.0F);
+  half.at(8, 8) = 0.9F;
+  smooth_scalar(SmoothParams{.amount = 0.5F}, Region{}, half, scratch);
+  EXPECT_FLOAT_EQ(half.at(8, 8), 0.5F);
+}
+
+TEST_F(Procgen, SmoothKeepsTheMapEdgeWhereItIs)
+{
+  // Off-grid cells are left out of the mean rather than counted as 0, so smoothing never pulls the
+  // edge of the map down towards nothing
+  Grid<float> g = flat(doc, Extents{8, 8}, 0.6F);
+  smooth_scalar(SmoothParams{.iterations = 4}, Region{}, g, scratch);
+  EXPECT_FLOAT_EQ(g.at(0, 0), 0.6F);
+  EXPECT_FLOAT_EQ(g.at(7, 0), 0.6F);
+  EXPECT_FLOAT_EQ(blurred_at(g, Cell{0, 0}, 1), 0.6F);
+
+  Grid<float> corner = flat(doc, Extents{8, 8}, 0.0F);
+  corner.at(0, 0) = 4.0F;
+  EXPECT_FLOAT_EQ(blurred_at(corner, Cell{0, 0}, 1), 1.0F) << "the mean of the four cells on the grid";
+  EXPECT_FLOAT_EQ(blurred_at(corner, Cell{4, 4}, 1), 0.0F);
+  EXPECT_FLOAT_EQ(blurred_at(corner, Cell{0, 0}, 0), 4.0F) << "a kernel of one cell is that cell";
+}
+
+TEST_F(Procgen, SmoothPassesEachReadWhatTheLastLeft)
+{
+  const auto spiked = [&](memory::Arena& a) {
+    Grid<float> g = flat(a, Extents{16, 16}, 0.0F);
+    g.at(8, 8) = 0.9F;
+    return g;
+  };
+  Grid<float> once = spiked(doc);
+  Grid<float> twice = spiked(doc);
+  Grid<float> stepwise = spiked(doc);
+  smooth_scalar(SmoothParams{}, Region{}, once, scratch);
+  smooth_scalar(SmoothParams{.iterations = 2}, Region{}, twice, scratch);
+  smooth_scalar(SmoothParams{}, Region{}, stepwise, scratch);
+  smooth_scalar(SmoothParams{}, Region{}, stepwise, scratch);
+  EXPECT_NE(twice.values, once.values);
+  EXPECT_EQ(twice.values, stepwise.values) << "two passes are the one-pass call run twice";
+
+  // A larger radius takes out a wider bump; the peak comes down further in one pass
+  Grid<float> wide = spiked(doc);
+  smooth_scalar(SmoothParams{.radius = 2}, Region{}, wide, scratch);
+  EXPECT_LT(wide.at(8, 8), once.at(8, 8));
+  EXPECT_GT(wide.at(6, 8), 0.0F) << "and it reaches two cells out";
+}
+
+TEST_F(Procgen, SmoothOverARegionWritesOnlyInsideItButReadsOutside)
+{
+  Grid<float> g = flat(doc, Extents{16, 16}, 0.0F);
+  // A spike just outside the region, beside the cell at its edge
+  g.at(3, 8) = 0.9F;
+  const Region region{.x = 4, .y = 4, .width = 8, .height = 8};
+  const SmoothResult result = smooth_scalar(SmoothParams{}, region, g, scratch);
+  EXPECT_EQ(result.cells, 64U);
+  EXPECT_FLOAT_EQ(g.at(3, 8), 0.9F) << "the cell outside the region keeps its height";
+  EXPECT_GT(g.at(4, 8), 0.0F) << "but is still read, so the region's edge has no seam";
+  EXPECT_EQ(result.changed, 3U) << "the three cells of the region beside the spike";
+  EXPECT_FLOAT_EQ(g.at(6, 8), 0.0F);
 }

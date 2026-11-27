@@ -196,7 +196,8 @@ void rules_header(App& app)
   }
   if (ImGui::IsItemHovered())
   {
-    ImGui::SetTooltip("One file holds both the WFC adjacencies and the auto-tiling terrains");
+    ImGui::SetTooltip("One file holds every kind of rule: the auto-tiling terrains, the height-step terrains and "
+                      "the WFC adjacencies");
   }
 }
 
@@ -975,29 +976,38 @@ void adjacency_window(App& app)
   {
     g_drag.active = false;
   }
+  if (!kWfcUi and app.rules_mode == RulesMode::kWfc)
+  {
+    app.rules_mode = RulesMode::kAutoTile;
+  }
   rules_header(app);
-  // The two kinds of rules answer different questions: WFC adjacency says what *may* sit next to
-  // what (a permission relation, per direction), while a terrain says which tile goes where its
-  // like neighbors form a given pattern, which is what prescribes edges and inner/outer corners
+  // The kinds of rules answer different questions: a terrain says which tile goes where its like
+  // neighbors form a given pattern, which is what prescribes edges and inner/outer corners, while
+  // WFC adjacency (held back, see kWfcUi) says what *may* sit next to what, per direction
   if (ImGui::BeginTabBar("rules"))
   {
     // App::rules_mode is the source of truth: when something else changes it the tab follows (which
     // takes a frame, as ImGui applies the request when the tab is submitted), and otherwise the
     // tab the user clicks sets it
-    static RulesMode shown = RulesMode::kWfc;
+    static RulesMode shown = kWfcUi ? RulesMode::kWfc : RulesMode::kAutoTile;
     const bool follow = (shown != app.rules_mode);
     const auto flags = [&app, follow](RulesMode mode) {
       return (follow and app.rules_mode == mode) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
     };
-    if (ImGui::BeginTabItem("WFC", nullptr, flags(RulesMode::kWfc)))
+    // WFC is held back for now (kWfcUi), so its tab is not drawn and the window opens on the
+    // auto-tiling terrains instead
+    if (kWfcUi)
     {
-      shown = RulesMode::kWfc;
-      adjacency_body(app);
-      ImGui::EndTabItem();
-    }
-    if (ImGui::IsItemHovered())
-    {
-      ImGui::SetTooltip("What may sit next to what, per direction: the constraints the WFC generator solves");
+      if (ImGui::BeginTabItem("WFC", nullptr, flags(RulesMode::kWfc)))
+      {
+        shown = RulesMode::kWfc;
+        adjacency_body(app);
+        ImGui::EndTabItem();
+      }
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("What may sit next to what, per direction: the constraints the WFC generator solves");
+      }
     }
     if (ImGui::BeginTabItem("Auto-tiling", nullptr, flags(RulesMode::kAutoTile)))
     {

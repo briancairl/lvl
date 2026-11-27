@@ -912,11 +912,15 @@ void shortcuts(App& app)
     {ImGuiKey_N, Tool::kPathNode},
     {ImGuiKey_K, Tool::kPathEdge},
   };
-  for (const auto& h : kHotkeys)
+  // Unmodified keys: shift+G is the Tilesets panel's "new group", not the Fill tool
+  if (!io.KeyShift)
   {
-    if (ImGui::IsKeyPressed(h.key, false))
+    for (const auto& h : kHotkeys)
     {
-      app.tool = h.tool;
+      if (ImGui::IsKeyPressed(h.key, false))
+      {
+        app.tool = h.tool;
+      }
     }
   }
   if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket))
@@ -1460,7 +1464,11 @@ void main_menu(App& app)
       ImGui::MenuItem("Project", nullptr, &app.panels.project);
       ImGui::MenuItem("Generate", nullptr, &app.panels.generate);
       ImGui::MenuItem("Tile adjacency rules", nullptr, &app.panels.adjacency);
-      ImGui::MenuItem("Tile neighbors", nullptr, &app.panels.neighbors);
+      if (kWfcUi)
+      {
+        // The neighbor editor edits the WFC adjacencies alone, which are held back for now
+        ImGui::MenuItem("Tile neighbors", nullptr, &app.panels.neighbors);
+      }
       ImGui::MenuItem("Objects & paths", nullptr, &app.panels.objects);
       ImGui::MenuItem("Mini-preview", nullptr, &app.panels.minimap);
       ImGui::MenuItem("Log", nullptr, &app.panels.log);
@@ -1639,10 +1647,10 @@ void smoke(App& app)
     close_file_dialog(app);
     break;
   case 17:
-    // The adjacency rules window and the neighbor editor draw for a frame; corner rules are
-    // derived from the sides
+    // The adjacency rules window draws for a frame; corner rules are derived from the sides. The
+    // neighbor editor is only shown while the WFC UI is (kWfcUi), so the window follows the flag.
     app.panels.adjacency = true;
-    app.panels.neighbors = true;
+    app.panels.neighbors = kWfcUi;
     rule_set(app).wfc.diagonals = true;
     level::derive_diagonals(rule_set(app).wfc, app.memory.frame);
     if (level::diagonal_count(rule_set(app).wfc) == 0)
@@ -2173,6 +2181,13 @@ void smoke(App& app)
       report(app, Status::error("drawing the steps left shapes it could not draw"));
       break;
     }
+    // The tidy holds open the band between one terrace and the next, so no cliff is drawn hard
+    // against the one above it
+    if (g.step_result.pinched != 0)
+    {
+      report(app, Status::error("a terrace was left drawn hard against the one above it"));
+      break;
+    }
 
     const auto& levels = level::plane<level::IdGrid>(lv.layers[level_layer]);
     const auto& mask = level::plane<level::MaskGrid>(lv.layers[collision_layer]);
@@ -2254,7 +2269,7 @@ void smoke(App& app)
     {
       report(app, Status::error("drawing the steps again moved tiles"));
     }
-    app.rules_mode = RulesMode::kWfc;
+    app.rules_mode = kWfcUi ? RulesMode::kWfc : RulesMode::kAutoTile;
     break;
   }
   case 26: {
@@ -2719,9 +2734,27 @@ void smoke(App& app)
     {
       report(app, Status::error("removing the second tile group disturbed the first"));
     }
+    // Shift+G in the Tilesets panel: the New group fields as a modal, which the next frame draws
+    app.group_name = "prompted";
+    app.group_folder = "nature/huts";
+    app.new_group_prompt = true;
     break;
   }
   case 42: {
+    // The New group prompt drew, and cancelling it (Escape, or its Cancel button) adds nothing
+    project::Project& pr = *app.project;
+    if (!app.new_group_prompt)
+    {
+      report(app, Status::error("the New group prompt went away on its own"));
+    }
+    app.new_group_prompt = false;
+    if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "prompted") != level::kNoGroup)
+    {
+      report(app, Status::error("the New group prompt added a group before it was answered"));
+    }
+    break;
+  }
+  case 43: {
     // Scattering that group over the map (Generate > Scatter): a profile naming it, the criteria
     // off so the whole map is fair game, and every placement whole and clear of the others
     project::Project& pr = *app.project;
@@ -2781,7 +2814,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 43: {
+  case 44: {
     // A profile is a file of its own: exported, it reads back into a project that already holds it
     // by name rather than becoming a second copy, and other profiles sit beside it untouched
     project::Project& pr = *app.project;
@@ -2839,7 +2872,7 @@ void smoke(App& app)
       .confirmed = true};
     break;
   }
-  case 44: {
+  case 45: {
     const project::Project& pr = *app.project;
     if (project::find_scatter(pr, "huts") != project::kNoScatterProfile)
     {
@@ -2865,7 +2898,7 @@ void smoke(App& app)
       .confirmed = true};
     break;
   }
-  case 45: {
+  case 46: {
     // The delete was applied at the end of the last frame, and stamping stopped with it
     const project::Project& pr = *app.project;
     if (app.tileset < pr.tilesets.size() and level::find_group(pr.tilesets[app.tileset], "hut") != level::kNoGroup)
@@ -2878,7 +2911,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 46: {
+  case 47: {
     // Refreshing the semantic layer from the tile layers: the topmost tile that has a semantic type
     // is the one that lands, which is the whole point of reading them as a stack
     level::Level& lv = *app.level;
@@ -2955,7 +2988,7 @@ void smoke(App& app)
     }
     break;
   }
-  case 47: {
+  case 48: {
     // The palette overlays: the tile metadata drawn over the atlas, so a tile with none is obvious.
     // All three on at once, with a tile given a semantic type and a material and the one beside it
     // left bare, which is the pair the stripes have to tell apart.
@@ -2983,7 +3016,7 @@ void smoke(App& app)
     ts.tiles[1].collision = level::collision::kNone;
     break;
   }
-  case 48: {
+  case 49: {
     // Edit > Refresh collision from tiles, in both modes: a tile that blocks put on a layer, and a
     // cell of the mask blocked by hand beside it, which is what the two modes disagree about
     project::Project& pr = *app.project;
@@ -3032,7 +3065,89 @@ void smoke(App& app)
     }
     break;
   }
-  case 49:
+  case 50: {
+    // The Layers panel's heightmap tools, which only show while a heightmap is the selected layer:
+    // a mound stamped over the map or over the select tool's region, and a smoothing pass
+    level::Level& lv = *app.level;
+    Generators& g = app.generators;
+    const std::size_t height_layer = level::find_layer(lv, level::LayerKind::kHeight);
+    if (height_layer >= lv.layers.size())
+    {
+      report(app, Status::error("the smoke level has no height layer to shape"));
+      break;
+    }
+    app.layer = height_layer;
+    auto& heights = plane<level::ScalarGrid>(lv.layers[height_layer]);
+    heights.fill(0.0F);
+
+    // A stepped square pyramid over the whole map: the shape worth having, since its terraces are
+    // nested squares the step tiles have a corner for
+    g.shape_region = false;
+    g.pyramid = procgen::PyramidParams{
+      .kind = procgen::ShapeKind::kPyramid,
+      .blend = procgen::ShapeBlend::kReplace,
+      .peak = 1.0F,
+      .base = 0.0F,
+      .steps = 3};
+    stamp_pyramid(app, height_layer);
+    if (g.pyramid_result.changed == 0 or g.pyramid_result.cells != heights.size())
+    {
+      report(app, Status::error("stamping a pyramid over the whole map changed nothing"));
+    }
+    const level::Cell middle{heights.width() / 2, heights.height() / 2};
+    if (!(heights.at(middle) > heights.at(0, 0)))
+    {
+      report(app, Status::error("the stamped pyramid has no peak above its rim"));
+    }
+    // It is one undoable layer edit, like a fill
+    app.undo.undo(lv);
+    if (heights.at(middle) != 0.0F)
+    {
+      report(app, Status::error("undo did not take the stamped pyramid back off"));
+    }
+
+    // Over the select tool's region instead, which is what leaves the rest of the map alone
+    g.region_x = 2;
+    g.region_y = 2;
+    g.region_w = 5;
+    g.region_h = 5;
+    g.shape_region = true;
+    stamp_pyramid(app, height_layer);
+    if (g.pyramid_result.cells != 25)
+    {
+      report(app, Status::error("the pyramid did not honour the selected region"));
+    }
+    if (heights.at(4, 4) == 0.0F or heights.at(10, 10) != 0.0F)
+    {
+      report(app, Status::error("the pyramid was not confined to the selected region"));
+    }
+
+    // Smoothing: a spike put beside the mound comes down, and a second pass over ground that is
+    // already smooth reports nothing moved
+    heights.at(12, 12) = 1.0F;
+    g.shape_region = false;
+    g.smooth = procgen::SmoothParams{.radius = 1, .amount = 1.0F, .iterations = 1};
+    smooth_heights(app, height_layer);
+    if (g.smooth_result.changed == 0 or g.smooth_result.max_delta <= 0.0F)
+    {
+      report(app, Status::error("smoothing the heightmap reported no change"));
+    }
+    if (!(heights.at(12, 12) < 1.0F) or !(heights.at(11, 12) > 0.0F))
+    {
+      report(app, Status::error("smoothing did not even out the spike"));
+    }
+    heights.fill(0.25F);
+    smooth_heights(app, height_layer);
+    if (g.smooth_result.changed != 0)
+    {
+      report(app, Status::error("smoothing flat ground reported that it moved"));
+    }
+    g.region_w = 0;
+    g.region_h = 0;
+    heights.fill(0.0F);
+    break;
+  }
+  case 51:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -3041,7 +3156,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 50:
+  case 52:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -3314,7 +3429,7 @@ void frame(App& app)
   {
     adjacency_window(app);
   }
-  if (app.panels.neighbors)
+  if (kWfcUi and app.panels.neighbors)
   {
     neighbors_window(app);
   }

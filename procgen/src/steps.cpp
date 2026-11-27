@@ -192,6 +192,36 @@ public:
     return touched;
   }
 
+  /**
+   * @brief Takes in every cell of <code>grown</code>, the terrace above dilated by one cell
+   *
+   * The terrace above has to stand a cell clear of this one's rim on every side and corner: the
+   * two are drawn one over the other where it does not, there is no art for a cliff two levels
+   * tall, and a border with nowhere to go is what the auto-tiling has no answer for. So this set
+   * must contain the one above it grown by a ring, which is what <code>grown</code> is.
+   *
+   * It grows the *lower* set rather than cutting the upper one. Shrinking the terrace above leaves
+   * a notch that <code>repair</code> fills straight back, so the two passes trade the cell
+   * forever; growing cascades downward only -- the ring is itself at this level, so the level
+   * below must clear it in turn -- which is the stepped pyramid the rule is asking for.
+   *
+   * The caller has already put <code>grown</code> into the mask before the morphology ran, so this
+   * is only topping up what the opening or the lattice vote took back off. Only ever grows.
+   */
+  bool ledge(const std::uint8_t* grown)
+  {
+    bool touched = false;
+    for (std::size_t i = 0; i < e_.count(); ++i)
+    {
+      if (grown[i] != 0U and a_[i] == 0U)
+      {
+        a_[i] = 1U;
+        touched = true;
+      }
+    }
+    return touched;
+  }
+
 private:
   /// One pass of the vote, with the lattice starting at (ox, oy)
   void snap_at(int n, int ox, int oy)
@@ -290,7 +320,7 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
   const level::Extents e = levels.extents;
   const int n = std::max(params.min_feature, 1);
   const bool morphology = (n >= 2) and (params.remove_spurs or params.fill_notches);
-  if (e.count() == 0 or (!morphology and !params.square_corners))
+  if (e.count() == 0 or (!morphology and !params.square_corners and !params.terrace_ledge))
   {
     result.stable = true;
     return result;
@@ -305,6 +335,12 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
     result.stable = true;
     return result;
   }
+  // How far past the terrace above this one has to reach. The band between two terraces is what
+  // is actually seen -- the tread of the step -- so it is held to the same width as any other
+  // feature, and never below 2: one cell of it is the cliff itself, so a band of one leaves the
+  // next cliff hard against it with no plain ground between them and nothing for the border of
+  // the terrace above to be drawn on.
+  const int ledge = params.terrace_ledge ? std::max(n, 2) : 0;
   memory::Scope scope{scratch};
   Morphology work{e, scratch};
   auto out = memory::make_vector<std::uint16_t>(scratch, e.count(), std::uint16_t{0});
@@ -317,6 +353,8 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
   // built from the top down, each one starting from the set above it, which keeps them nested
   // whatever the cleaning does. A cell's level is then the highest set it belongs to.
   auto above = memory::make_vector<std::uint8_t>(scratch, e.count(), std::uint8_t{0});
+  // The terrace above grown by its ledge, which is what this one has to contain
+  auto grown = memory::make_vector<std::uint8_t>(scratch, e.count(), std::uint8_t{0});
   // The lattice is anchored at the grid's own origin. Choosing the phase per terrace was tried and
   // is worse: each one picks the phase that suits it alone, and terraces on different phases do not
   // nest squarely, which leaves the repair below cascading again. A feature exactly min_feature
@@ -333,12 +371,31 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
     std::fill(above.begin(), above.end(), std::uint8_t{0});
     for (int k = top; k >= 1; --k)
     {
+      // The terrace above, grown by the ledge it has to stand on (see Morphology::ledge). Without
+      // the rule it is simply the terrace above, which is all the nesting needs.
+      for (int y = 0; y < e.height; ++y)
+      {
+        for (int x = 0; x < e.width; ++x)
+        {
+          std::uint8_t any = above[e.index(x, y)];
+          for (int dy = -ledge; dy <= ledge and any == 0U; ++dy)
+          {
+            for (int dx = -ledge; dx <= ledge and any == 0U; ++dx)
+            {
+              const Cell c{x + dx, y + dy};
+              any = e.contains(c) ? above[e.index(c.x, c.y)] : std::uint8_t{0};
+            }
+          }
+          grown[e.index(x, y)] = any;
+        }
+      }
       std::uint8_t* mask = work.data();
       for (std::size_t i = 0; i < e.count(); ++i)
       {
-        // Never narrower than the terrace above it, so the sets stay nested -- and taken in before
-        // the squaring off, so the union is squared off too rather than breaking it again
-        mask[i] = (static_cast<int>(levels.values[i]) >= k or above[i] != 0U) ? 1U : 0U;
+        // Never narrower than the terrace above it (plus its ledge), so the sets stay nested --
+        // and taken in before the squaring off, so the union is squared off too rather than
+        // broken again by it
+        mask[i] = (static_cast<int>(levels.values[i]) >= k or grown[i] != 0U) ? 1U : 0U;
       }
       if (morphology and round == 0)
       {
@@ -356,11 +413,20 @@ TidyResult tidy_levels(level::IdGrid& levels, const TidyParams& params, memory::
         }
         mask = work.data();
       }
-      if (params.square_corners)
+      if (params.square_corners or params.terrace_ledge)
       {
+        // The two are folded into one loop because they answer each other: the opening and the
+        // lattice vote can take a ledge cell back off, and a cell either of them adds is a shape
+        // the repair may have something to say about. Both only ever grow, so this settles.
         int fix = 0;
-        for (; fix < kMaxRepairs and work.repair(); ++fix)
+        for (; fix < kMaxRepairs; ++fix)
         {
+          bool touched = params.square_corners and work.repair();
+          touched = (params.terrace_ledge and work.ledge(grown.data())) or touched;
+          if (!touched)
+          {
+            break;
+          }
         }
         repaired = repaired and (fix < kMaxRepairs);
         mask = work.data();
@@ -556,16 +622,25 @@ StepFillResult tile_steps(
         }
         level::StepCode code = 0;
         bool drops = false;
+        // Whether the terrace above is on this cell or beside it, which is what makes a rim cell
+        // of this terrace a pinch rather than a step with a tread
+        bool crowded = static_cast<int>(levels.values[i]) > floor;
         for (std::size_t n = 0; n < level::kStepNeighbors.size(); ++n)
         {
-          const bool below = !inside(step(Cell{x, y}, level::kStepNeighbors[n]));
+          const Cell c = step(Cell{x, y}, level::kStepNeighbors[n]);
+          const bool below = !inside(c);
           code = level::step_code_with(code, n, below ? StepRelation::kBelow : StepRelation::kLevel);
           drops = drops or below;
+          crowded = crowded or (e.contains(c) and static_cast<int>(levels.values[e.index(c.x, c.y)]) > floor);
         }
         const StepType type = level::step_type_of(code);
         // Ground dropping away that still comes out flat is a shape the table has no tile for: a
         // one-cell spur or a 45-degree edge, which tidy_levels is there to square off
         result.unexpressed += (drops and type == StepType::kFlat) ? 1U : 0U;
+        // This terrace's rim with the terrace above on it or against it: the band between the two
+        // has pinched out, so their cliffs are drawn one against the other with no plain ground
+        // between them. TidyParams::terrace_ledge is what holds that band open
+        result.pinched += (drops and crowded) ? 1U : 0U;
         const TileRef tile = rules.terrains[id].tiles[static_cast<std::size_t>(type)];
         if (tile.empty())
         {

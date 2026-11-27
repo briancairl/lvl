@@ -22,6 +22,21 @@
 namespace lvl::editor
 {
 
+/**
+ * @brief Whether the wave-function-collapse features are offered in the UI
+ *
+ * WFC is held back while how it works is being reconsidered, so nothing in the UI reaches it: the
+ * Generate panel's WFC tab, the adjacency rules window's WFC tab and the pop-out neighbor editor
+ * are not drawn, and the Auto tool paints only with an auto-tiling terrain rather than falling back
+ * to scoring the adjacencies. Everything behind them -- level::WfcRules, procgen::solve, the rules
+ * file that carries the adjacencies beside the terrains, and the tests over all of it -- is
+ * untouched, so turning this back on is the one edit it takes.
+ *
+ * It is a plain <code>bool</code> rather than a preprocessor switch so that the code it guards goes
+ * on being compiled.
+ */
+inline constexpr bool kWfcUi = false;
+
 /// True while a background job runs. Jobs read the document without locks, so panels that could
 /// write to it (even unchanged values) must not run their bodies then.
 inline bool busy(const App& app) { return !std::holds_alternative<std::monostate>(app.job); }
@@ -258,6 +273,25 @@ void add_step_layers(App& app);
  * comes from the levels and not from any one terrace.
  */
 void apply_steps(App& app);
+
+/**
+ * @brief Stamps a mound onto the scalar layer <code>layer</code> (the Layers panel's Heightmap tools)
+ *
+ * The shape, the heights and how it combines with what is there come from
+ * <code>Generators::pyramid</code>, and the rectangle from the select tool's region when
+ * <code>Generators::shape_region</code> is on. One undoable layer edit, like a fill; what it did is
+ * recorded in <code>Generators::pyramid_result</code>.
+ */
+void stamp_pyramid(App& app, std::size_t layer);
+
+/**
+ * @brief Smooths the scalar layer <code>layer</code> (the Layers panel's Heightmap tools)
+ *
+ * Box-blurs it with <code>Generators::smooth</code>, over the select tool's region when
+ * <code>Generators::shape_region</code> is on. One undoable layer edit; what it did is recorded in
+ * <code>Generators::smooth_result</code>.
+ */
+void smooth_heights(App& app, std::size_t layer);
 
 void apply_fill(App& app, std::size_t layer, const level::TileRef* tiles, const float* weights, std::size_t count);
 

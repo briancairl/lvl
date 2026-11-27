@@ -149,23 +149,11 @@ void apply_cell(App& app, Layer& layer, Cell c, bool erase, float weight)
     case ScalarMode::kLower:
       v -= s;
       break;
-    case ScalarMode::kSmooth: {
-      float sum = 0.0F;
-      int n = 0;
-      for (int dy = -1; dy <= 1; ++dy)
-      {
-        for (int dx = -1; dx <= 1; ++dx)
-        {
-          if (e.contains(c.x + dx, c.y + dy))
-          {
-            sum += g.at(c.x + dx, c.y + dy);
-            ++n;
-          }
-        }
-      }
-      v += (sum / static_cast<float>(n) - v) * std::min(1.0F, s * 10.0F);
+    case ScalarMode::kSmooth:
+      // The same averaging "Smooth heights" does, from the same function, so a stroke and a pass
+      // over the whole map cannot drift apart
+      v += (procgen::blurred_at(g, c, app.brush.smooth_radius) - v) * std::min(1.0F, s * 10.0F);
       break;
-    }
     case ScalarMode::kFlatten:
       v += (app.brush.value - v) * std::min(1.0F, s * 10.0F);
       break;
@@ -1029,7 +1017,7 @@ void toolbar(App& app)
                           "rules > Auto-tiling.");
       }
     }
-    else
+    else if (kWfcUi)
     {
       ImGui::SetNextItemWidth(80.0F);
       ImGui::SliderInt("Refill", &app.auto_tile.radius, 1, 8);
@@ -1060,6 +1048,17 @@ void toolbar(App& app)
         }
       }
     }
+    else
+    {
+      // With WFC held back (kWfcUi) a terrain is the only thing the tool can paint with, so a tile
+      // that has none says so rather than offering the fallback's settings
+      ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "no terrain for this tile");
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("The tile being painted belongs to no auto-tiling terrain, so nothing can be tiled around "
+                          "it. Give it one under View > Tile adjacency rules > Auto-tiling.");
+      }
+    }
   }
   if (app.layer < lv.layers.size() and is_scalar(lv.layers[app.layer].kind))
   {
@@ -1077,6 +1076,17 @@ void toolbar(App& app)
     ImGui::SameLine();
     ImGui::SetNextItemWidth(70.0F);
     ImGui::DragFloat("Value", &app.brush.value, 0.005F);
+    if (app.brush.scalar_mode == ScalarMode::kSmooth)
+    {
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(70.0F);
+      ImGui::DragInt("Kernel", &app.brush.smooth_radius, 0.1F, 1, 8, "%d cell(s)");
+      if (ImGui::IsItemHovered())
+      {
+        ImGui::SetTooltip("How far each cell under the brush is averaged over. The Layers panel's \"Smooth heights\" "
+                          "does the same over the whole map or the selected region.");
+      }
+    }
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(90.0F);
@@ -1108,6 +1118,15 @@ void auto_tile_stroke(App& app, std::size_t layer, const Cell* painted, std::siz
     status.cells = result.covered;
     status.changed = result.changed;
     status.trouble = result.missing;
+  }
+  else if (!kWfcUi)
+  {
+    // With WFC held back (kWfcUi) the fallback is not offered, so a tile with no terrain paints
+    // nothing and the toolbar says why
+    status.terrain = false;
+    status.name = "no terrain";
+    app.auto_tile_status = status;
+    return;
   }
   else
   {

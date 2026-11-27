@@ -31,6 +31,7 @@
 #include "lvl/procgen/fill.hpp"
 #include "lvl/procgen/noise.hpp"
 #include "lvl/procgen/scatter.hpp"
+#include "lvl/procgen/shape.hpp"
 #include "lvl/procgen/steps.hpp"
 #include "lvl/procgen/watershed.hpp"
 #include "lvl/project/paths.hpp"
@@ -105,6 +106,8 @@ struct Brush
   float strength = 0.05F;
   /// Scalar brushes: value for kSet
   float value = 0.5F;
+  /// Smooth brush: cells from the center of the kernel each cell is averaged over (1 = 3x3)
+  int smooth_radius = 1;
 };
 
 /// Which kind of tile adjacency rules the rules window is editing
@@ -332,6 +335,21 @@ struct Generators
   bool step_tile_after_terrace = true;
   procgen::TerraceResult terrace_result;
   procgen::StepFillResult step_result;
+
+  /**
+   * @brief Shaping the heightmap by hand (the Layers panel, while a heightmap is selected)
+   *
+   * A mound stamped over the map or over the select tool's region, and a smoothing pass over the
+   * same. Both act on the *selected* layer rather than on <code>height_layer</code>, because they
+   * are what the Layers panel offers for the layer in front of the user -- the Generate panel's own
+   * heightmap tab is about making one from noise.
+   */
+  procgen::PyramidParams pyramid;
+  procgen::SmoothParams smooth;
+  /// Whether the two honour the select tool's region, as the fill does
+  bool shape_region = true;
+  procgen::ShapeResult pyramid_result;
+  procgen::SmoothResult smooth_result;
 };
 
 /// Most layers Edit > Refresh semantics from tiles can choose between
@@ -608,6 +626,8 @@ struct App
   FixedString<64> group_name;
   /// Folder the next group is filed under ('/'-separated; empty is the top level)
   FixedString<64> group_folder;
+  /// Shift+G in the Tilesets panel: the New group prompt is up (the fields without the listing)
+  bool new_group_prompt = false;
   /// Selected object (portal, marker or path node)
   level::Entity entity = level::kNullEntity;
   level::GraphId graph = 0;
@@ -623,8 +643,8 @@ struct App
   bool wfc_preview = true;
   /// What the batch edit applies to the constraints of the selected rule tiles
   level::WfcTileEdit wfc_batch;
-  /// Which kind of rules the rules window is editing
-  RulesMode rules_mode = RulesMode::kWfc;
+  /// Which kind of rules the rules window is editing (never kWfc while kWfcUi is off)
+  RulesMode rules_mode = RulesMode::kAutoTile;
   /// Auto-tiling rules: the terrain being edited
   level::TerrainId terrain = 0;
   /// Height-step rules: the terrain being edited

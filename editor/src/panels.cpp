@@ -9,6 +9,7 @@
 
 // C++ Standard Library
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 // Dear ImGui
@@ -119,6 +120,116 @@ void tile_image(const App& app, TileRef tile, float size)
 // -------------------------------------------------------------------------------------------------
 // Layers
 // -------------------------------------------------------------------------------------------------
+
+/**
+ * @brief Shaping a heightmap by hand: a mound stamped over it, and a smoothing pass
+ *
+ * Drawn only while the selected layer is a heightmap, because that is the layer both act on -- the
+ * controls would mean nothing beside a tile or a semantic layer, and both write scalar heights.
+ * They sit here rather than in the Generate panel for the same reason: the Generate panel's
+ * heightmap tab makes a heightmap out of noise, while these two are what the user reaches for with
+ * one already in front of them.
+ */
+void height_tools_section(App& app, std::size_t layer)
+{
+  Generators& g = app.generators;
+  ImGui::SeparatorText("Heightmap tools");
+  const bool has_region = g.region_w > 0 and g.region_h > 0;
+  if (has_region)
+  {
+    ImGui::Checkbox("Only the selected region", &g.shape_region);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip(
+        "The select tool's rectangle is %d x %d cells. Off, both tools act on the whole map.", g.region_w, g.region_h);
+    }
+  }
+  else
+  {
+    ImGui::TextDisabled("Whole map (drag a region with the select tool to shape part of it)");
+  }
+  if (ImGui::TreeNodeEx("pyramid", ImGuiTreeNodeFlags_DefaultOpen, "Pyramid"))
+  {
+    procgen::PyramidParams& p = g.pyramid;
+    ImGui::SetNextItemWidth(120.0F);
+    enum_combo("Shape", p.kind);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("A pyramid is square, so every terrace cut out of it is a square ring the step tiles have a "
+                        "corner for. A cone or a diamond is a shape to look at rather than one to tile.");
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0F);
+    enum_combo("Combine", p.blend);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How the mound meets the heights already there: it replaces them, adds to them, keeps "
+                        "whichever is higher or lower, or scales them (which fades a map to its rim).");
+    }
+    ImGui::DragFloat("Peak", &p.peak, 0.005F);
+    ImGui::DragFloat("Base", &p.base, 0.005F);
+    ImGui::SliderFloat("Flat top", &p.plateau, 0.0F, 1.0F);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How far out the flat top reaches, as a fraction of the way to the rim. The rest is slope.");
+    }
+    ImGui::SliderInt("Steps", &p.steps, 0, 16, p.steps == 0 ? "smooth" : "%d");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Cuts the slope into this many flat rings, so the mound is already the terraces it will be "
+                        "cut into -- which is how a hill comes out of Height steps with nothing the tiles cannot "
+                        "draw. 0 leaves the slope smooth.");
+    }
+    ImGui::Checkbox("Rounded", &p.rounded);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("Eases the slope off at the top and the bottom rather than leaving it straight.");
+    }
+    if (ImGui::Button("Stamp pyramid", ImVec2{-1, 0}))
+    {
+      stamp_pyramid(app, layer);
+    }
+    if (g.pyramid_result.cells > 0)
+    {
+      ImGui::TextDisabled("%zu of %zu cell(s) changed", g.pyramid_result.changed, g.pyramid_result.cells);
+    }
+    ImGui::TreePop();
+  }
+  if (ImGui::TreeNodeEx("smooth", ImGuiTreeNodeFlags_DefaultOpen, "Smooth"))
+  {
+    procgen::SmoothParams& sm = g.smooth;
+    ImGui::SliderInt("Radius", &sm.radius, 1, 8, "%d cell(s)");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How far each cell is averaged over. A larger radius takes out larger bumps.");
+    }
+    ImGui::SliderFloat("Amount", &sm.amount, 0.0F, 1.0F);
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("How much of the averaged value each cell takes. 1 is fully smoothed.");
+    }
+    ImGui::SliderInt("Passes", &sm.iterations, 1, 8);
+    if (ImGui::Button("Smooth heights", ImVec2{-1, 0}))
+    {
+      smooth_heights(app, layer);
+    }
+    if (g.smooth_result.cells > 0)
+    {
+      ImGui::TextDisabled(
+        "%zu of %zu cell(s) changed, largest %.3f",
+        g.smooth_result.changed,
+        g.smooth_result.cells,
+        static_cast<double>(g.smooth_result.max_delta));
+    }
+    ImGui::TextDisabled("Brush: pick Smooth in the viewport toolbar");
+    if (ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("The same averaging under the brush, so one stroke takes the roughness out of one hill "
+                        "instead of the whole map.");
+    }
+    ImGui::TreePop();
+  }
+}
 
 void layers_panel(App& app)
 {
@@ -271,6 +382,10 @@ void layers_panel(App& app)
         ImGui::TextDisabled("Brush mode/strength/value in the viewport toolbar");
         break;
       }
+      if (layer.kind == LayerKind::kHeight)
+      {
+        height_tools_section(app, app.layer);
+      }
     }
     else
     {
@@ -293,10 +408,165 @@ namespace
 {
 
 /**
- * @brief The tileset's named multi-tile stamps: the list, what is chosen, and how one is made
+ * @brief Adds the palette selection as a group named by App::group_name
  *
  * A group is made out of the palette selection, because that is already how several tiles are
  * picked and already how they are laid out -- the house in the atlas is the house on the map.
+ *
+ * @return true if a group was added (or the one of that name replaced)
+ */
+bool add_group_from_selection(App& app, TileSet& ts)
+{
+  memory::Scope scope{app.memory.frame};
+  Grid<TileRef> layout{app.memory.frame};
+  if (!palette_layout(app, layout))
+  {
+    report(app, Status::error("the palette selection is empty"));
+    return false;
+  }
+  // Only this tileset's tiles can be in its own group; the selection is of one tileset anyway
+  auto cells = memory::make_vector<TileIndex>(app.memory.frame, layout.extents.count(), kNoTileIndex);
+  for (std::size_t i = 0; i < layout.extents.count(); ++i)
+  {
+    const TileRef tile = layout.values[i];
+    cells[i] = (tile.empty() or tile.tileset != app.tileset) ? kNoTileIndex : tile.tile;
+  }
+  const GroupId id = set_group(ts, app.group_name.view(), layout.extents, cells.data());
+  if (id == kNoGroup)
+  {
+    report(app, Status::error("could not add tile group '%s'", app.group_name.c_str()));
+    return false;
+  }
+  ts.groups[id].folder = app.group_folder;
+  LVL_LOG_INFO() << "Tile group '" << app.group_name.c_str() << "' holds " << layout.extents.width << "x"
+                 << layout.extents.height << " cells";
+  app.project_modified = true;
+  choose_group(app, id);
+  return true;
+}
+
+/// Whether the New group fields and the palette selection are enough to make a group
+bool can_add_group(const App& app) { return selection_size(app) > 0 and !app.group_name.empty(); }
+
+/// Tooltip saying what the New group button still wants
+const char* new_group_hint(const App& app)
+{
+  if (selection_size(app) == 0)
+  {
+    return "Select the group's tiles in the palette first";
+  }
+  return app.group_name.empty() ? "Name the group first"
+                                : "Adds the selection as a group, or replaces the one of that name";
+}
+
+/**
+ * @brief The "New group" fields: the name, the folder and the button that takes the selection
+ *
+ * It is what the Tile groups window puts above its listing and what the Shift+G prompt is, so the
+ * two ask for a group in the same words.
+ */
+void new_group_section(App& app, TileSet& ts)
+{
+  ImGui::SetNextItemWidth(160.0F);
+  input_text("Name##new_group", app.group_name);
+  ImGui::SetNextItemWidth(160.0F);
+  input_text("Folder##new_group", app.group_folder);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!can_add_group(app));
+  const bool add = ImGui::Button("From the palette selection");
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+  {
+    ImGui::SetTooltip("%s", new_group_hint(app));
+  }
+  if (add)
+  {
+    add_group_from_selection(app, ts);
+  }
+}
+
+/// The tileset's groups as a folder tree, so a tileset with a hundred of them stays pickable
+void groups_tree(App& app, TileSet& ts)
+{
+  if (ts.groups.empty())
+  {
+    ImGui::TextDisabled("This tileset has no groups.");
+    return;
+  }
+  memory::Scope tree_scope{app.memory.frame};
+  const auto order = group_order(ts, app.memory.frame);
+  group_tree(ts, order.data(), order.size(), 0, [&app, &ts](GroupId id) {
+    const TileGroup& group = ts.groups[id];
+    ImGui::PushID(static_cast<int>(id));
+    if (delete_button("Remove this tile group"))
+    {
+      request_delete(
+        app,
+        PendingDelete{
+          .kind = DeleteKind::kTileGroup,
+          .index = id,
+          .owner = app.tileset,
+          .what = format<128>("tile group '%s'", group.name.c_str()),
+          .detail = "Only the group goes; the tiles it stamped onto the map stay where they are."});
+    }
+    const bool chosen = app.group.tileset == app.tileset and app.group.group == id;
+    if (ImGui::Selectable(format<96>("%s  (%d x %d)", group.name.c_str(), group.size.width, group.size.height), chosen))
+    {
+      choose_group(app, chosen ? kNoGroup : id);
+    }
+    ImGui::PopID();
+  });
+}
+
+/// The chosen group's name, folder and footprint, drawn as it will be stamped (a hole is a gap)
+void chosen_group_section(App& app, TileSet& ts)
+{
+  const TileGroup* group = chosen_group(app);
+  if (group == nullptr or app.group.tileset != app.tileset)
+  {
+    return;
+  }
+  ImGui::SeparatorText(group->name.c_str());
+  if (input_text("Name##group", ts.groups[app.group.group].name))
+  {
+    app.project_modified = true;
+  }
+  if (input_text("Folder##group", ts.groups[app.group.group].folder))
+  {
+    app.project_modified = true;
+  }
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Where this group is filed in the list, '/'-separated (\"nature/trees\"). Organisation "
+                      "only: a group is found by name, so re-filing it breaks nothing that points at it.");
+  }
+  const float thumb = 24.0F;
+  for (int y = 0; y < group->size.height; ++y)
+  {
+    for (int x = 0; x < group->size.width; ++x)
+    {
+      if (x > 0)
+      {
+        ImGui::SameLine();
+      }
+      if (const TileIndex tile = group_cell(ts, *group, x, y); tile == kNoTileIndex)
+      {
+        ImGui::Dummy(ImVec2{thumb, thumb});
+      }
+      else
+      {
+        tile_image(app, TileRef{static_cast<TileSetId>(app.tileset), tile}, thumb);
+      }
+    }
+  }
+}
+
+/**
+ * @brief The tileset's named multi-tile stamps: how one is made, then the ones it has
+ *
+ * Making one comes first, since that is what the palette beside it is for; the listing is a
+ * scrolling section of its own, so a tileset with many groups does not push the chosen group's
+ * preview off the bottom of the window.
  */
 void groups_section(App& app, TileSet& ts)
 {
@@ -314,126 +584,72 @@ void groups_section(App& app, TileSet& ts)
       app.group.clear();
     }
   }
-  if (ts.groups.empty())
-  {
-    ImGui::TextDisabled("This tileset has no groups.");
-  }
-  // Drawn as a folder tree, so a tileset with a hundred groups stays pickable
-  {
-    memory::Scope tree_scope{app.memory.frame};
-    const auto order = group_order(ts, app.memory.frame);
-    group_tree(ts, order.data(), order.size(), 0, [&app, &ts](GroupId id) {
-      const TileGroup& group = ts.groups[id];
-      ImGui::PushID(static_cast<int>(id));
-      if (delete_button("Remove this tile group"))
-      {
-        request_delete(
-          app,
-          PendingDelete{
-            .kind = DeleteKind::kTileGroup,
-            .index = id,
-            .owner = app.tileset,
-            .what = format<128>("tile group '%s'", group.name.c_str()),
-            .detail = "Only the group goes; the tiles it stamped onto the map stay where they are."});
-      }
-      const bool chosen = app.group.tileset == app.tileset and app.group.group == id;
-      if (ImGui::Selectable(
-            format<96>("%s  (%d x %d)", group.name.c_str(), group.size.width, group.size.height), chosen))
-      {
-        choose_group(app, chosen ? kNoGroup : id);
-      }
-      ImGui::PopID();
-    });
-  }
-
-  // The chosen group, drawn as it will be stamped (a hole shows through as a gap)
-  if (const TileGroup* group = chosen_group(app); group != nullptr and app.group.tileset == app.tileset)
-  {
-    ImGui::SeparatorText(group->name.c_str());
-    if (input_text("Name##group", ts.groups[app.group.group].name))
-    {
-      app.project_modified = true;
-    }
-    if (input_text("Folder##group", ts.groups[app.group.group].folder))
-    {
-      app.project_modified = true;
-    }
-    if (ImGui::IsItemHovered())
-    {
-      ImGui::SetTooltip("Where this group is filed in the list, '/'-separated (\"nature/trees\"). Organisation "
-                        "only: a group is found by name, so re-filing it breaks nothing that points at it.");
-    }
-    const float thumb = 24.0F;
-    for (int y = 0; y < group->size.height; ++y)
-    {
-      for (int x = 0; x < group->size.width; ++x)
-      {
-        if (x > 0)
-        {
-          ImGui::SameLine();
-        }
-        if (const TileIndex tile = group_cell(ts, *group, x, y); tile == kNoTileIndex)
-        {
-          ImGui::Dummy(ImVec2{thumb, thumb});
-        }
-        else
-        {
-          tile_image(app, TileRef{static_cast<TileSetId>(app.tileset), tile}, thumb);
-        }
-      }
-    }
-  }
-
   ImGui::SeparatorText("New group");
-  const std::size_t selected = selection_size(app);
-  ImGui::SetNextItemWidth(160.0F);
-  input_text("Name##new_group", app.group_name);
-  ImGui::SetNextItemWidth(160.0F);
-  input_text("Folder##new_group", app.group_folder);
-  ImGui::SameLine();
-  const bool ready = selected > 0 and !app.group_name.empty();
+  new_group_section(app, ts);
+  ImGui::SeparatorText(format<64>("%zu group%s", ts.groups.size(), ts.groups.size() == 1 ? "" : "s"));
+  // Scrolls, and can be dragged taller or shorter: the tree is the part that grows without bound
+  ImGui::BeginChild(
+    "groups", ImVec2{0, 10 * ImGui::GetTextLineHeightWithSpacing()}, ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY);
+  groups_tree(app, ts);
+  ImGui::EndChild();
+  chosen_group_section(app, ts);
+}
+
+/**
+ * @brief The New group controls as a modal, which Shift+G in the Tilesets panel raises
+ *
+ * The listing is deliberately left out: the point of the prompt is to name what is selected in the
+ * palette right now without going to the Tile groups window for it, and the palette is in the
+ * window underneath.
+ */
+void new_group_popup(App& app, TileSet& ts)
+{
+  if (!app.new_group_prompt)
+  {
+    return;
+  }
+  ImGui::OpenPopup("New tile group");
+  if (!ImGui::BeginPopupModal("New tile group", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    return;
+  }
+  ImGui::TextDisabled("The palette selection, stamped as one thing.");
+  if (selection_size(app) == 0)
+  {
+    ImGui::TextColored(ImVec4{1.0F, 0.6F, 0.3F, 1.0F}, "Nothing is selected in the palette.");
+  }
+  else
+  {
+    selection_preview(app, 24.0F, 4);
+  }
+  ImGui::SetNextItemWidth(200.0F);
+  input_text("Name", app.group_name);
+  ImGui::SetNextItemWidth(200.0F);
+  input_text("Folder", app.group_folder);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Where the group is filed in the list, '/'-separated (\"nature/trees\")");
+  }
+  const bool ready = can_add_group(app);
   ImGui::BeginDisabled(!ready);
-  const bool add = ImGui::Button("From the palette selection");
+  // Enter adds it, as it takes the other prompts' first button
+  const bool add = ImGui::Button("Add group") or (ready and ImGui::IsKeyPressed(ImGuiKey_Enter));
   ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+  if (!ready and ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
   {
-    ImGui::SetTooltip(
-      selected == 0 ? "Select the group's tiles in the palette first"
-                    : (app.group_name.empty() ? "Name the group first"
-                                              : "Adds the selection as a group, or replaces the one of that name"));
+    ImGui::SetTooltip("%s", new_group_hint(app));
   }
-  if (add)
+  ImGui::SameLine();
+  const bool cancel = ImGui::Button("Cancel") or ImGui::IsKeyPressed(ImGuiKey_Escape);
+  if (cancel or (add and add_group_from_selection(app, ts)))
   {
-    memory::Scope scope{app.memory.frame};
-    Grid<TileRef> layout{app.memory.frame};
-    if (!palette_layout(app, layout))
-    {
-      report(app, Status::error("the palette selection is empty"));
-    }
-    else
-    {
-      // Only this tileset's tiles can be in its own group; the selection is of one tileset anyway
-      auto cells = memory::make_vector<TileIndex>(app.memory.frame, layout.extents.count(), kNoTileIndex);
-      for (std::size_t i = 0; i < layout.extents.count(); ++i)
-      {
-        const TileRef tile = layout.values[i];
-        cells[i] = (tile.empty() or tile.tileset != app.tileset) ? kNoTileIndex : tile.tile;
-      }
-      const GroupId id = set_group(ts, app.group_name.view(), layout.extents, cells.data());
-      if (id == kNoGroup)
-      {
-        report(app, Status::error("could not add tile group '%s'", app.group_name.c_str()));
-      }
-      else
-      {
-        ts.groups[id].folder = app.group_folder;
-        LVL_LOG_INFO() << "Tile group '" << app.group_name.c_str() << "' holds " << layout.extents.width << "x"
-                       << layout.extents.height << " cells";
-        app.project_modified = true;
-        choose_group(app, id);
-      }
-    }
+    app.new_group_prompt = false;
   }
+  if (!app.new_group_prompt)
+  {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
 }
 
 }  // namespace
@@ -616,6 +832,130 @@ void overlay_tooltip(const App& app, const TileSet& ts, TileIndex tile)
   }
 }
 
+/// Whether the palette draws a box around each of the tileset's tile groups (Palette header)
+bool g_group_boxes = true;
+
+/**
+ * @brief The colors a group's box is drawn in
+ *
+ * A fixed set rather than a hue off the hash: eight colors chosen to be told apart at the size of
+ * a tile, and **none of them the selection's yellow**, which is drawn over the same tiles.
+ */
+constexpr std::array<ImU32, 8> kGroupColors = {
+  IM_COL32(90, 200, 255, 255),
+  IM_COL32(255, 120, 190, 255),
+  IM_COL32(120, 230, 140, 255),
+  IM_COL32(255, 140, 90, 255),
+  IM_COL32(180, 150, 255, 255),
+  IM_COL32(90, 220, 215, 255),
+  IM_COL32(230, 130, 255, 255),
+  IM_COL32(150, 190, 90, 255)};
+
+/**
+ * @brief The color group <code>name</code> is boxed in
+ *
+ * It follows the name rather than the group's index, so a group keeps its color when another is
+ * added before it or removed -- which is what makes the box worth reading as an identity.
+ */
+ImU32 group_color(std::string_view name)
+{
+  // FNV-1a, as the binary chunks use
+  std::uint32_t hash = 2166136261U;
+  for (const char c : name)
+  {
+    hash = (hash ^ static_cast<std::uint32_t>(static_cast<std::uint8_t>(c))) * 16777619U;
+  }
+  return kGroupColors[hash % kGroupColors.size()];
+}
+
+/**
+ * @brief Draws each tile group's tiles as one box in the group's own color, labelled with its name
+ *
+ * Which tiles a group is made of is otherwise only visible by picking the group in the Tile groups
+ * window, so a tileset of houses and trees reads as one undifferentiated sheet.
+ *
+ * A group's tiles are tile *indices* and need not be a block of the palette -- its footprint is
+ * laid out in its own coordinates, and re-slicing or hand-editing can scatter them -- so the box is
+ * drawn side by side rather than as a bounding rectangle, which would enclose tiles of other
+ * groups: a side is drawn wherever the palette cell next to it is not part of the same group. Tiles
+ * that do sit together therefore come out as one box, and ones that do not are boxed where they
+ * are instead of being joined by a rectangle that lies about which tiles belong.
+ */
+void group_boxes(
+  const TileSet& ts,
+  const Texture& tex,
+  level::Extents grid,
+  ImVec2 origin,
+  float zoom,
+  ImDrawList* draw)
+{
+  const int cols = std::max(1, grid.width);
+  for (const TileGroup& group : ts.groups)
+  {
+    const TileIndex* cells = group_cells_of(ts, group);
+    const std::size_t count = group.size.count();
+    const ImU32 color = group_color(group.name.view());
+    const auto member = [&](int tile) {
+      if (tile < 0)
+      {
+        return false;
+      }
+      for (std::size_t i = 0; i < count; ++i)
+      {
+        if (cells[i] != kNoTileIndex and static_cast<int>(cells[i]) == tile)
+        {
+          return true;
+        }
+      }
+      return false;
+    };
+    // The name goes on the group's first tile in the palette, which is where the eye starts
+    int label = -1;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+      const TileIndex t = cells[i];
+      // A hole in the footprint is not one of the group's tiles, so it is not boxed either
+      if (t == kNoTileIndex or static_cast<std::size_t>(t) >= ts.tiles.size())
+      {
+        continue;
+      }
+      label = (label < 0) ? static_cast<int>(t) : std::min(label, static_cast<int>(t));
+      const TileRect r = tile_rect(ts.slice, tex.width, tex.height, t);
+      const ImVec2 a{origin.x + r.x * zoom, origin.y + r.y * zoom};
+      const ImVec2 b{a.x + r.width * zoom, a.y + r.height * zoom};
+      const int index = static_cast<int>(t);
+      const int column = index % cols;
+      if (!member((column == 0) ? -1 : index - 1))
+      {
+        draw->AddLine(ImVec2{a.x, a.y}, ImVec2{a.x, b.y}, color, 2.0F);
+      }
+      if (!member((column + 1 >= cols) ? -1 : index + 1))
+      {
+        draw->AddLine(ImVec2{b.x, a.y}, ImVec2{b.x, b.y}, color, 2.0F);
+      }
+      if (!member(index - cols))
+      {
+        draw->AddLine(ImVec2{a.x, a.y}, ImVec2{b.x, a.y}, color, 2.0F);
+      }
+      if (!member(index + cols))
+      {
+        draw->AddLine(ImVec2{a.x, b.y}, ImVec2{b.x, b.y}, color, 2.0F);
+      }
+    }
+    if (label < 0)
+    {
+      continue;
+    }
+    const TileRect r = tile_rect(ts.slice, tex.width, tex.height, static_cast<TileIndex>(label));
+    const ImVec2 at{origin.x + r.x * zoom + 2.0F, origin.y + r.y * zoom + 2.0F};
+    const ImVec2 size = ImGui::CalcTextSize(group.name.c_str());
+    // Backed, since the atlas underneath it is any color at all
+    draw->AddRectFilled(
+      ImVec2{at.x - 2.0F, at.y - 1.0F}, ImVec2{at.x + size.x + 2.0F, at.y + size.y + 1.0F}, IM_COL32(0, 0, 0, 170));
+    draw->AddText(at, color, group.name.c_str());
+  }
+}
+
 /// The overlay toggles and their opacity, above the palette
 void overlay_controls(App& app)
 {
@@ -632,6 +972,12 @@ void overlay_controls(App& app)
   ImGui::SetNextItemWidth(110.0F);
   ImGui::SliderFloat("Opacity##overlay", &o.opacity, 0.1F, 1.0F, "%.2f");
   ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::Checkbox("Groups##overlay", &g_group_boxes);
+  if (ImGui::IsItemHovered())
+  {
+    ImGui::SetTooltip("Boxes the tiles of each of this tileset's tile groups, in a color of its own, with its name");
+  }
   if (o.any())
   {
     ImGui::TextDisabled("A stripe per overlay, top to bottom; struck through in pink where the tile has none.");
@@ -775,7 +1121,17 @@ void tilesets_panel(App& app)
     ImGui::SetTooltip("Opens the Tile groups window: this tileset's named multi-tile stamps");
   }
   ImGui::SameLine();
-  ImGui::TextDisabled("%zu group%s", ts.groups.size(), ts.groups.size() == 1 ? "" : "s");
+  ImGui::TextDisabled("%zu group%s (shift+G: new)", ts.groups.size(), ts.groups.size() == 1 ? "" : "s");
+  // Shift+G asks for a group out of the palette selection without leaving this panel, which is
+  // where the selection is made. It belongs to the panel rather than to the global shortcuts
+  // because it is the palette underneath that it acts on.
+  if (
+    ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) and !ImGui::GetIO().WantTextInput and
+    ImGui::GetIO().KeyShift and !ImGui::GetIO().KeyCtrl and ImGui::IsKeyPressed(ImGuiKey_G))
+  {
+    app.new_group_prompt = true;
+  }
+  new_group_popup(app, ts);
 
   if (ImGui::CollapsingHeader("Palette", ImGuiTreeNodeFlags_DefaultOpen))
   {
@@ -837,6 +1193,12 @@ void tilesets_panel(App& app)
         {
           draw->AddRect(a, b, hidden ? IM_COL32(255, 80, 80, 60) : IM_COL32(255, 255, 255, 40));
         }
+      }
+      // Over the slicing grid, since a group's box is what says these tiles are one thing, and it
+      // has to be readable against it
+      if (g_group_boxes)
+      {
+        group_boxes(ts, tex, grid, origin, zoom, draw);
       }
       if (ImGui::IsItemHovered())
       {

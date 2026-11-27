@@ -5,7 +5,7 @@ load("//bazel:copts.bzl", "LVL_COPTS")
 package(default_visibility = ["//visibility:public"])
 
 # Procedural generation: noise heightmaps, iterative water-shedding, wave function collapse,
-# auto-tiling, masked fills and scattered objects.
+# auto-tiling, heightmap shaping, masked fills and scattered objects.
 cc_library(
     name = "procgen",
     srcs = [
@@ -13,6 +13,7 @@ cc_library(
         "src/fill.cpp",
         "src/noise.cpp",
         "src/scatter.cpp",
+        "src/shape.cpp",
         "src/steps.cpp",
         "src/watershed.cpp",
         "src/wfc.cpp",
@@ -22,6 +23,7 @@ cc_library(
         "include/lvl/procgen/fill.hpp",
         "include/lvl/procgen/noise.hpp",
         "include/lvl/procgen/scatter.hpp",
+        "include/lvl/procgen/shape.hpp",
         "include/lvl/procgen/steps.hpp",
         "include/lvl/procgen/watershed.hpp",
         "include/lvl/procgen/wfc.hpp",
