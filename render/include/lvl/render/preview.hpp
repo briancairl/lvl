@@ -55,7 +55,9 @@ void colorize(
 /**
  * @brief Average color of every tile of a tileset, from its atlas
  *
- * Fully transparent pixels are ignored; tiles with no opaque pixels are transparent.
+ * The color is the alpha-weighted mean of the tile's pixels, and the alpha is their mean coverage, so
+ * a tile that covers part of its cell is drawn part-transparent where it stands for a whole cell and
+ * lets the layers under it through. Tiles with no opaque pixels are transparent.
  */
 void average_tile_colors(const level::TileSet& tileset, const image::Image& atlas, memory::Vector<image::Rgba>& out);
 

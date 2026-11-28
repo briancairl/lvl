@@ -334,6 +334,12 @@ void finish_job(App& app)
           {
             apply_atlases(app, job.atlases, 1 - app.assets.current);
           }
+          // The overlay textures and the mini-preview describe the cells of the level that was open,
+          // so every load has to throw them away. Only apply_atlases did it, and a switch within a
+          // project deliberately does not decode the atlases again -- which left the viewport
+          // drawing the *previous* level wherever it draws overlays rather than tiles, so the map
+          // was right zoomed in and the level before it zoomed out.
+          invalidate_view(app);
           app.path = job.path;
           app.modified = false;
           refresh_level_entry(app, job.path.view());
@@ -2606,6 +2612,16 @@ void smoke(App& app)
     if (app.assets.current != app.smoke_check.assets)
     {
       report(app, Status::error("switching level decoded the atlases again"));
+    }
+    // Not decoding them again must not extend to the overlay textures, which describe the cells of
+    // the level that was open and so are wrong for this one. They are what the viewport draws
+    // wherever it does not draw tiles from the atlas -- zoomed out, and for every layer that is not
+    // a tile layer -- so a switch that left them alone showed the previous level's map. Nothing has
+    // drawn since the load was applied, a few calls up this frame, so their being dirty is the load
+    // having thrown them away
+    if (!app.overlays.all_dirty)
+    {
+      report(app, Status::error("switching level left the previous level's overlay textures up"));
     }
     // Something to compact, now that the project has two members and the job can do it
     const auto doomed = project::intern_semantic(pr, "scaffold_again");
