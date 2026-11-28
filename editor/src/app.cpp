@@ -111,8 +111,13 @@ void update_title(App& app)
  * level name this one and have its portals offered without this level being loaded. A member is
  * found by name first, since that is how levels address each other; a level saved under a new name
  * keeps the file it had and takes the new name, rather than becoming a second member.
+ *
+ * <code>index_changed</code>, when given, says whether the index now holds anything different. The
+ * index lives only in the manifest, so a save that changes it is a save the manifest has to be
+ * rewritten after -- otherwise the association between the level and the project is never recorded.
  */
-Status add_member(App& app, std::string_view name, std::string_view file, level::Level& lv)
+Status
+add_member(App& app, std::string_view name, std::string_view file, level::Level& lv, bool* index_changed = nullptr)
 {
   project::Project& pr = *app.project;
   Path relative;
@@ -183,17 +188,56 @@ Status add_member(App& app, std::string_view name, std::string_view file, level:
       .marker_count = markers.size()},
     app.memory.frame);
   app.project_modified = app.project_modified or (s.ok and changed);
+  if (index_changed != nullptr)
+  {
+    *index_changed = s.ok and changed;
+  }
   return s;
 }
 
 /// Records the open level as a member, and refreshes what the index says about it
-void refresh_level_entry(App& app, std::string_view file)
+void refresh_level_entry(App& app, std::string_view file, bool* index_changed = nullptr)
 {
-  const Status s = add_member(app, app.level->settings.name.view(), file, *app.level);
+  const Status s = add_member(app, app.level->settings.name.view(), file, *app.level, index_changed);
   if (!s.ok)
   {
     report(app, s);
   }
+}
+
+/**
+ * @brief Finds the project folder that holds <code>path</code>, if any
+ *
+ * A project is where its manifest is, so walking up from the file and testing each folder for a
+ * project.json is the whole of "which project does this level belong to?". That question has to be
+ * asked, because a member level is saved in project scope: its file carries none of the tilesets,
+ * catalogs or rules its cells name, so reading it without the manifest beside it gives a level
+ * whose tilesets are simply not there.
+ *
+ * The walk stops at a parent that is empty or no shorter than the one before it, so it terminates
+ * on an absolute path, on a relative one, and at a filesystem root.
+ */
+bool enclosing_project(std::string_view path, Path& manifest)
+{
+  // A path with no separator at all names a file in the working directory, which is where the walk
+  // starts for it -- that is how a level named on the command line from inside its own project
+  // folder finds the manifest beside it
+  const std::string_view parent = project::parent_path(path);
+  std::string_view folder = parent.empty() ? std::string_view{"."} : parent;
+  while (!folder.empty())
+  {
+    if (project::is_project_root(folder) and project::join(folder, project::kManifestName, manifest).ok)
+    {
+      return true;
+    }
+    const std::string_view parent = project::parent_path(folder);
+    if (parent.size() >= folder.size())
+    {
+      break;
+    }
+    folder = parent;
+  }
+  return false;
 }
 
 /**
@@ -245,20 +289,21 @@ void finish_job(App& app)
         {
           app.path = job.path;
           app.modified = false;
-          refresh_level_entry(app, job.path.view());
+          bool index_changed = false;
+          refresh_level_entry(app, job.path.view(), &index_changed);
+          // Saving into the tree is what makes a level a member, and the index that records it
+          // lives only in the manifest: without this the association is never written down, so the
+          // level comes back as a stranger to its project -- or, worse, as a project-scope file
+          // with nothing on disk saying which project holds the tilesets its cells name.
+          app.save_manifest = app.save_manifest or (index_changed and !app.project_path.empty());
           remember_recent_file(app, job.path.view());
           web::offer_download(job.path.c_str());
-          // Quitting or switching was waiting on this save
+          // Quitting was waiting on this save; switching is left to the tail of finish_job, which
+          // runs once the job slot is free
           app.exit = app.exit or app.exit_after_save;
-          if (app.switch_after_save and app.switch_to != project::kNoLevel)
-          {
-            const std::size_t index = app.switch_to;
-            app.switch_to = project::kNoLevel;
-            app.switch_after_save = false;
-            switch_to_level(app, index);
-            report(app, job.result);
-            return;
-          }
+          app.exit_after_save = false;
+          report(app, job.result);
+          return;
         }
         app.exit_after_save = false;
         app.switch_after_save = false;
@@ -277,8 +322,15 @@ void finish_job(App& app)
             // project whose manifest is already in, does not
             std::swap(app.project, app.spare_project);
             project::reset(*app.spare_project);
+            // The project that was open is not the open one any more. Leaving its manifest named
+            // here would have the next save write a member file into a project that is gone, and
+            // leave the panels disagreeing about whether there is a tree to put assets in.
+            app.project_path.clear();
+            app.project_modified = false;
           }
-          if (job.decode_atlases)
+          // The run decodes on a standalone file whatever was asked for, since such a file replaces
+          // the project's tilesets; this has to follow it
+          if (job.decode_atlases or job.carried == level::LevelScope::kStandalone)
           {
             apply_atlases(app, job.atlases, 1 - app.assets.current);
           }
@@ -465,6 +517,25 @@ void finish_job(App& app)
     app.job);
   app.job.emplace<std::monostate>();
   memory::clear(app.memory.jobs);
+
+  // What a finished job asked for but could not do itself: both of these need the job slot, which
+  // the finished job still held above. Writing the manifest comes first, since switching starts a
+  // job of its own that would displace it.
+  if (app.save_manifest)
+  {
+    app.save_manifest = false;
+    if (!app.project_path.empty())
+    {
+      file_action(app, FileAction::kSaveProjectAs, app.project_path.c_str());
+    }
+  }
+  if (app.switch_after_save and app.switch_to != project::kNoLevel)
+  {
+    const std::size_t index = app.switch_to;
+    app.switch_to = project::kNoLevel;
+    app.switch_after_save = false;
+    switch_to_level(app, index);
+  }
   update_title(app);
 }
 
@@ -727,6 +798,69 @@ void request_import(App& app, FileAction action, const char* path)
   }
   app.pending_import = PendingImport{.action = action, .plan = plan};
   app.pending_import.source.assign(path);
+}
+
+/**
+ * @brief Brings the atlas of a just-imported tileset in with it
+ *
+ * A tileset file stores its atlas path as the project it was exported from stored it: relative to
+ * <em>that</em> root. Resolved against this project's root it names a file that is not there, so
+ * the atlas draws red and the only way on is the "..." button -- which is the tileset import
+ * leaving half the job undone, since the file does say which image it wants.
+ *
+ * So the path is looked for where it could plausibly be, nearest first, and the first candidate
+ * that exists goes through <code>request_import</code>: a file inside this tree is stored relative
+ * to the root with nothing asked, and one outside raises the same copy-into-the-project prompt
+ * choosing an atlas by hand does. Nothing found leaves the stored path alone, and the red status in
+ * the Tilesets panel is then the right report.
+ *
+ * <code>file</code> is the tileset file that was read.
+ */
+void adopt_tileset_atlas(App& app, const char* file)
+{
+  project::Project& pr = *app.project;
+  if (app.tileset >= pr.tilesets.size())
+  {
+    return;
+  }
+  const Path stored{pr.tilesets[app.tileset].image.view()};
+  if (stored.empty())
+  {
+    // The tileset names no atlas, so there is nothing to find
+    return;
+  }
+  Path candidate;
+  if (project::resolve(pr.root.view(), stored.view(), candidate).ok and file::exists(candidate.c_str()))
+  {
+    // It already resolves against this project; the reload that follows the import will find it
+    return;
+  }
+  // A file with no separator is in the working directory, which is the folder it is "beside"
+  const std::string_view parent = project::parent_path(std::string_view{file});
+  const Path folder{parent.empty() ? std::string_view{"."} : parent};
+  // Nearest first: as stored beside the file, then its bare name beside the file (an atlas handed
+  // over next to the tileset), then as stored against the project the file came out of
+  Path source_manifest;
+  const std::string_view source_root = enclosing_project(std::string_view{file}, source_manifest)
+    ? project::parent_path(source_manifest.view())
+    : std::string_view{};
+  const std::string_view tails[] = {stored.view(), project::file_name(stored.view())};
+  const std::string_view bases[] = {folder.view(), source_root};
+  for (const std::string_view base : bases)
+  {
+    for (const std::string_view tail : tails)
+    {
+      if (base.empty() or tail.empty())
+      {
+        continue;
+      }
+      if (project::join(base, tail, candidate).ok and file::exists(candidate.c_str()))
+      {
+        request_import(app, FileAction::kAtlasImage, candidate.c_str());
+        return;
+      }
+    }
+  }
 }
 
 /// The copy-into-project prompt, drawn once a frame beside the other modals
@@ -2403,6 +2537,23 @@ void smoke(App& app)
         report(app, Status::error("a member level was saved standalone, not in project scope"));
       }
     }
+    // And the manifest on disk says so. The index is the only record that this file is a member,
+    // and saving into the tree is what makes it one, so a save that changes the index has to write
+    // the manifest -- before the fix it was written only by a later Ctrl+S, and quitting straight
+    // after the save left the level a stranger to its project.
+    char* manifest = nullptr;
+    std::size_t manifest_size = 0;
+    if (file::read(app.project_path.c_str(), app.memory.frame, manifest, manifest_size).ok)
+    {
+      if (std::string_view{manifest, manifest_size}.find("levels/demo.json") == std::string_view::npos)
+      {
+        report(app, Status::error("saving a level into the tree did not record it in the manifest"));
+      }
+    }
+    else
+    {
+      report(app, Status::error("the project manifest is not on disk"));
+    }
     // A second member: the same level saved under another name, which is what the index follows
     lv.settings.name.assign("east");
     file_action(app, FileAction::kSaveLevel, "smoke_project/levels/east.json");
@@ -3147,7 +3298,183 @@ void smoke(App& app)
     heights.fill(0.0F);
     break;
   }
-  case 51:
+  case 51: {
+    // Opening a member level by its file -- what File > Open and the recent list do -- has to open
+    // the project it is in, because a member's file carries none of the shared sections. Reading it
+    // into a spare project, as this once did for every level, left the level with no tilesets at
+    // all: the commonest way to lose them.
+    project::Project& pr = *app.project;
+    if (pr.levels.size() != 2 or pr.tilesets.empty())
+    {
+      report(app, Status::error("the project is not the two-member one the earlier steps built"));
+      break;
+    }
+    const std::size_t other = (pr.levels[0].name == app.level->settings.name) ? 1 : 0;
+    app.smoke_check.tilesets = pr.tilesets.size();
+    app.smoke_check.semantics = pr.semantics.size();
+    app.smoke_check.project_path.assign(app.project_path.view());
+    Path file;
+    if (const Status s = project::resolve(pr.root.view(), pr.levels[other].file.view(), file); !s.ok)
+    {
+      report(app, s);
+      break;
+    }
+    app.modified = false;
+    file_action(app, FileAction::kOpenLevel, file.c_str());
+    break;
+  }
+  case 52: {
+    project::Project& pr = *app.project;
+    if (pr.tilesets.size() != app.smoke_check.tilesets)
+    {
+      report(app, Status::error("opening a member level by its file lost the project's tilesets"));
+    }
+    if (pr.semantics.size() != app.smoke_check.semantics)
+    {
+      report(app, Status::error("opening a member level by its file lost the project's catalogs"));
+    }
+    if (app.project_path != app.smoke_check.project_path)
+    {
+      report(app, Status::error("opening a member level did not keep the project it belongs to open"));
+    }
+    if (pr.levels.size() != 2)
+    {
+      report(app, Status::error("opening a member level by its file emptied the level index"));
+    }
+    // And its atlas is still decoded, since the tilesets are the same objects. An atlas that will
+    // not load only draws red in the Tilesets panel, so the status is checked here
+    if (app.tileset < pr.tilesets.size() and !app.assets.status[app.tileset].ok)
+    {
+      report(app, app.assets.status[app.tileset]);
+    }
+    // Now the tileset import. Exported outside the project, so importing it back is the
+    // across-projects case rather than a file that already resolves.
+    file_action(app, FileAction::kSaveTileSet, "smoke_imported.tileset.json");
+    break;
+  }
+  case 53: {
+    // The exported file names its atlas as the project stores it, relative to the root. Rewrite
+    // that to a bare name, which is what a tileset handed over beside its PNG looks like: it names
+    // nothing under this project's root, so before the fix the atlas simply did not load and had to
+    // be imported by hand.
+    memory::Scope scope{app.memory.frame};
+    char* text = nullptr;
+    std::size_t size = 0;
+    if (!file::read("smoke_imported.tileset.json", app.memory.frame, text, size).ok)
+    {
+      report(app, Status::error("the exported tileset was not written"));
+      break;
+    }
+    const std::string_view document{text, size};
+    const std::string_view stored{"assets/atlases/lvl_demo_atlas.png"};
+    const std::size_t at = document.find(stored);
+    if (at == std::string_view::npos)
+    {
+      report(app, Status::error("the exported tileset does not name the atlas copied into the project"));
+      break;
+    }
+    auto rewritten = memory::make_vector<char>(app.memory.frame);
+    rewritten.reserve(size);
+    for (const char c : document.substr(0, at))
+    {
+      rewritten.push_back(c);
+    }
+    for (const char c : std::string_view{"lvl_demo_atlas.png"})
+    {
+      rewritten.push_back(c);
+    }
+    for (const char c : document.substr(at + stored.size()))
+    {
+      rewritten.push_back(c);
+    }
+    if (!file::write("smoke_imported.tileset.json", rewritten.data(), rewritten.size()).ok)
+    {
+      report(app, Status::error("could not rewrite the exported tileset"));
+      break;
+    }
+    app.smoke_check.tilesets = app.project->tilesets.size();
+    file_action(app, FileAction::kLoadTileSet, "smoke_imported.tileset.json");
+    break;
+  }
+  case 54: {
+    project::Project& pr = *app.project;
+    if (pr.tilesets.size() != app.smoke_check.tilesets + 1)
+    {
+      report(app, Status::error("importing a tileset did not add one"));
+      break;
+    }
+    // The import found the atlas beside the file it came from and offered to bring it in, rather
+    // than leaving the new tileset with a path that names nothing
+    if (app.pending_import.action != FileAction::kAtlasImage)
+    {
+      report(app, Status::error("importing a tileset did not offer to bring its atlas in"));
+      break;
+    }
+    const project::CopyPlan plan = app.pending_import.plan;
+    if (plan.destination != std::string_view{"assets/atlases/lvl_demo_atlas.png"})
+    {
+      report(app, Status::error(format<200>("the atlas would land at '%s'", plan.destination.c_str())));
+    }
+    if (!plan.identical)
+    {
+      report(app, Status::error("the same atlas is already in the project, which the plan should say"));
+    }
+    // What the prompt's "Copy into the project" button does: the bytes are already there, so this
+    // only stores the path -- and the reload it starts is what proves the atlas now resolves
+    const Path source = app.pending_import.source;
+    app.pending_import = PendingImport{};
+    if (const Status copied = project::apply_copy(pr.root.view(), plan, source.view(), app.memory.frame); !copied.ok)
+    {
+      report(app, copied);
+    }
+    apply_import(app, FileAction::kAtlasImage, plan.destination.view());
+    break;
+  }
+  case 55:
+    if (app.tileset >= app.project->tilesets.size())
+    {
+      report(app, Status::error("the imported tileset is gone"));
+      break;
+    }
+    if (!app.assets.status[app.tileset].ok)
+    {
+      report(app, app.assets.status[app.tileset]);
+    }
+    if (app.project->tilesets[app.tileset].image != std::string_view{"assets/atlases/lvl_demo_atlas.png"})
+    {
+      report(app, Status::error("an imported tileset's atlas was not stored relative to the root"));
+    }
+    break;
+  case 56: {
+    // "Save and switch": the prompt's first button when the open document has changes and another
+    // member is about to replace it. The save and the switch are two jobs and only one runs at a
+    // time, so the switch has to wait for the save's slot to be free -- it used to be started while
+    // the finished save still held it, which only reported "another operation is still running".
+    project::Project& pr = *app.project;
+    const std::size_t other = (pr.levels[0].name == app.level->settings.name) ? 1 : 0;
+    app.smoke_check.level_name.assign(pr.levels[other].name.view());
+    app.modified = true;
+    request_switch(app, other);
+    if (!app.confirm_exit or app.switch_to != other)
+    {
+      report(app, Status::error("switching with unsaved changes did not ask first"));
+      break;
+    }
+    // What the prompt's "Save and switch" button does
+    save_and_switch(app);
+    break;
+  }
+  case 57:
+    if (app.level->settings.name != app.smoke_check.level_name.view())
+    {
+      report(app, Status::error("save and switch saved but did not switch"));
+    }
+    if (app.modified)
+    {
+      report(app, Status::error("save and switch left the document unsaved"));
+    }
+    break;
+  case 58:
     // Quitting with unsaved changes asks first; Cancel keeps the editor open
     app.modified = true;
     request_exit(app);
@@ -3156,7 +3483,7 @@ void smoke(App& app)
       report(app, Status::error("quitting with unsaved changes did not ask first"));
     }
     break;
-  case 52:
+  case 59:
     // The prompt was drawn; choose Cancel
     if (!ImGui::IsPopupOpen("Unsaved changes") or app.exit)
     {
@@ -3555,16 +3882,47 @@ void file_action(App& app, FileAction action, const char* path)
 {
   // Small files are handled synchronously; level load/save and exports run as jobs
   JobMemory& jm = job_memory(app);
+  // True if it worked, for the callers that go on to start a job only then. A bool rather than the
+  // Status, which is [[nodiscard]]: most callers have nothing to do with the outcome but report it.
   const auto small_io = [&](auto&& fn) {
     if (!std::holds_alternative<std::monostate>(app.job))
     {
       report(app, Status::error("another operation is still running"));
-      return;
+      return false;
     }
     partition(app.memory.jobs, jm);
     auto ctx = jm.context(nullptr);
-    report(app, fn(ctx));
+    const Status s = fn(ctx);
+    report(app, s);
     memory::clear(app.memory.jobs);
+    return s.ok;
+  };
+  /**
+   * @brief Reads a project manifest and makes it the open project
+   *
+   * Both "Open project" and opening a level that was found inside a project folder need this, and
+   * they must not drift apart: in each case the manifest is the authority for the tilesets,
+   * catalogs and rules the level about to be loaded names. What each does afterwards differs, so
+   * the level load itself stays with the caller.
+   */
+  const auto read_manifest = [&](const char* manifest) {
+    return small_io([&](level::IoContext& ctx) {
+      // Into the spare, so a manifest that will not load leaves the open project alone
+      Status s = project::load_project(manifest, *app.spare_project, ctx);
+      if (!s.ok)
+      {
+        project::reset(*app.spare_project);
+        return s;
+      }
+      std::swap(app.project, app.spare_project);
+      project::reset(*app.spare_project);
+      app.project_path.assign(manifest);
+      app.project_modified = false;
+      app.tileset = 0;
+      remember_recent_file(app, app.project_path.view());
+      invalidate_view(app);
+      return s;
+    });
   };
   switch (action)
   {
@@ -3599,21 +3957,8 @@ void file_action(App& app, FileAction action, const char* path)
     });
     break;
   case FileAction::kOpenProject:
-    small_io([&](level::IoContext& ctx) {
-      // Into the spare, so a manifest that will not load leaves the open project alone
-      Status s = project::load_project(path, *app.spare_project, ctx);
-      if (!s.ok)
-      {
-        project::reset(*app.spare_project);
-        return s;
-      }
-      std::swap(app.project, app.spare_project);
-      project::reset(*app.spare_project);
-      app.project_path.assign(path);
-      app.project_modified = false;
-      app.tileset = 0;
-      remember_recent_file(app, app.project_path.view());
-      invalidate_view(app);
+    if (read_manifest(path))
+    {
       // The project's own first member replaces whatever level is open, and brings the new
       // tilesets' atlases in with it -- one job, since only one runs at a time. A project with no
       // members leaves the open level where it is, and then the atlases need a job of their own.
@@ -3625,8 +3970,7 @@ void file_action(App& app, FileAction action, const char* path)
       {
         switch_to_level(app, 0, true);
       }
-      return s;
-    });
+    }
     break;
   case FileAction::kSaveProjectAs:
     small_io([&](level::IoContext& ctx) {
@@ -3656,16 +4000,40 @@ void file_action(App& app, FileAction action, const char* path)
       return s;
     });
     break;
-  case FileAction::kOpenLevel:
+  case FileAction::kOpenLevel: {
+    // A level inside a project folder is a member of it, and a member's file carries none of the
+    // shared sections -- no tilesets, no catalogs, no rules, since the manifest is the authority
+    // for those. So opening one means opening the project it is in first; reading it into a spare
+    // project of its own, as this once did for every level, gives a level whose tilesets are gone.
+    Path manifest;
+    const bool member = enclosing_project(std::string_view{path}, manifest);
+    // Whether the manifest has just been read in, and so whether the tilesets are new objects
+    // whose atlases have to be decoded
+    bool fresh_project = false;
+    if (member and manifest != app.project_path)
+    {
+      if (!read_manifest(manifest.c_str()))
+      {
+        break;
+      }
+      fresh_project = true;
+    }
     if (auto* job = prepare_job<LoadLevelJob>(app); job != nullptr)
     {
-      job->project = app.spare_project;
+      // In the tree: read into the open project, which now holds the manifest's shared data. Not in
+      // one: the file stands alone and carries its own, so it brings a project with it.
+      job->project = member ? app.project : app.spare_project;
+      job->keep_project = member;
+      // Already the open project, so its atlases are decoded and the tilesets are the same objects.
+      // The run decodes anyway if the file turns out to carry its own tilesets.
+      job->decode_atlases = !member or fresh_project;
       job->level = app.spare;
       job->assets = &app.memory.assets[1 - app.assets.current];
       job->path.assign(path);
       start_job(app);
     }
     break;
+  }
   case FileAction::kSaveLevel:
     if (auto* job = prepare_job<SaveLevelJob>(app); job != nullptr)
     {
@@ -3678,17 +4046,31 @@ void file_action(App& app, FileAction action, const char* path)
     }
     break;
   case FileAction::kLoadTileSet:
-    small_io([&](level::IoContext& ctx) {
-      level::TileSetId id = level::kNoTileSet;
-      Status s = level::load_tileset(path, *app.project, ctx, id);
-      if (s.ok)
-      {
-        app.tileset = id;
-        app.modified = true;
-      }
-      return s;
-    });
-    reload_atlases(app);
+    if (small_io([&](level::IoContext& ctx) {
+          level::TileSetId id = level::kNoTileSet;
+          Status s = level::load_tileset(path, *app.project, ctx, id);
+          if (s.ok)
+          {
+            app.tileset = id;
+            // A tileset belongs to the project, so importing one is a change to the project. The
+            // level is modified too: its cells can now name the tiles that just arrived.
+            app.modified = true;
+            app.project_modified = true;
+          }
+          return s;
+        }))
+    {
+      // The file said which image it wants; find it rather than leaving the atlas to be imported
+      // by hand
+      adopt_tileset_atlas(app, path);
+    }
+    if (app.pending_import.action == FileAction::kNone)
+    {
+      // Nothing to ask about, so the stored path is the one to decode. With a prompt up there is no
+      // point decoding a path that is about to be replaced -- it would only warn about a file that
+      // was never going to be the atlas -- and answering it reloads through apply_import.
+      reload_atlases(app);
+    }
     break;
   case FileAction::kSaveTileSet:
     small_io([&](level::IoContext& ctx) {

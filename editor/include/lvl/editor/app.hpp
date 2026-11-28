@@ -688,6 +688,10 @@ struct App
     std::size_t tilesets = 0;
     std::size_t semantics = 0;
     std::size_t assets = 0;
+    /// The manifest that was open, for a step that checks a load did not change which project it is
+    Path project_path;
+    /// The level a step expects the next one to have switched to
+    Name level_name;
   } smoke_check;
 
   /**
@@ -698,6 +702,16 @@ struct App
    * has always started with, so the prompt is a shortcut and never a gate.
    */
   bool welcome = false;
+
+  /**
+   * @brief A finished save changed the level index, so the manifest has to be written
+   *
+   * Saving a level into the project tree is what makes it a member, and the index that records
+   * which file holds which level lives only in the manifest. The save runs as a job, so the write
+   * cannot happen while its result is being applied -- the job slot is still taken. finish_job
+   * clears the slot and then acts on this.
+   */
+  bool save_manifest = false;
 
   bool confirm_exit = false;
   /**

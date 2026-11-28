@@ -355,7 +355,7 @@ Status save_level_binary(
   return writer.commit();
 }
 
-Status load_level_binary(const char* path, project::Project& project, Level& level, IoContext& ctx)
+Status load_level_binary(const char* path, project::Project& project, Level& level, IoContext& ctx, LevelScope& carried)
 {
   // The layer chunks are read in place, so the whole file stays resident in the shared arena
   memory::Arena& shared = shared_arena(ctx);
@@ -384,6 +384,7 @@ Status load_level_binary(const char* path, project::Project& project, Level& lev
   }
   // Which shape the metadata block has; a project-scope file leaves the project's own data alone
   meta.shared = header.kind == binary::Kind::kLevel;
+  carried = meta.shared ? LevelScope::kStandalone : LevelScope::kProject;
   if (header.version > static_cast<std::uint32_t>(kVersion))
   {
     return Status::error("%s: written by a newer editor (version %u)", path, static_cast<unsigned>(header.version));

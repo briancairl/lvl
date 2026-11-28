@@ -426,6 +426,34 @@ TEST_F(LevelIo, ProjectScopeRoundTripsAgainstAProjectThatAlreadyHoldsTheSharedDa
   }
 }
 
+TEST_F(LevelIo, LoadingSaysWhichScopeTheFileWasWrittenIn)
+{
+  // The editor holds things derived from the shared sections -- decoded atlas images, textures,
+  // tile colors -- so it has to know whether the file it just read replaced the project's tilesets
+  // or left them alone. Which it is cannot be told from the name, so the loader reports it.
+  for (const char* name : {"scope_said.json", "scope_said.lvlb"})
+  {
+    Level original{doc_a};
+    populate(*pr_a, original);
+    const auto path = temp(name);
+
+    ASSERT_TRUE(save_level(path.c_str(), *pr_a, original, ctx, LevelScope::kStandalone).ok);
+    Level loaded{doc_b};
+    project::reset(*pr_b);
+    LevelScope carried = LevelScope::kProject;
+    ASSERT_TRUE(load_level(path.c_str(), *pr_b, loaded, ctx, &carried).ok);
+    EXPECT_EQ(carried, LevelScope::kStandalone) << name;
+    EXPECT_FALSE(pr_b->tilesets.empty()) << "a standalone file carries the tilesets it says it does";
+
+    // Into the same document, which load_level resets: a second Level on this arena would be
+    // rewound out from under the first
+    ASSERT_TRUE(save_level(path.c_str(), *pr_a, original, ctx, LevelScope::kProject).ok);
+    carried = LevelScope::kStandalone;
+    ASSERT_TRUE(load_level(path.c_str(), *pr_b, loaded, ctx, &carried).ok);
+    EXPECT_EQ(carried, LevelScope::kProject) << name;
+  }
+}
+
 TEST_F(LevelIo, APortalTargetWrittenAsAPathBecomesTheMemberItNames)
 {
   // What a file written before projects holds: the destination level as a path

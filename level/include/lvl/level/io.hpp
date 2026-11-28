@@ -111,8 +111,14 @@ Status save_level(
  *
  * On failure <code>level</code> holds a partial document, and <code>project</code> may hold
  * entries interned from the file; load into a spare of each and swap both on success.
+ *
+ * <code>carried</code>, when given, is set to the scope the file turned out to be written in --
+ * <code>kStandalone</code> if it carried the shared sections and so replaced the project's, and
+ * <code>kProject</code> if it left them alone. A caller that holds anything derived from those
+ * sections, such as the editor's decoded atlases, has to know which happened.
  */
-Status load_level(const char* path, project::Project& project, Level& level, IoContext& ctx);
+Status
+load_level(const char* path, project::Project& project, Level& level, IoContext& ctx, LevelScope* carried = nullptr);
 
 /// Saves tileset <code>id</code> (with the project catalog entries it references)
 Status save_tileset(const char* path, const project::Project& project, TileSetId id, IoContext& ctx);
