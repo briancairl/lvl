@@ -352,6 +352,25 @@ level with no project folder is saved standalone, as a level file has always bee
 Ctrl+S writes the **manifest first and synchronously**, then starts the level save: a member's file
 means nothing without the manifest, and writing it first keeps the two out of each other's way.
 
+**And it is written again afterwards when the save changed the index**, because writing it first
+cannot record what the save is about to do. Saving into the tree is what *makes* a level a member,
+and the index -- which file holds which level, with its size and its portal and marker names -- lives
+only in the manifest. Writing the manifest before the member exists leaves nothing on disk saying
+the two belong together, so the level comes back a stranger to its project, and it is a
+project-scope file, so the tilesets, catalogs and rules its cells name are not in it either. The
+paths that never wrote a manifest at all -- Save As, and the Save button of the quit and switch
+prompts -- lost the association the same way. So `add_member` reports whether the index now holds
+anything different, and `finish_job` writes the manifest when it does and the project has a home on
+disk. A plain re-save of an existing member changes nothing in the index and writes no manifest.
+
+**That write, and the deferred switch, happen at the tail of `finish_job`, after the job slot is
+cleared.** A finished job still occupies `App::job` while its result is applied, and both of these
+need the slot: the manifest write goes through `small_io` and a switch starts a `LoadLevelJob`, and
+`prepare_job`/`small_io` refuse while anything is in flight. "Save and switch" used to call
+`switch_to_level` from inside that handler, so it saved and then reported "another operation is
+still running" instead of switching. The manifest is written before the switch, since the switch's
+job would otherwise displace it.
+
 **Switching level** goes through `request_switch`, which uses the same prompt quitting does, since
 the open document is about to be replaced either way (Save and switch / Discard and switch /
 Cancel). The load itself is `LoadLevelJob` with `keep_project` set: a member carries none of the
@@ -362,6 +381,48 @@ re-decoding them on every switch is most of the point of the project owning them
 project has just read new tilesets in and needs them. Both are one job, because only one job runs at
 a time: opening a project reads the manifest synchronously and then loads its first member with
 `decode_atlases` on, rather than starting an atlas job the level load would have displaced.
+
+**Opening a level file opens the project it is in.** A member level is saved in project scope, so
+its file carries none of the tilesets, catalogs or rules its cells name -- the manifest is the
+authority for those. Reading such a file into a spare project, which is what every level open once
+did, therefore gives a level with *no tilesets at all*: the commonest way to lose them, and reached
+by File > Open (whose dialog opens in the project's own `levels/`), by Open recent and by naming the
+file on the command line. So `FileAction::kOpenLevel` first asks which project the file belongs to.
+`editor::enclosing_project` answers it by walking up from the file testing each folder with
+`project::is_project_root` -- a project is where its manifest is, so that is one existence check per
+level of the walk, and a path with no separator starts at the working directory. Three outcomes:
+the file is in the project already open, so it loads as a member (`keep_project`, and the atlases
+are already decoded); it is in a *different* project, whose manifest is read first through the same
+`read_manifest` that File > Open project uses and then the level loads as a member with
+`decode_atlases` on, since the tilesets are new; or it is in no project at all, which is the bare
+standalone file that brings a project with it, as it always has.
+
+**That last case clears `App::project_path`**, in `finish_job` where the spare project is swapped
+in. Leaving the old manifest named there is what made the next Ctrl+S write a *member* file -- one
+with its shared sections stripped out -- into a project that is no longer open, which is how a
+standalone level loses its tilesets permanently rather than only for a session.
+
+**`decode_atlases` is what the caller expected, not what happened.** A file in the tree may still
+turn out to carry its own shared sections (one recorded by "Add a level..." before it was ever saved
+as a member), and loading one *replaces* the project's tilesets whatever the caller assumed, leaving
+the textures and tile colors describing tilesets that are gone. So `level::load_level` takes an
+optional `LevelScope* carried` and says which shape the file turned out to be -- the `tilesets` key
+in JSON, the `binary::Kind` in binary -- and `LoadLevelJob::run` decodes on `decode_atlases` **or**
+`kStandalone`.
+
+**Importing a tileset brings its atlas with it.** A tileset file stores its atlas path as the
+project it was exported from stored it: relative to *that* root. Resolved against this project's
+root it names a file that is not there, so the atlas drew red and the only way on was the "..."
+button -- the import leaving half the job undone, since the file does say which image it wants. So
+`editor::adopt_tileset_atlas` looks for it nearest first: as stored against this root (already
+fine), then as stored and then by bare name beside the file the tileset came from, then as stored
+against the project *that* file is in. The first candidate that exists goes through
+`request_import`, so one inside this tree is stored relative to the root with nothing asked and one
+outside raises the same copy-into-the-project prompt that choosing an atlas by hand does -- and the
+reload is skipped while that prompt is up, since decoding a path about to be replaced would only
+warn about a file that was never going to be the atlas. Nothing found leaves the stored path alone,
+and the red status in the Tilesets panel is then the right report. Importing a tileset marks the
+**project** modified as well as the level, since the tilesets are the project's.
 
 **New project / Open project / Save project** are synchronous rather than jobs: a manifest and the
 files it names are kilobytes and never on a hot path. What needs a job is the level that follows,
@@ -1190,7 +1251,8 @@ one check to mark required:
   nine-slice or an inner-corner block, the whole thirteen-tile set plus spare middles in one
   selection, the sides-first fallback, what each neighborhood distinguishes); full JSON and binary round trips with 4 workers and with 1 (tile groups, their holes and the folders they are filed under among what they carry, and a standalone tileset file taking its groups to another project), JSON→binary→JSON
   stability, a project-scope save leaving the shared sections out and round-tripping against a
-  project that already holds them while leaving it untouched, a project-scope level naming the rule
+  project that already holds them while leaving it untouched, the loader saying which scope the file
+  it just read was written in, a project-scope level naming the rule
   set it uses and resolving to it in a project that holds the sets in another order, a standalone
   level carrying only the set it uses and taking its name from it, a portal target written as a path
   becoming the member whose file it names, one that names no member keeping a stem and warning
@@ -1306,11 +1368,16 @@ one check to mark required:
   member from a save under another name, a portal into that sibling resolving from the index alone,
   switching to it without replacing the project or decoding the atlases again, the compaction job
   rewriting the other member, a rescan leaving every member with a size, Ctrl+S writing the manifest
-  and the level, and the whole project read back with both levels, its tilesets and itself in the
-  recent list); a layer written to the project's artifacts folder as a PNG; an atlas chosen from
+  and the level, the manifest recording a member as soon as the level is saved into the tree rather
+  than only at a later Ctrl+S, "Save and switch" saving and then actually switching, and the whole
+  project read back with both levels, its tilesets and itself in the recent list); a layer written to the project's artifacts folder as a PNG; an atlas chosen from
   outside the project asking first, with the plan naming where it would land, and once copied in
   being stored relative to the root and asking nothing; saving a level and exporting a tileset each
-  offering the project folder that kind of file belongs in;
+  offering the project folder that kind of file belongs in; a member level opened by its own file
+  keeping the project it belongs to open, with its tilesets, its catalogs, its level index and its
+  decoded atlases; a tileset exported outside the tree and imported back, whose stored atlas path
+  names nothing under this root, offering to copy the image it found beside the file and storing it
+  relative to the root;
   the Layers panel's heightmap tools over the selected height layer (a stepped pyramid stamped over
   the whole map and undone, one confined to the select tool's region, a spike smoothed out, and a
   pass over flat ground reporting nothing moved);

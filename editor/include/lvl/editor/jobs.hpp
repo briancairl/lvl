@@ -111,9 +111,10 @@ struct LoadLevelJob
   /**
    * @brief The project is already the right one, so <code>finish_job</code> must not swap it
    *
-   * Set when switching to another member of the open project, and when opening a project (whose
-   * manifest has already been read into the live project). The file is a member either way, so it
-   * carries none of the shared sections and the project it is read into is left as it is.
+   * Set when switching to another member of the open project, when opening a project (whose
+   * manifest has already been read into the live project), and when opening a level file that was
+   * found inside a project's folder. The file is a member in each case, so it carries none of the
+   * shared sections and the project it is read into is left as it is.
    */
   bool keep_project = false;
   /**
@@ -122,10 +123,17 @@ struct LoadLevelJob
    * Off for a switch within a project, where the tilesets are the same objects they were: not
    * re-decoding the atlases on every switch is most of the point of the project owning them. On
    * when opening a level or a project, where they are new.
+   *
+   * It is only what the caller expects, though: a file in the tree may still turn out to carry its
+   * own shared sections (one recorded as a member by "Add a level...", say), and loading it
+   * replaces the project's tilesets whatever the caller assumed. <code>carried</code> is what
+   * really happened, and the run decodes on either.
    */
   bool decode_atlases = true;
   JobMemory* memory = nullptr;
   AtlasImages atlases;
+  /// The scope the file turned out to be written in; kStandalone means it replaced the tilesets
+  level::LevelScope carried = level::LevelScope::kProject;
   Status result;
 
   void run(jobs::Progress& progress);

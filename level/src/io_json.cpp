@@ -1679,7 +1679,7 @@ save_level_json(const char* path, const project::Project& project, const Level& 
   return status;
 }
 
-Status load_level_json(const char* path, project::Project& project, Level& level, IoContext& ctx)
+Status load_level_json(const char* path, project::Project& project, Level& level, IoContext& ctx, LevelScope& carried)
 {
   IoWorker& main = ctx.workers[0];
   memory::Arena& shared = shared_arena(ctx);
@@ -1744,6 +1744,9 @@ Status load_level_json(const char* path, project::Project& project, Level& level
     }
     if (const auto tilesets = j.find("tilesets"); r.ok() and tilesets != j.end() and r.array(*tilesets, "tilesets"))
     {
+      // Carrying the tilesets is what makes this a standalone file, and so what tells the caller
+      // that the project's shared sections have just been replaced
+      carried = LevelScope::kStandalone;
       // A level file that carries tilesets carries all of them, so it replaces the project's rather
       // than adding to them -- as the seasons and the rule sets already do, and as binary does
       project.tilesets.clear();

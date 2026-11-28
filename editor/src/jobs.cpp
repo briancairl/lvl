@@ -179,8 +179,10 @@ void SaveLevelJob::run(jobs::Progress& progress)
 void LoadLevelJob::run(jobs::Progress& progress)
 {
   auto ctx = memory->context(&progress);
-  result = level::load_level(path.c_str(), *project, *level, ctx);
-  if (result.ok and decode_atlases)
+  result = level::load_level(path.c_str(), *project, *level, ctx, &carried);
+  // A standalone file replaced the project's tilesets, so whatever the caller expected, the
+  // textures and tile colors it holds now describe tilesets that are gone
+  if (result.ok and (decode_atlases or carried == level::LevelScope::kStandalone))
   {
     // Worker arenas are free again: reuse them for the atlas images
     load_atlases(*project, *assets, *memory, atlases, &progress);

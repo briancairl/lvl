@@ -60,15 +60,23 @@ save_level(const char* path, const project::Project& project, const Level& level
                                            : io::save_level_json(path, project, level, ctx, scope));
 }
 
-Status load_level(const char* path, project::Project& project, Level& level, IoContext& ctx)
+Status load_level(const char* path, project::Project& project, Level& level, IoContext& ctx, LevelScope* carried)
 {
   check_context(ctx);
   reset(level);
-  return logged(
+  // Until the file says otherwise it carried nothing of the project's, so a load that fails before
+  // reading that far leaves the caller's project as it found it
+  LevelScope scope = LevelScope::kProject;
+  const Status status = logged(
     "Loaded level",
     path,
-    format_of(path) == FileFormat::kBinary ? io::load_level_binary(path, project, level, ctx)
-                                           : io::load_level_json(path, project, level, ctx));
+    format_of(path) == FileFormat::kBinary ? io::load_level_binary(path, project, level, ctx, scope)
+                                           : io::load_level_json(path, project, level, ctx, scope));
+  if (carried != nullptr)
+  {
+    *carried = scope;
+  }
+  return status;
 }
 
 Status save_tileset(const char* path, const project::Project& project, TileSetId id, IoContext& ctx)

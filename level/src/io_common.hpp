@@ -251,7 +251,8 @@ Status save_level_json(
   const Level& level,
   IoContext& ctx,
   LevelScope scope);
-Status load_level_json(const char* path, project::Project& project, Level& level, IoContext& ctx);
+/// <code>carried</code> is set to the scope the file turned out to be written in
+Status load_level_json(const char* path, project::Project& project, Level& level, IoContext& ctx, LevelScope& carried);
 Status save_tileset_json(const char* path, const project::Project& project, TileSetId id, IoContext& ctx);
 Status load_tileset_json(const char* path, project::Project& project, IoContext& ctx, TileSetId& id);
 Status save_wfc_json(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
@@ -268,7 +269,9 @@ Status save_level_binary(
   const Level& level,
   IoContext& ctx,
   LevelScope scope);
-Status load_level_binary(const char* path, project::Project& project, Level& level, IoContext& ctx);
+/// <code>carried</code> is set to the scope the file turned out to be written in
+Status
+load_level_binary(const char* path, project::Project& project, Level& level, IoContext& ctx, LevelScope& carried);
 Status save_tileset_binary(const char* path, const project::Project& project, TileSetId id, IoContext& ctx);
 Status load_tileset_binary(const char* path, project::Project& project, IoContext& ctx, TileSetId& id);
 Status save_wfc_binary(const char* path, const project::Project& project, std::size_t index, IoContext& ctx);
