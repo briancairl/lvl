@@ -278,6 +278,7 @@ void average_tile_colors(const level::TileSet& ts, const image::Image& atlas, me
     const auto r = level::tile_rect(ts.slice, atlas.width, atlas.height, static_cast<level::TileIndex>(t));
     std::uint64_t sum[3] = {0, 0, 0};
     std::uint64_t weight = 0;
+    std::uint64_t count = 0;
     for (int y = r.y; y < std::min(r.y + r.height, atlas.height); ++y)
     {
       for (int x = r.x; x < std::min(r.x + r.width, atlas.width); ++x)
@@ -287,15 +288,20 @@ void average_tile_colors(const level::TileSet& ts, const image::Image& atlas, me
         sum[1] += static_cast<std::uint64_t>(p.g) * p.a;
         sum[2] += static_cast<std::uint64_t>(p.b) * p.a;
         weight += p.a;
+        ++count;
       }
     }
     if (weight > 0)
     {
+      // The alpha is the tile's mean coverage, not 255: a tile that is transparent over part of its
+      // cell -- a cliff face showing the terrace under it, a tree against the sky -- must let what is
+      // below it through when it is drawn as one pixel, exactly as its own pixels do when it is drawn
+      // from the atlas. Calling every drawn tile opaque makes the upper layers erase the lower ones.
       out[t] = Rgba{
         static_cast<std::uint8_t>(sum[0] / weight),
         static_cast<std::uint8_t>(sum[1] / weight),
         static_cast<std::uint8_t>(sum[2] / weight),
-        255};
+        static_cast<std::uint8_t>(weight / count)};
     }
   }
 }

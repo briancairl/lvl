@@ -75,6 +75,39 @@ TEST_F(Render, AverageTileColors)
   EXPECT_EQ(colors[1], (image::Rgba{0, 255, 0, 255}));
 }
 
+TEST_F(Render, APartlyTransparentTileLetsTheLayersUnderItThrough)
+{
+  // Zoomed out, and in the mini-preview, a cell is one pixel of a tile's average color. A cliff face
+  // drawn over the terrace below it covers only part of its cell, so that pixel has to be part
+  // transparent -- calling every drawn tile opaque made the upper layers erase the lower ones.
+  image::Image half = image::create(scratch, 8, 4, image::Rgba{255, 0, 0, 255});
+  for (int y = 0; y < 4; ++y)
+  {
+    for (int x = 4; x < 8; ++x)
+    {
+      // Tile 1: green over its top half, nothing over its bottom half
+      half.at(x, y) = (y < 2) ? image::Rgba{0, 255, 0, 255} : image::Rgba{0, 0, 0, 0};
+    }
+  }
+  memory::Vector<image::Rgba> half_colors = memory::make_vector<image::Rgba>(scratch);
+  render::average_tile_colors(pr->tilesets[0], half, half_colors);
+  ASSERT_EQ(half_colors.size(), 2UL);
+  // The opaque tile is unchanged, and the half-covered one keeps its color but half its alpha
+  EXPECT_EQ(half_colors[0], (image::Rgba{255, 0, 0, 255}));
+  EXPECT_EQ(half_colors[1], (image::Rgba{0, 255, 0, 127}));
+
+  // So a layer of that tile, colorized, blends over what is under it instead of replacing it
+  const render::Atlases set{.images = &half, .tile_colors = &half_colors, .count = 1};
+  auto& g = plane<TileGrid>(level->layers[1]);
+  g.fill(TileRef{0, 1});
+  image::Image out = image::create(scratch, 6, 4);
+  render::colorize(*pr, level->layers[1], out, &set);
+  EXPECT_EQ(out.at(0, 0), (image::Rgba{0, 255, 0, 127}));
+  const image::Rgba over = image::blend(image::Rgba{0, 0, 255, 255}, out.at(0, 0));
+  EXPECT_GT(over.b, 100) << "the layer below must still show through";
+  EXPECT_GT(over.g, 100) << "and the tile over it must still show";
+}
+
 TEST_F(Render, ComposeDrawsTilesAndSeasons)
 {
   image::Image img;
